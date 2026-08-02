@@ -9,13 +9,24 @@
 #include "ClientPacket.h"
 #include "ServerPacket.h"
 #include "FakeServer.h"
+#include "TenviData.h"
+#include "../EmuMainTenvi/ConfigTenvi.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
 using namespace std;
 
-// FakeServer.cpp 使用的全局账号数据（定义在 TemporaryData.cpp）
-extern TemporaryData TA;
+// FakeServer.cpp 里定义的版本包（头文件未声明，这里补上）
+void VersionPacket();
+
+// ---- 区域配置：原本由注入 DLL 读 ini 决定，独立服务端里程碑1 固定国服 CN v126 ----
+static Region g_region = TENVI_CN;
+static wstring g_regionStr = L"CN";
+static wstring g_xmlPath = L"tv_xml";
+
+Region GetRegion() { return g_region; }
+wstring GetRegionStr() { return g_regionStr; }
+wstring GetXMLPath() { return g_xmlPath; }
 
 // 单客户端连接（里程碑1仅验证单客户端能连独立进程，不做多客户端同步）
 static SOCKET g_client = INVALID_SOCKET;
@@ -49,7 +60,17 @@ static bool ExtractPacket(vector<BYTE> &buf, vector<BYTE> &outPkt) {
     return true;
 }
 
-int main() {
+int main(int argc, char **argv) {
+    // 可选：命令行第一个参数覆盖 xml 数据目录
+    if (argc > 1) {
+        wchar_t wbuf[512] = { 0 };
+        MultiByteToWideChar(CP_ACP, 0, argv[1], -1, wbuf, 511);
+        g_xmlPath = wbuf;
+    }
+    // 加载地图/NPC 数据（FakeServer 换图、刷怪要用）
+    tenvi_data.set_xml_path(g_xmlPath);
+    wprintf(L"[TenviServer] xml path = %s, region = %s\n", g_xmlPath.c_str(), g_regionStr.c_str());
+
     // 初始化国服 v126 的 opcode 编解码表
     SetClientPacketHeader_CN_v126();
     SetServerPacketHeader_CN_v126();
