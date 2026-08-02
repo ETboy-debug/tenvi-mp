@@ -1,4 +1,5 @@
 #include"AutoResponse.h"
+#include"MPClient.h"
 
 DWORD Addr_OnPacketClass = 0;
 DWORD Addr_OnPacketClass2 = 0;
@@ -70,44 +71,65 @@ void DelayExecution() {
 	}
 }
 
+// [MP] 把独立服务端发来的明文包注入客户端。
+// 必须在客户端主线程执行, 所以挂在 ProcessPacketCaller 这个每帧轮询点上。
+// 一次最多处理 4 个, 避免单帧注入过多包导致客户端逻辑打结。
+void MP_Pump() {
+	std::vector<BYTE> packet;
+	for (int i = 0; i < 4; i++) {
+		if (!MP_PopPacket(packet)) {
+			break;
+		}
+		ProcessPacketExec(packet);
+	}
+}
+
 // Login Button Click
 DWORD (__thiscall *_LoginButton)(void *ecx) = NULL;
 DWORD __fastcall LoginButton_Hook(void *ecx) {
-	// [MP] 去掉进程内世界列表推送，改由独立服务端主动推
-	return _LoginButton(ecx);
+	// [MP] 点登录时客户端并不会真的发登录包(原版直接本地伪造世界列表),
+	// 桥接后改为通知独立服务端, 由服务端回世界列表
+	MP_SendCtrl(MP_CTRL_WORLDLIST);
+	return 0;
 }
 
 DWORD (__thiscall *_LoginButton_KR)(void *ecx, void *, void *, void *) = NULL;
 DWORD __fastcall LoginButton_KR_Hook(void *ecx, void *, void *, void *) {
-	WorldListPacket();
+	MP_SendCtrl(MP_CTRL_WORLDLIST);
 	return 0;
 }
 
 
 void (__thiscall *_WorldSelectButton)(void *) = NULL;
 void __fastcall WorldSelectButton_Hook(void *ecx) {
-	// [MP] 调原函数，去掉进程内角色列表推送（由独立服务端推）
 	_WorldSelectButton(ecx);
+	// [MP] 同上, 角色列表由服务端下发
+	MP_SendCtrl(MP_CTRL_CHARLIST);
 }
 
-bool (__thiscall *_ConnectCaller)(void *) = NULL;
+bool (__thiscall *_ConnectCaller)(void *ecx, void *v1, void *v2, void *v3) = NULL;
 bool __fastcall ConnectCaller_Hook(void *ecx, void *edx, void *v1, void *v2, void *v3) {
 	DEBUG(L"Connect is called!");
-	// [MP] 真连到独立服务端(127.0.0.1:8787)，不再忽略连接检查
-	return _ConnectCaller(ecx);
+	// [MP] 客户端原生网络栈带加密, 不走它。这里照旧假装连接成功,
+	// 真正的通讯由 MPClient 那条明文 socket 承担
+	return true;
 }
 
 
 void(__thiscall *_EnterSendPacket)(OutPacket *) = NULL;
 void __fastcall EnterSendPacket_Hook(OutPacket *op) {
-	// [MP] 真发到独立服务端，由服务端处理（去掉进程内 FakeServer 伪造）
+	// [MP] 此处拿到的是加密前的明文包, 直接桥接给独立服务端
+	MP_SendGame(op->packet, op->encoded);
+	// 原始发送流程照常执行(没有真实连接, 会静默失败, 但保持客户端内部状态正常)
 	_EnterSendPacket(op);
 }
 
 void (__thiscall *_ProcessPacketCaller)(void *) = NULL;
 void __fastcall ProcessPacketCaller_Hook(void *ecx) {
-	// [MP] 真收独立服务端回包（去掉进程内 DelayExecution 注入）
 	_ProcessPacketCaller(ecx);
+	// [MP] 每帧把服务端发来的包注入客户端
+	MP_Pump();
+	DelayExecution();
 }
 
 bool AutoResponseHook() {
