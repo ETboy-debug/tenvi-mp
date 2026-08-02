@@ -102,8 +102,8 @@ DWORD __fastcall LoginButton_KR_Hook(void *ecx, void *, void *, void *) {
 
 void (__thiscall *_WorldSelectButton)(void *) = NULL;
 void __fastcall WorldSelectButton_Hook(void *ecx) {
-	_WorldSelectButton(ecx);
-	// [MP] 同上, 角色列表由服务端下发
+	// [MP] 原始函数依赖真实游戏服务器连接(原生加密栈)，桥接模式下那个连接是假的，
+	// 调用它会访问空连接对象 -> 客户端崩溃。跳过原始调用，直接请求角色列表。
 	MP_SendCtrl(MP_CTRL_CHARLIST);
 }
 
