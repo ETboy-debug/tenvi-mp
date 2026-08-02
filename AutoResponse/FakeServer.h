@@ -7,7 +7,7 @@
 #include"TemporaryData.h"
 
 // FakeServer.cpp 使用的全局账号数据（定义在 TemporaryData.cpp）
-extern TemporaryData TA;
+extern TenviAccount TA;
 
 #define MAPID_ITEM_SHOP 65535
 #define MAPID_PARK 65534
