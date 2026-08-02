@@ -29,6 +29,9 @@
 #include "FakeServer.h"
 #include "TenviData.h"
 #include "../EmuMainTenvi/ConfigTenvi.h"
+#include "db.h"
+#include <map>
+#include <set>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -40,8 +43,11 @@ using namespace std;
 #define MP_CTRL_HELLO     1
 #define MP_CTRL_WORLDLIST 2
 #define MP_CTRL_CHARLIST  3
+#define MP_CTRL_LOGIN     4   // [MP] 客户端上报账号名(utf8), payload[2..] 为账号
 
 #define MP_MAX_PLAYERS 32
+
+#define MP_ADMIN_PORT   8788 // [MP] 本地 GM 管理端口(仅 127.0.0.1)
 
 // FakeServer.cpp 里定义的版本包（头文件未声明，这里补上）
 void VersionPacket();
@@ -61,6 +67,12 @@ static int g_dump = 8;                 // 每个会话前 N 个收发包打印�
 static volatile LONG g_online = 0;     // 当前在线人数
 static volatile LONG g_sidSeq = 0;     // 会话编号发号器
 static std::mutex g_logMutex;          // 多线程日志不交错
+
+// [MP] GM 管理用: 在线会话表 + 踢人集合 + 互斥
+static std::map<int, SOCKET> g_onlineSock;
+static std::map<int, std::wstring> g_onlineAcc;
+static std::set<int> g_kickSet;
+static std::mutex g_adminMutex;
 
 // ---- 会话级(线程局部): 每个玩家一份 ----
 static thread_local SOCKET t_client = INVALID_SOCKET;
@@ -135,7 +147,141 @@ void SendPacket(ServerPacket &sp) {
 void SendPacket2(ServerPacket &sp) { SendPacket(sp); }
 void DelaySendPacket(ServerPacket &sp) { SendPacket(sp); }
 
-static void HandleCtrl(BYTE cmd) {
+// [MP] 向指定 socket 发游戏包(供 GM 广播用)
+static void SendPacketTo(SOCKET s, ServerPacket &sp) {
+	if (s == INVALID_SOCKET) return;
+	vector<BYTE> data = sp.get();
+	DWORD len = (DWORD)data.size() + 1;
+	vector<BYTE> frame;
+	frame.push_back((BYTE)(len & 0xFF));
+	frame.push_back((BYTE)((len >> 8) & 0xFF));
+	frame.push_back((BYTE)((len >> 16) & 0xFF));
+	frame.push_back((BYTE)((len >> 24) & 0xFF));
+	frame.push_back(MP_TYPE_GAME);
+	frame.insert(frame.end(), data.begin(), data.end());
+	send(s, (const char *)&frame[0], (int)frame.size(), 0);
+}
+
+// [MP] GM 广播: 给所有在线客户端发一条 Board 公告
+// 注意: CN v126 目前没有确认过 SP_BOARD 的 opcode(CN_v126_SP.cpp 里是注释掉的),
+// 发一个 opcode=0 的包客户端会当未知包处理, 有崩溃风险 -> 没映射就直接拒绝。
+static bool AdminBroadcast(const std::wstring &msg) {
+	if (ServerPacket::GetOpcode()[SP_BOARD] == 0) {
+		Log("broadcast unsupported: SP_BOARD opcode not mapped for this region");
+		return false;
+	}
+	std::lock_guard<std::mutex> lock(g_adminMutex);
+	for (auto &kv : g_onlineSock) {
+		ServerPacket sp(SP_BOARD);
+		sp.Encode1(0);          // Board_Spawn
+		sp.Encode4(3131);
+		sp.Encode4(1337);
+		sp.EncodeWStr1(L"GM");  // owner
+		sp.EncodeWStr1(msg);    // message
+		sp.Encode4(0);
+		sp.Encode4(0);
+		sp.Encode1(0);
+		sp.Encode1(3);
+		SendPacketTo(kv.second, sp);
+	}
+	return true;
+}
+
+// [MP] GM 管理端口(本地 127.0.0.1:8788)命令处理线程
+static DWORD WINAPI AdminThread(LPVOID) {
+	SOCKET ls = socket(AF_INET, SOCK_STREAM, 0);
+	if (ls == INVALID_SOCKET) { Log("admin: socket failed"); return 0; }
+	BOOL reuse = TRUE;
+	setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuse, sizeof(reuse));
+	sockaddr_in a = {};
+	a.sin_family = AF_INET;
+	a.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // 仅本机
+	a.sin_port = htons((u_short)MP_ADMIN_PORT);
+	if (bind(ls, (sockaddr *)&a, sizeof(a)) == SOCKET_ERROR) {
+		Log("admin: bind failed, err=%d (port %d in use?)", WSAGetLastError(), MP_ADMIN_PORT);
+		closesocket(ls);
+		return 0;
+	}
+	listen(ls, SOMAXCONN);
+	Log("admin GM port listening on 127.0.0.1:%d", MP_ADMIN_PORT);
+
+	while (true) {
+		SOCKET c = accept(ls, NULL, NULL);
+		if (c == INVALID_SOCKET) break;
+		char buf[4096] = {};
+		int n = recv(c, buf, sizeof(buf) - 1, 0);
+		if (n > 0) {
+			buf[n] = 0;
+			std::string line = buf;
+			// 去掉换行
+			while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+
+			// 简单命令解析: CMD arg1 arg2 ...
+			std::vector<std::string> tok;
+			std::string cur;
+			for (char ch : line) { if (ch == ' ') { tok.push_back(cur); cur.clear(); } else cur += ch; }
+			tok.push_back(cur);
+
+			std::string cmd = tok.empty() ? "" : tok[0];
+			std::string resp;
+
+			if (cmd == "LIST") {
+				std::lock_guard<std::mutex> lk(g_adminMutex);
+				resp += "ONLINE " + std::to_string(g_onlineSock.size()) + "\n";
+				for (auto &kv : g_onlineSock) {
+					std::string acc = WToUtf8(g_onlineAcc[kv.first]);
+					resp += std::to_string(kv.first) + "\t" + (acc.empty() ? "(none)" : acc) + "\n";
+				}
+				resp += "END\n";
+			}
+			else if (cmd == "KICK" && tok.size() >= 2) {
+				int sid = atoi(tok[1].c_str());
+				{
+					std::lock_guard<std::mutex> lk(g_adminMutex);
+					g_kickSet.insert(sid);
+				}
+				resp = "KICKED " + std::to_string(sid) + "\n";
+			}
+			else if (cmd == "BCAST" && tok.size() >= 2) {
+				// 拼接剩余参数为消息
+				std::string m;
+				for (size_t i = 1; i < tok.size(); i++) { if (i > 1) m += " "; m += tok[i]; }
+				resp = AdminBroadcast(Utf8ToW(m)) ? "BCAST OK\n" : "BCAST UNSUPPORTED\n";
+			}
+			else if (cmd == "SETLV" && tok.size() >= 3) {
+				std::wstring acc = Utf8ToW(tok[1]);
+				BYTE lv = (BYTE)atoi(tok[2].c_str());
+				// 对该账号下所有角色设置等级(下一轮选角/列表生效)
+				auto it = db().chars().find(acc);
+				if (it != db().chars().end()) {
+					for (auto &r : it->second) db().updateCharStat(acc, r.id, lv, r.gold);
+					resp = "SETLV OK\n";
+				}
+				else resp = "NOACCOUNT\n";
+			}
+			else if (cmd == "SETGOLD" && tok.size() >= 3) {
+				std::wstring acc = Utf8ToW(tok[1]);
+				int g = atoi(tok[2].c_str());
+				auto it = db().chars().find(acc);
+				if (it != db().chars().end()) {
+					for (auto &r : it->second) db().updateCharStat(acc, r.id, r.level, g);
+					resp = "SETGOLD OK\n";
+				}
+				else resp = "NOACCOUNT\n";
+			}
+			else {
+				resp = "UNKNOWN " + cmd + "\n";
+			}
+
+			send(c, resp.c_str(), (int)resp.size(), 0);
+		}
+		closesocket(c);
+	}
+	closesocket(ls);
+	return 0;
+}
+
+static void HandleCtrl(BYTE cmd, const BYTE *p, DWORD n) {
 	switch (cmd) {
 	case MP_CTRL_HELLO:
 		Log("client says HELLO -> sending version packet");
@@ -150,6 +296,26 @@ static void HandleCtrl(BYTE cmd) {
 		CharacterSelectPacket();
 		CharacterListPacket_Test();
 		break;
+	case MP_CTRL_LOGIN: {
+		// payload[2..] 为账号名(utf8)
+		std::string acc;
+		if (n >= 3) {
+			acc.assign((const char *)(p + 2), n - 2);
+		}
+		// 去掉可能的结尾 \0
+		while (!acc.empty() && acc.back() == '\0') acc.pop_back();
+		std::wstring wacc = Utf8ToW(acc);
+		if (wacc.empty()) wacc = L"Player";
+		TA.SetAccount(wacc);
+		TA.ReloadFromDB();
+		// [MP] 登录后才知道账号名, 这里补登记到 GM 在线表, 否则 LIST 永远显示 (none)
+		{
+			std::lock_guard<std::mutex> lock(g_adminMutex);
+			g_onlineAcc[t_sid] = wacc;
+		}
+		Log("ctrl: login account = %s (chars=%d)", acc.c_str(), (int)TA.GetCharacters().size());
+		break;
+	}
 	default:
 		Log("unknown ctrl cmd = %u", (unsigned)cmd);
 		break;
@@ -164,7 +330,7 @@ static void HandlePayload(const BYTE *p, DWORD n) {
 	BYTE type = p[0];
 	if (type == MP_TYPE_CTRL) {
 		if (n >= 2) {
-			HandleCtrl(p[1]);
+			HandleCtrl(p[1], p, n);
 		}
 		return;
 	}
@@ -183,6 +349,14 @@ static void ServeClient() {
 	vector<BYTE> buf;
 	char tmp[16384];
 	while (true) {
+		// [MP] GM 踢人: 被标记则断开
+		{
+			std::lock_guard<std::mutex> lock(g_adminMutex);
+			if (g_kickSet.count(t_sid)) {
+				Log("kicked by GM (sid=%d)", t_sid);
+				break;
+			}
+		}
 		int n = recv(t_client, tmp, sizeof(tmp), 0);
 		if (n <= 0) {
 			break;
@@ -215,7 +389,22 @@ static DWORD WINAPI ClientThread(LPVOID param) {
 	LONG online = InterlockedIncrement(&g_online);
 	Log("player joined (online=%d)", online);
 
+	// [MP] 注册到 GM 在线表
+	{
+		std::lock_guard<std::mutex> lock(g_adminMutex);
+		g_onlineSock[t_sid] = t_client;
+		g_onlineAcc[t_sid] = TA.GetAccount();
+	}
+
 	ServeClient();
+
+	// [MP] 从 GM 在线表移除
+	{
+		std::lock_guard<std::mutex> lock(g_adminMutex);
+		g_onlineSock.erase(t_sid);
+		g_onlineAcc.erase(t_sid);
+		g_kickSet.erase(t_sid);
+	}
 
 	closesocket(t_client);
 	t_client = INVALID_SOCKET;
@@ -249,6 +438,29 @@ int main(int argc, char **argv) {
 	LogW("region   = ", g_regionStr);
 	Log("port     = %d", g_port);
 	Log("max players = %d", MP_MAX_PLAYERS);
+
+	// [MP] 打开文件数据库(存于服务端 exe 同目录)
+	{
+		wchar_t exepath[1024] = { 0 };
+		DWORD lp = GetModuleFileNameW(NULL, exepath, 1023);
+		std::wstring dir;
+		if (lp > 0) {
+			std::wstring p(exepath, lp);
+			size_t pos = p.find_last_of(L"\\/");
+			dir = (pos == std::wstring::npos) ? L"." : p.substr(0, pos);
+		}
+		else {
+			dir = L".";
+		}
+		db().open(dir);
+		LogW("db path  = ", dir + L"\\tenvi.db");
+	}
+
+	// [MP] 启动 GM 管理端口线程
+	{
+		HANDLE h = CreateThread(NULL, 0, AdminThread, NULL, 0, NULL);
+		if (h) CloseHandle(h);
+	}
 
 	// 加载地图/NPC 数据（FakeServer 换图、刷怪要用）
 	tenvi_data.set_xml_path(g_xmlPath);
