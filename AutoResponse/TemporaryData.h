@@ -46,6 +46,7 @@ public:
 	// data
 	float x;
 	float y;
+	int gold; // [MP] GM 可改, 存档持久化
 
 	std::vector<WORD> equipped;
 	std::vector<WORD> gequipped;
@@ -57,6 +58,9 @@ public:
 	bool UseSP(WORD skill_id);
 	bool UseAP(BYTE stat_id);
 	void SetMapReturn(WORD map_return_id);
+
+	// [MP] 加载 DB 后把 id 发号器抬到最大已用 id 之上, 避免新创角色撞 id
+	static void ReserveId(DWORD maxId);
 };
 
 class TenviAccount {
@@ -66,6 +70,7 @@ private:
 
 public:
 	BYTE slot;
+	std::wstring account; // [MP] 当前连接的账号名(由客户端 ini 上报)
 
 	TenviAccount();
 	bool FindCharacter(DWORD id, TenviCharacter *found);
@@ -73,6 +78,13 @@ public:
 	bool AddCharacter(std::wstring nName, BYTE nJob_Mask, WORD nJob, WORD nSkin, WORD nHair, WORD nFace, WORD nCloth, WORD nGColor, std::vector<WORD> &nGEquipped);
 	bool Login(DWORD id);
 	TenviCharacter& GetOnline();
+
+	// [MP] 仅服务端使用
+	void SetAccount(const std::wstring &a) { account = a; }
+	const std::wstring &GetAccount() { return account; }
+#ifdef MP_SERVER
+	void ReloadFromDB(); // 从 DB 载入本账号角色(空则自动建默认角色)
+#endif
 };
 
 #endif
