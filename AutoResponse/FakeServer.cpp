@@ -2,6 +2,10 @@
 #include"AutoResponse.h"
 #include"TemporaryData.h"
 
+#ifdef MP_SERVER
+#include "../StandaloneServer/db.h"
+#endif
+
 thread_local TenviAccount TA; // [MP] 见 FakeServer.h: 按连接线程隔离会话
 // ========== TENVI Packet Response ==========
 #define TENVI_VERSION 0x1023
@@ -55,6 +59,11 @@ void CharacterListPacket() {
 
 void CharacterListPacket_Test() {
 	ServerPacket sp(SP_CHARACTER_LIST);
+
+#ifdef MP_SERVER
+	// [MP] 每次列角色都从 DB 重载, 让 GM 改的等级/金币下一轮就生效
+	TA.ReloadFromDB();
+#endif
 
 	sp.Encode1((BYTE)TA.GetCharacters().size()); // characters
 	for (auto &chr : TA.GetCharacters()) {
@@ -777,6 +786,14 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 		break;
 	}
 	}
+	chr.x = x;
+	chr.y = y;
+#ifdef MP_SERVER
+	// [MP] 换图后保存地图与坐标, 关游戏不丢进度
+	if (!TA.GetAccount().empty()) {
+		db().updateCharMap(TA.GetAccount(), chr.id, chr.map, chr.x, chr.y);
+	}
+#endif
 	SpawnObjects(chr, map_id);
 	CharacterSpawnPacket(chr, x, y);
 }
@@ -832,6 +849,11 @@ bool FakeServer(ClientPacket &cp) {
 		DWORD character_id = cp.Decode4();
 		BYTE channel = cp.Decode1();
 
+#ifdef MP_SERVER
+		// [MP] 从 DB 载入本账号角色(含保存的地图/等级), 再选角
+		TA.ReloadFromDB();
+#endif
+
 		TA.Login(character_id);
 
 		for (auto &chr : TA.GetCharacters()) {
@@ -875,6 +897,12 @@ bool FakeServer(ClientPacket &cp) {
 		guardian_equip.push_back(guardian_weapon);
 
 		TA.AddCharacter(character_name, job_mask, job_id, character_skin, character_hair, character_face, character_cloth, guardian_color, guardian_equip);
+#ifdef MP_SERVER
+		// [MP] 新角色写库, 下次登录仍在
+		if (!TA.GetAccount().empty()) {
+			db().insertChar(TA.GetAccount(), TA.GetCharacters().back());
+		}
+#endif
 		CharacterListPacket_Test();
 		return true;
 	}
