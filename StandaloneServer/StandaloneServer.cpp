@@ -452,14 +452,8 @@ int main(int argc, char **argv) {
 		else {
 			dir = L".";
 		}
-		db().open(dir);
-		LogW("db path  = ", dir + L"\\tenvi.db");
-	}
-
-	// [MP] 启动 GM 管理端口线程
-	{
-		HANDLE h = CreateThread(NULL, 0, AdminThread, NULL, 0, NULL);
-		if (h) CloseHandle(h);
+	db().open(dir);
+	LogW("db path  = ", dir + L"\\tenvi.db");
 	}
 
 	// 加载地图/NPC 数据（FakeServer 换图、刷怪要用）
@@ -474,6 +468,12 @@ int main(int argc, char **argv) {
 	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
 		Log("WSAStartup failed");
 		return 1;
+	}
+
+	// [MP] 启动 GM 管理端口线程（必须在 WSAStartup 之后，否则 socket() 会失败）
+	{
+		HANDLE h = CreateThread(NULL, 0, AdminThread, NULL, 0, NULL);
+		if (h) CloseHandle(h);
 	}
 
 	SOCKET listenSock = socket(AF_INET, SOCK_STREAM, 0);
