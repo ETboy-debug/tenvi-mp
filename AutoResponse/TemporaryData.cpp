@@ -1,5 +1,9 @@
 #include"TemporaryData.h"
 
+#ifdef MP_SERVER
+#include "../StandaloneServer/db.h"
+#endif
+
 DWORD TenviCharacter::id_counter = 1337;
 
 // new character
@@ -30,6 +34,13 @@ TenviCharacter::TenviCharacter(std::wstring nName, BYTE nJob_Mask, WORD nJob, WO
 	stat_mp = 158;
 	x = 0.0;
 	y = 0.0;
+	gold = 0;
+}
+
+void TenviCharacter::ReserveId(DWORD maxId) {
+	if (maxId >= id_counter) {
+		id_counter = maxId + 1;
+	}
 }
 
 void TenviCharacter::SetMapReturn(WORD map_return_id) {
@@ -174,3 +185,21 @@ TenviCharacter& TenviAccount::GetOnline() {
 
 	return characters[0];
 }
+
+#ifdef MP_SERVER
+// 从 DB 载入本账号角色, 替换默认硬编码角色。空账号自动建一个默认角色并存盘。
+void TenviAccount::ReloadFromDB() {
+	if (account.empty()) {
+		return;
+	}
+	db().upsertAccount(account);
+	std::vector<TenviCharacter> list = db().loadChars(account);
+	characters.clear();
+	DWORD maxId = 1337;
+	for (auto &c : list) {
+		characters.push_back(c);
+		if (c.id > maxId) maxId = c.id;
+	}
+	TenviCharacter::ReserveId(maxId);
+}
+#endif
