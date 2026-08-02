@@ -26,6 +26,7 @@
 #define MP_CTRL_HELLO     1
 #define MP_CTRL_WORLDLIST 2
 #define MP_CTRL_CHARLIST  3
+#define MP_CTRL_LOGIN     4 // 客户端上报账号名(utf8), 紧接在 cmd 字节之后
 
 bool MP_Start(HINSTANCE hinstDLL);
 void MP_SendGame(const BYTE *p, DWORD n);
