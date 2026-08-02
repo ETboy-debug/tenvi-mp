@@ -16,6 +16,7 @@ static bool g_csReady = false;
 static std::vector<std::vector<BYTE>> g_inQueue;
 static std::string g_ip = "127.0.0.1";
 static int g_port = 8787;
+static std::string g_account = "Player"; // [MP] 账号名(utf8), 由 ini Account 字段提供
 static volatile LONG g_connected = 0;
 
 bool MP_IsConnected() {
@@ -53,6 +54,15 @@ void MP_SendGame(const BYTE *p, DWORD n) {
 
 void MP_SendCtrl(BYTE cmd) {
 	MP_SendRaw(MP_TYPE_CTRL, &cmd, 1);
+}
+
+// [MP] 上报账号名: 帧 = [type=CTRL][cmd=MP_CTRL_LOGIN][utf8 account]
+void MP_SendLogin(const std::string &acc) {
+	std::vector<BYTE> buf;
+	buf.push_back((BYTE)MP_CTRL_LOGIN);
+	for (char c : acc) buf.push_back((BYTE)c);
+	if (buf.empty()) return;
+	MP_SendRaw(MP_TYPE_CTRL, &buf[0], (DWORD)buf.size());
 }
 
 bool MP_PopPacket(std::vector<BYTE> &out) {
@@ -138,6 +148,7 @@ static DWORD WINAPI MP_Thread(LPVOID) {
 	InterlockedExchange(&g_connected, 1);
 	DEBUG(L"MP connected");
 	MP_SendCtrl(MP_CTRL_HELLO);
+	MP_SendLogin(g_account); // [MP] 连接即上报账号, 服务端据此建/载角色
 
 	std::vector<BYTE> buf;
 	char tmp[16384];
@@ -192,6 +203,14 @@ bool MP_Start(HINSTANCE hinstDLL) {
 			g_port = p;
 		}
 	}
+	// [MP] 读账号名(Account 字段, utf8 存盘)
+	std::wstring wAcc;
+	if (conf.Read(MP_INI_NAME, L"Account", wAcc) && wAcc.length()) {
+		char abuf[128] = {};
+		WideCharToMultiByte(CP_UTF8, 0, wAcc.c_str(), -1, abuf, sizeof(abuf) - 1, NULL, NULL);
+		g_account = abuf;
+	}
+	if (g_account.empty()) g_account = "Player";
 
 	HANDLE hThread = CreateThread(NULL, 0, MP_Thread, NULL, 0, NULL);
 	if (hThread) {
