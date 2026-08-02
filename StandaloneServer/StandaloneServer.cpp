@@ -252,7 +252,8 @@ int main(int argc, char **argv) {
 
 		closesocket(g_client);
 		g_client = INVALID_SOCKET;
-		printf("[TenviServer] waiting for next client... (角色状态未重置，异常时请重启服务端)\n");
+		// 注意: 角色状态不会重置, 出现异常请重启服务端
+		printf("[TenviServer] waiting for next client... (state NOT reset, restart server if odd)\n");
 	}
 
 	closesocket(listenSock);
