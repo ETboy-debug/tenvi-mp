@@ -45,7 +45,7 @@ using namespace std;
 #define MP_CTRL_CHARLIST  3
 #define MP_CTRL_LOGIN     4   // [MP] 客户端上报账号名(utf8), payload[2..] 为账号
 
-#define MP_MAX_PLAYERS 32
+#define MP_MAX_PLAYERS 65535   // [MP] 人数上限(单机私服用, 对小伙伴联机等于无上限; 保留拒绝逻辑防连接风暴)
 
 #define MP_ADMIN_PORT   8788 // [MP] 本地 GM 管理端口(仅 127.0.0.1)
 
