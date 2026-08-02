@@ -2,6 +2,7 @@
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <cstdio>
 #include "MPClient.h"
 #include "../Share/Simple/Simple.h"
 
@@ -86,22 +87,42 @@ static DWORD WINAPI MP_Thread(LPVOID) {
 		return 0;
 	}
 
-	// 服务端可能比客户端启动晚, 这里重试等待
+	// 服务端可能比客户端启动晚, 这里重试等待。
+	// 用 getaddrinfo 而不是 inet_addr, 这样服主填域名(DDNS)也能连。
+	char portStr[16] = {};
+	sprintf_s(portStr, sizeof(portStr), "%d", g_port);
+
 	for (int attempt = 0; attempt < 120; attempt++) {
-		g_sock = socket(AF_INET, SOCK_STREAM, 0);
-		if (g_sock == INVALID_SOCKET) {
+		addrinfo hints = {};
+		hints.ai_family = AF_INET;
+		hints.ai_socktype = SOCK_STREAM;
+		hints.ai_protocol = IPPROTO_TCP;
+
+		addrinfo *res = NULL;
+		if (getaddrinfo(g_ip.c_str(), portStr, &hints, &res) != 0 || !res) {
+			// 域名还没解析出来(断网/DNS慢), 等一秒再试
 			Sleep(1000);
 			continue;
 		}
-		sockaddr_in addr = {};
-		addr.sin_family = AF_INET;
-		addr.sin_addr.s_addr = inet_addr(g_ip.c_str());
-		addr.sin_port = htons((u_short)g_port);
-		if (connect(g_sock, (sockaddr *)&addr, sizeof(addr)) == 0) {
+
+		bool ok = false;
+		for (addrinfo *ai = res; ai; ai = ai->ai_next) {
+			g_sock = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+			if (g_sock == INVALID_SOCKET) {
+				continue;
+			}
+			if (connect(g_sock, ai->ai_addr, (int)ai->ai_addrlen) == 0) {
+				ok = true;
+				break;
+			}
+			closesocket(g_sock);
+			g_sock = INVALID_SOCKET;
+		}
+		freeaddrinfo(res);
+
+		if (ok) {
 			break;
 		}
-		closesocket(g_sock);
-		g_sock = INVALID_SOCKET;
 		Sleep(1000);
 	}
 
