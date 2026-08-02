@@ -2,10 +2,18 @@
 #include"../EmuMainTenvi/ConfigTenvi.h"
 #include<locale>
 #include<codecvt>
+#include<mutex>
 
 TenviData tenvi_data; // global
 
+// [MP] 地图是懒加载并存在共享 vector 里。独立服务端下多个玩家线程可能
+// 同时进图, 不加锁会同时 push_back 撕裂容器 -> 崩溃。地图数据本身只读,
+// 所以只需要保护这段查找/插入。
+static std::mutex g_mapMutex;
+
 TenviMap* TenviData::get_map(DWORD id) {
+	std::lock_guard<std::mutex> lock(g_mapMutex);
+
 	// map data is already loaded
 	for (auto map : data_map) {
 		if (map->GetID() == id) {
