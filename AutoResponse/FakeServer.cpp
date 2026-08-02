@@ -2,7 +2,7 @@
 #include"AutoResponse.h"
 #include"TemporaryData.h"
 
-TenviAccount TA;
+thread_local TenviAccount TA; // [MP] è§ FakeServer.h: æŒ‰è¿æ¥çº¿ç¨‹éš”ç¦»ä¼šè¯
 // ========== TENVI Packet Response ==========
 #define TENVI_VERSION 0x1023
 
@@ -507,7 +507,7 @@ void PlayerHitPacket(TenviCharacter &chr) {
 	ServerPacket sp(SP_PLAYER_HIT);
 	sp.Encode4(1); // 0048693A
 	sp.Encode4(chr.id); // 00486941
-	sp.Encode4(0); // 0045D825, 0 or 4,8 (“_–Å)
+	sp.Encode4(0); // 0045D825, 0 or 4,8 (ï¿½_ï¿½ï¿½)
 	sp.Encode2(0); // 0045D82F
 	sp.Encode1(1); // 0045D83C, hit count
 	sp.Encode2(1337); // 0045D84D, damage
@@ -547,41 +547,41 @@ void PlayerStatPacket(TenviCharacter &chr) {
 	sp.Encode2(4000); // 00495713, MAXHP
 	sp.Encode2(1000); // 0049572F, MP
 	sp.Encode2(2000); // 0049574B, MAXMP
-	sp.Encode2(chr.stat_str); // 00495767, —Í (STR)
-	sp.Encode2(chr.stat_dex); // 00495783, •q· (DEX)
-	sp.Encode2(chr.stat_hp); // 0049579F, ‘Ì—Í (HP)
-	sp.Encode2(chr.stat_int); // 004957BB, ’m”\ (INT)
-	sp.Encode2(chr.stat_mp); // 004957D7, ’mŒb (MP)
-	sp.Encode2(988); // 004957F3, •¨—ƒ_ƒ[ƒW Min
-	sp.Encode2(1006); // 0049580F, •¨—ƒ_ƒ[ƒW Max
-	sp.Encode2(1000); // 0049582B, •¨—UŒ‚—Í
-	sp.Encode2(2718); // 00495847, –‚–@UŒ‚—Í
-	sp.Encode2(1887); // 00495863, –hŒä—Í
-	sp.Encode2(9130); // 0049587F, •¨—–½’†—¦
-	sp.Encode2(9763); // 004958A7, –‚–@–½’†—¦
-	sp.Encode2(129); // 004958CF, ‰ñ”ğ—¦
-	sp.Encode2(189); // 004958F7, •¨—ƒNƒŠƒeƒBƒJƒ‹
-	sp.Encode2(2279); // 0049591F, –‚–@ƒNƒŠƒeƒBƒJƒ‹
+	sp.Encode2(chr.stat_str); // 00495767, ï¿½ï¿½ (STR)
+	sp.Encode2(chr.stat_dex); // 00495783, ï¿½qï¿½ï¿½ (DEX)
+	sp.Encode2(chr.stat_hp); // 0049579F, ï¿½Ì—ï¿½ (HP)
+	sp.Encode2(chr.stat_int); // 004957BB, ï¿½mï¿½\ (INT)
+	sp.Encode2(chr.stat_mp); // 004957D7, ï¿½mï¿½b (MP)
+	sp.Encode2(988); // 004957F3, ï¿½ï¿½ï¿½ï¿½ï¿½_ï¿½ï¿½ï¿½[ï¿½W Min
+	sp.Encode2(1006); // 0049580F, ï¿½ï¿½ï¿½ï¿½ï¿½_ï¿½ï¿½ï¿½[ï¿½W Max
+	sp.Encode2(1000); // 0049582B, ï¿½ï¿½ï¿½ï¿½ï¿½Uï¿½ï¿½ï¿½ï¿½
+	sp.Encode2(2718); // 00495847, ï¿½ï¿½ï¿½@ï¿½Uï¿½ï¿½ï¿½ï¿½
+	sp.Encode2(1887); // 00495863, ï¿½hï¿½ï¿½ï¿½
+	sp.Encode2(9130); // 0049587F, ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+	sp.Encode2(9763); // 004958A7, ï¿½ï¿½ï¿½@ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+	sp.Encode2(129); // 004958CF, ï¿½ï¿½ï¿½
+	sp.Encode2(189); // 004958F7, ï¿½ï¿½ï¿½ï¿½ï¿½Nï¿½ï¿½ï¿½eï¿½Bï¿½Jï¿½ï¿½
+	sp.Encode2(2279); // 0049591F, ï¿½ï¿½ï¿½@ï¿½Nï¿½ï¿½ï¿½eï¿½Bï¿½Jï¿½ï¿½
 
 	if (GetRegion() == TENVI_KRX) {
 		sp.Encode2(0);
 	}
 
-	sp.Encode2(131); // 00495947, ”òsƒXƒs[ƒh
-	sp.Encode2(100); // 0049596F, •àsƒXƒs[ƒh
-	sp.Encode2(22); // 00495997, ‰Š’ïR—Í
-	sp.Encode2(23); // 004959B3, •X’ïR—Í
+	sp.Encode2(131); // 00495947, ï¿½ï¿½sï¿½Xï¿½sï¿½[ï¿½h
+	sp.Encode2(100); // 0049596F, ï¿½ï¿½ï¿½sï¿½Xï¿½sï¿½[ï¿½h
+	sp.Encode2(22); // 00495997, ï¿½ï¿½ï¿½ï¿½Rï¿½ï¿½
+	sp.Encode2(23); // 004959B3, ï¿½Xï¿½ï¿½Rï¿½ï¿½
 
 	if (GetRegion() != TENVI_KRX) {
-		sp.Encode2(24); // 004959CF, ¶’ïR—Í
+		sp.Encode2(24); // 004959CF, ï¿½ï¿½ï¿½ï¿½Rï¿½ï¿½
 	}
 
-	sp.Encode2(25); // 004959EB, Œõ’ïR—Í
-	sp.Encode2(26); // 00495A07, ˆÅ’ïR—Í
+	sp.Encode2(25); // 004959EB, ï¿½ï¿½ï¿½ï¿½Rï¿½ï¿½
+	sp.Encode2(26); // 00495A07, ï¿½Å’ï¿½Rï¿½ï¿½
 
 	if (GetRegion() != TENVI_KRX) {
-		sp.Encode2(0); // 00495A23, —Í·•ª
-		sp.Encode2(0); // 00495A42, •q··•ª
+		sp.Encode2(0); // 00495A23, ï¿½Íï¿½ï¿½ï¿½
+		sp.Encode2(0); // 00495A42, ï¿½qï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 		sp.Encode2(0); // 00495A61
 		sp.Encode2(0); // 00495A80
 		sp.Encode2(0); // 00495A9F
@@ -644,19 +644,19 @@ void WorldMapUpdatePacketTest(BYTE area_code) {
 
 	std::vector<BYTE> activated_area;
 
-	activated_area.push_back(8); // ƒVƒ‹ƒ”ƒ@ƒAƒCƒ‰ƒ“ƒh
-	activated_area.push_back(2); // ƒŠƒuƒ‰ƒAƒCƒ‰ƒ“ƒh
-	activated_area.push_back(5); // ƒ^ƒŠ[B1ƒAƒCƒ‰ƒ“ƒh
-	activated_area.push_back(6); // ƒ~ƒmƒXƒAƒCƒ‰ƒ“ƒh
+	activated_area.push_back(8); // ï¿½Vï¿½ï¿½ï¿½ï¿½ï¿½@ï¿½Aï¿½Cï¿½ï¿½ï¿½ï¿½ï¿½h
+	activated_area.push_back(2); // ï¿½ï¿½ï¿½uï¿½ï¿½ï¿½Aï¿½Cï¿½ï¿½ï¿½ï¿½ï¿½h
+	activated_area.push_back(5); // ï¿½^ï¿½ï¿½ï¿½[B1ï¿½Aï¿½Cï¿½ï¿½ï¿½ï¿½ï¿½h
+	activated_area.push_back(6); // ï¿½~ï¿½mï¿½Xï¿½Aï¿½Cï¿½ï¿½ï¿½ï¿½ï¿½h
 
 	if (GetRegion() != TENVI_HK) {
-		activated_area.push_back(1); // ƒrƒLƒEƒBƒj[ƒAƒCƒ‰ƒ“ƒh
-		activated_area.push_back(3); // ƒtƒ@ƒ“ƒgƒ€ƒAƒCƒ‰ƒ“ƒh
-		activated_area.push_back(4); // ƒvƒ`ƒ|ƒ`ƒp[ƒN
+		activated_area.push_back(1); // ï¿½rï¿½Lï¿½Eï¿½Bï¿½jï¿½[ï¿½Aï¿½Cï¿½ï¿½ï¿½ï¿½ï¿½h
+		activated_area.push_back(3); // ï¿½tï¿½@ï¿½ï¿½ï¿½gï¿½ï¿½ï¿½Aï¿½Cï¿½ï¿½ï¿½ï¿½ï¿½h
+		activated_area.push_back(4); // ï¿½vï¿½`ï¿½|ï¿½`ï¿½pï¿½[ï¿½N
 	}
 
 	if (GetRegion() == TENVI_HK || GetRegion() == TENVI_KR || GetRegion() == TENVI_KRX) {
-		activated_area.push_back(7); // ŠW˜±”Ë
+		activated_area.push_back(7); // ï¿½Wï¿½ï¿½ï¿½ï¿½
 	}
 
 	sp.Encode1(activated_area.size()); // Number of Islands
