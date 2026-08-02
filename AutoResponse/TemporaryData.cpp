@@ -4,7 +4,8 @@ DWORD TenviCharacter::id_counter = 1337;
 
 // new character
 TenviCharacter::TenviCharacter(std::wstring nName, BYTE nJob_Mask, WORD nJob, WORD nSkin, WORD nHair, WORD nFace, WORD nCloth, WORD nGColor, std::vector<WORD> &nGEquipped) {
-	id = id_counter++;
+	// [MP] 多个玩家线程可能同时创角, 用原子自增避免撞 ID
+	id = (DWORD)InterlockedIncrement((volatile LONG *)&id_counter);
 	name = nName;
 	job_mask = nJob_Mask; // gender and job
 	job = nJob;
