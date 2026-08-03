@@ -196,15 +196,25 @@ void (__thiscall *_ProcessPacketCaller)(void *) = NULL;
 static int mp_frame_count = 0;
 void __fastcall ProcessPacketCaller_Hook(void *ecx) {
 	_ProcessPacketCaller(ecx);
-	// [DIAG] 帧计数器：精确定位崩在第几帧
+	// [DIAG] Frame counter
 	mp_frame_count++;
 	if (mp_frame_count <= 30 || mp_frame_count % 10 == 0) {
 		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 		if (f) { fprintf(f, "[FRAME %d] ProcessPacketCaller end\n", mp_frame_count); fflush(f); fclose(f); }
 	}
-	// [MP] 每帧把服务端发来的明文包注入客户端
+	// [MP] Inject server packets into client
 	MP_Pump();
+	// [DIAG] Post-pump: confirm MP_Pump returned safely
+	if (mp_frame_count > 2190) {
+		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+		if (f) { fprintf(f, "[FRAME %d] after MP_Pump OK\n", mp_frame_count); fflush(f); fclose(f); }
+	}
 	DelayExecution();
+	// [DIAG] Post-delay: confirm entire frame completed
+	if (mp_frame_count > 2190) {
+		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+		if (f) { fprintf(f, "[FRAME %d] after DelayExecution OK\n", mp_frame_count); fflush(f); fclose(f); }
+	}
 }
 
 bool AutoResponseHook() {
