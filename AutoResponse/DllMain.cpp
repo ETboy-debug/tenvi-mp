@@ -4,6 +4,8 @@
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 	if (fdwReason == DLL_PROCESS_ATTACH) {
+		// [DIAG] 每次启动清空诊断日志
+		{ FILE *f = fopen("D:/mp_diag.log", "w"); if (f) { fprintf(f, "=== DLL attach ===\n"); fclose(f); } }
 		DisableThreadLibraryCalls(hinstDLL);
 		LoadRegionConfig(hinstDLL);
 		tenvi_data.set_xml_path(GetXMLPath());
