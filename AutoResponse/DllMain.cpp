@@ -30,7 +30,7 @@ LONG WINAPI CrashHandler(_EXCEPTION_POINTERS *ei) {
 // v18 rule: VEH body only modifies EIP and increments a counter. Nothing else.
 // Diagnostics: check g_veh_skip_count after crash, or look for [VEH] in diag.log.
 // Shared across DllMain.cpp (define) and AutoResponse.cpp (extern read) for VEH diagnostics
-volatile LONG g_veh_skip_count = 0;
+volatile long g_veh_skip_count = 0;
 
 LONG WINAPI VectoredHandler(_EXCEPTION_POINTERS *ei) {
 	// Only handle access violations (NULL deref)
