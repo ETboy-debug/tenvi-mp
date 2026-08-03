@@ -154,9 +154,10 @@ void __fastcall EnterSendPacket_Hook(OutPacket *op) {
 			fflush(f); fclose(f);
 		}
 	}
-	// [MP] 原始发送流程——没有真实连接时可能崩溃！
-	// 先诊断：如果日志显示角色列表后有出站包，说明崩在这里
-	_EnterSendPacket(op);
+	// [MP] 原始发送流程已跳过——没有真实 socket 连接,
+	// _EnterSendPacket 会访问无效连接对象导致崩溃。
+	// 出站包已通过上面的 MP_SendGame 桥接到独立服务端。
+	// _EnterSendPacket(op); // REMOVED: causes crash on fake connection
 }
 
 void (__thiscall *_ProcessPacketCaller)(void *) = NULL;
