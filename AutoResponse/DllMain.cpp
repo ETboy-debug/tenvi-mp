@@ -85,6 +85,7 @@ static int EstimateInstrLen(BYTE *addr) {
 	if (b0 == 0x85) {
 		byte modrm = b1;
 		int mod = (modrm >> 6) & 3;
+		int rm = modrm & 7;
 		if (mod == 3) return 2;
 		if (mod == 0 && rm == 4) return 6;
 		if (mod == 0 && rm == 5) return 6;
