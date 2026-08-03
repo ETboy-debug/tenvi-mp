@@ -80,7 +80,7 @@ void DelayExecution() {
 // [FIX v3] 原子批处理：先把队列中所有包取到本地缓冲，再一口气注入。
 // 这样客户端原始代码不会在包序列中间插队（如换地图后发确认包打断出生包）。
 void MP_Pump() {
-	// Step 1: 原子取出队列中所有可用包
+	// Step 1: atomically pop all packets from queue
 	std::vector<std::vector<BYTE>> batch;
 	std::vector<BYTE> packet;
 	while (MP_PopPacket(packet)) {
@@ -88,7 +88,7 @@ void MP_Pump() {
 	}
 	if (batch.empty()) return;
 
-	// Step 2: 一口气注入全部包（无中间态，不给客户端插队机会）
+	// Step 2: inject all packets at once (no client interleaving)
 	for (size_t i = 0; i < batch.size(); i++) {
 		const std::vector<BYTE> &bp = batch[i];
 		BYTE opcode = bp.size() > 0 ? bp[0] : 0xFF;
@@ -188,12 +188,6 @@ void __fastcall EnterSendPacket_Hook(OutPacket *op) {
 void (__thiscall *_ProcessPacketCaller)(void *) = NULL;
 static int mp_frame_count = 0;
 void __fastcall ProcessPacketCaller_Hook(void *ecx) {
-	mp_frame_count++;
-	// [DIAG] 每帧开始时打标记（在 _ProcessPacketCaller 之前）
-	if (mp_frame_count > 2880) {  // 只在进地图阶段打，避免日志爆炸
-		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
-		if (f) { fprintf(f, "[FRAME %d] _ProcessPacketCaller start\n", mp_frame_count); fflush(f); fclose(f); }
-	}
 	_ProcessPacketCaller(ecx);
 	// [DIAG] 帧计数器：精确定位崩在第几帧
 	mp_frame_count++;
@@ -201,7 +195,7 @@ void __fastcall ProcessPacketCaller_Hook(void *ecx) {
 		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 		if (f) { fprintf(f, "[FRAME %d] ProcessPacketCaller end\n", mp_frame_count); fflush(f); fclose(f); }
 	}
-	// [MP] 每帧把服务端发来的包注入客户端
+	// [MP] 每帧把服务端发来的明文包注入客户端
 	MP_Pump();
 	DelayExecution();
 }
