@@ -46,6 +46,10 @@ void ProcessPacketExec(std::vector<BYTE> &packet, bool context = true) {
 	ip.packet = &buffer[0]; // real buffer
 	ip.length = (WORD)buffer.size(); // real buffer size
 
+	{
+		FILE *f = fopen("D:/mp_diag.log", "a");
+		if (f) { fprintf(f, "Exec op=%02X len=%d\n", packet.size()>0?packet[0]:0, (int)packet.size()); fflush(f); fclose(f); }
+	}
 	return OnPacketDirectExec(&ip, context);
 }
 
@@ -80,6 +84,10 @@ void MP_Pump() {
 		if (!MP_PopPacket(packet)) {
 			break;
 		}
+		{
+			FILE *f = fopen("D:/mp_diag.log", "a");
+			if (f) { fprintf(f, "MP_Pump inject op=%02X len=%d\n", packet.size()>0?packet[0]:0, (int)packet.size()); fflush(f); fclose(f); }
+		}
 		ProcessPacketExec(packet);
 	}
 }
@@ -102,6 +110,8 @@ DWORD __fastcall LoginButton_KR_Hook(void *ecx, void *, void *, void *) {
 
 void (__thiscall *_WorldSelectButton)(void *) = NULL;
 void __fastcall WorldSelectButton_Hook(void *ecx) {
+	// [DIAG]
+	{ FILE *f = fopen("D:/mp_diag.log", "a"); if (f) { fprintf(f, "WSB clicked -> send CHARLIST\n"); fflush(f); fclose(f); } }
 	// [MP] 原始函数依赖真实游戏服务器连接(原生加密栈)，桥接模式下那个连接是假的，
 	// 调用它会访问空连接对象 -> 客户端崩溃。跳过原始调用，直接请求角色列表。
 	MP_SendCtrl(MP_CTRL_CHARLIST);
