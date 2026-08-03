@@ -211,8 +211,6 @@ void __fastcall ProcessPacketCaller_Hook(void *ecx) {
 		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 		if (f) { fprintf(f, "[FRAME %d] after MP_Pump OK\n", mp_frame_count); fflush(f); fclose(f); }
 	}
-	// [DIAG v18] Report VEH skip count so we know if the handler is working
-	{ if (g_veh_skip_count > 0) { FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[VEH] skipped %ld NULL-derefs so far\n", (long)g_veh_skip_count); fflush(f); fclose(f); } } }
 	DelayExecution();
 	// [DIAG] Post-delay: confirm entire frame completed
 	if (mp_frame_count > 2190) {
@@ -262,12 +260,19 @@ bool AutoResponseHook() {
 		SHookFunction(ConnectCaller, 0x0056A4FD);
 		SHookFunction(ProcessPacketCaller, 0x0056A579);
 
-		// [FIX v17] Removed v16 no-op patch (E9 26010000 @ 0x4947F6).
-		// The per-frame network session update function does MORE than just NULL-checks --
-		// it also maintains UI state flags that op=04 (screen transition) depends on.
-		// Full no-op caused earlier crash (0x3D3020C5) during op=04 processing.
-		// Instead, we use a precise VEH in DllMain to skip only the known crash points
-		// (0x494898 path1b, 0x494901 path2) while letting the rest of the function run.
+		// [FIX v19] Surgical byte patches at the 3 NULL-deref virtual-call sites inside the
+		// per-frame network session update function (entry 0x4947F6, epilogue 0x494923).
+		// Each site is the SAME pattern (confirmed by disassembly):
+		//   8B 01 FF 50 78   mov eax,[ecx] ; call [eax+0x78]   (ecx = connection obj = NULL)
+		//   85 C0 74 xx      test eax,eax ; je <skip>          (guards dependent code)
+		// ecx comes from `mov ecx,[esi+0x15e8/0x15ec/0x15f0]` -- all NULL because ConnectCaller
+		// returns true without initializing them. The virtual call on NULL dereferences and crashes.
+		// Fix: replace `mov eax,[ecx]; call [eax+0x78]` (5 bytes) with `xor eax,eax` + 3 NOPs.
+		// eax=0 acts as a null sentinel; the following `test eax,eax; je` skips dependent calls.
+		// No exception handling (VEH) needed -- deterministic and safe.
+		r.Patch(0x00494845, L"33 C0 90 90 90");
+		r.Patch(0x00494898, L"33 C0 90 90 90");
+		r.Patch(0x00494901, L"33 C0 90 90 90");
 
 		Addr_OnPacketClass2 = 0x006FAF70;
 		Addr_OnPacket2 = 0x004CBE34;
