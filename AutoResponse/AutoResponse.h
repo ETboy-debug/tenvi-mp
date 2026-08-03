@@ -14,8 +14,4 @@ void SendPacket(ServerPacket &sp);
 void SendPacket2(ServerPacket &sp);
 void DelaySendPacket(ServerPacket &sp);
 
-// [FIX v18] VEH skip counter — defined in DllMain.cpp, read by AutoResponse.cpp for diag logging
-// Use 'long' (not LONG) so the header is self-contained without windows.h.
-extern volatile long g_veh_skip_count;
-
 #endif
