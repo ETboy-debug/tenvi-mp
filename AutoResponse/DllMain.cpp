@@ -24,17 +24,12 @@ LONG WINAPI CrashHandler(_EXCEPTION_POINTERS *ei) {
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 
-// [FIX v17] Precise VEH - only skips known NULL-deref crashes in the per-frame
-// network session update function (0x4947F6~0x494921). All other exceptions pass through.
-// When a crash occurs at a known bad address, we redirect EIP to the function epilogue
-// (0x494921 = "ret 0x10") so the frame continues normally.
-// Known crash points from v13/v15 testing:
-//   0x494901 - path2: mov eax,[esi+0x15f0] then use eax (NULL connection slot 2)
-//   0x494898 - path1b: mov ecx,[esi+0x15ec] then call ecx (NULL connection slot 1)
-//   0x4948xx - path1a: mov edx,[esi+0x15e8] then use edx (NULL connection slot 0)
-// We cover the entire range 0x494800~0x494920 to catch any variant.
-#define CRASH_FUNC_ENTRY  0x004947F6
-#define CRASH_FUNC_EPILOGUE 0x00492921
+// [FIX v18] Minimal VEH - ZERO I/O inside exception context.
+// v17's VEH had fopen_s/fprintf inside the handler which can cause NESTED
+// exceptions in an AV context → Windows bypasses VEH and kills the process.
+// v18 rule: VEH body only modifies EIP and increments a counter. Nothing else.
+// Diagnostics: check g_veh_skip_count after crash, or look for [VEH] in diag.log.
+static volatile LONG g_veh_skip_count = 0;
 
 LONG WINAPI VectoredHandler(_EXCEPTION_POINTERS *ei) {
 	// Only handle access violations (NULL deref)
@@ -42,16 +37,12 @@ LONG WINAPI VectoredHandler(_EXCEPTION_POINTERS *ei) {
 		return EXCEPTION_CONTINUE_SEARCH;
 
 	DWORD crashAddr = (DWORD)ei->ExceptionRecord->ExceptionAddress;
-	// Check if crash is inside the known-bad function range
-	if (crashAddr >= 0x00494800 && crashAddr <= 0x0049920) {
-		// Log the skip
-		FILE *f = NULL;
-		fopen_s(&f, "D:/mp_diag.log", "a");
-		if (f) {
-			fprintf(f, "[VEH SKIP] NULL-deref at 0x%08X -> jump to ret\n", crashAddr);
-			fflush(f); fclose(f);
-		}
-		// Jump to function epilogue (ret 0x10) — safely exits the function
+	// Cover the entire per-frame network session update function (0x4947F6~0x494923)
+	// All three code paths dereference NULL connection object pointers:
+	//   path1a: [esi+0x15e8]  path1b: [esi+0x15ec]  path2:  [esi+0x15f0]
+	if (crashAddr >= 0x004947F6 && crashAddr <= 0x00494923) {
+		InterlockedIncrement(&g_veh_skip_count);
+		// Jump to function epilogue: 0x494921 = pop esi / pop ebp / ret 0x10
 		ei->ContextRecord->Eip = 0x00494921;
 		return EXCEPTION_CONTINUE_EXECUTION;
 	}
@@ -65,8 +56,8 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 		SetUnhandledExceptionFilter(CrashHandler);
 		// [FIX v17] Install precise VEH for NULL-deref skip in network update function
 		AddVectoredExceptionHandler(1, VectoredHandler);
-			// [DIAG] Clear diagnostic log  (V17 marker)
-			{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "w"); if (f) { fprintf(f, "=== DLL attach V17 ===\n"); fclose(f); } }
+		// [DIAG] Clear diagnostic log  (V18 marker)
+			{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "w"); if (f) { fprintf(f, "=== DLL attach V18 ===\n"); fclose(f); } }
 		{ FILE *f = NULL; fopen_s(&f, "D:/mp_crash.log", "w"); if (f) { fprintf(f, "=== crash log ===\n"); fclose(f); } }
 		DisableThreadLibraryCalls(hinstDLL);
 		LoadRegionConfig(hinstDLL);
