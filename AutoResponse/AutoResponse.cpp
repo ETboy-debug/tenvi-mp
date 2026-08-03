@@ -260,9 +260,12 @@ bool AutoResponseHook() {
 		SHookFunction(ConnectCaller, 0x0056A4FD);
 		SHookFunction(ProcessPacketCaller, 0x0056A579);
 
-		// [MP v13] No code patches needed. The connection object is now created
-		// by the client itself (via the restored native send in EnterSendPacket_Hook),
-		// matching stock TenviTest. The earlier 0x494890 / 0x463972 patches are removed.
+		// [FIX v14] Skip crash in per-frame network session update function.
+		// Tenvi.exe 0x00494901: MOV EAX,[ECX] crashes because connection object
+		// at [ESI+0x15F0] is NULL (ConnectCaller returned true without full init).
+		// Patch: change "je path2" at 0x00494890 to "jmp epilogue" to skip it.
+		// Original: 74 66 (je +102)  Patched: EB 8F (jmp +143)
+		r.Patch(0x00494890, L"EB 8F");
 
 		Addr_OnPacketClass2 = 0x006FAF70;
 		Addr_OnPacket2 = 0x004CBE34;
