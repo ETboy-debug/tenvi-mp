@@ -156,25 +156,15 @@ void __fastcall WorldSelectButton_Hook(void *ecx) {
 bool (__thiscall *_ConnectCaller)(void *ecx, void *v1, void *v2, void *v3) = NULL;
 static int connect_call_count = 0;
 
-// [FIX v11] Fake connection object - allocated statically so address never changes.
-// The client's CWvsContext+0x180 must hold a valid pointer; the original ConnectCaller
-// allocates this via operator new + socket init. We bypass all that and plant a
-// zeroed dummy here. 4KB should cover any field the client reads from this struct.
-static unsigned char g_fake_connection_obj[4096];
-
 bool __fastcall ConnectCaller_Hook(void *ecx, void *edx, void *v1, void *v2, void *v3) {
 	connect_call_count++;
 	DEBUG(L"Connect is called!");
-	// [DIAG] 记录 ConnectCaller 调用次数
-	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[CONNECT #%d] fake_conn=0x%p\n", connect_call_count, (void*)g_fake_connection_obj); fflush(f); fclose(f); } }
-	// [FIX v11] Plant fake connection object pointer at CWvsContext+0x180.
-	// This is what the getter at 0x00463972 reads: MOV EAX,[ECX+0x180]; RET
-	// Without this, that getter returns NULL -> caller dereferences -> crash every frame.
-	// We also patch the getter itself (in AutoResponseHook/TENVI_CN) as belt-and-suspenders.
-	DWORD *pCtx = *(DWORD **)0x006FAF44; // CWvsContext global for CN v126
-	if (pCtx) {
-		*(DWORD **)((char *)pCtx + 0x180) = (DWORD *)g_fake_connection_obj;
-	}
+	// [DIAG] log connect attempt
+	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[CONNECT #%d]\n", connect_call_count); fflush(f); fclose(f); } }
+	// [MP v13] Like stock TenviTest: just pretend the connection succeeded.
+	// The client creates its own connection object in the post-connect flow, and
+	// finalizes it on the first native send (see EnterSendPacket_Hook). Our earlier
+	// attempts to plant a fake object pointer broke single-player startup.
 	return true;
 }
 
@@ -193,16 +183,15 @@ void __fastcall EnterSendPacket_Hook(OutPacket *op) {
 			fflush(f); fclose(f);
 		}
 	}
-	// [MP] During batch injection, skip the ORIGINAL send only.
-	// The original _EnterSendPacket accesses fake connection object -> crash.
-	// But we still MP_SendGame above so server gets the message and continues sending.
-	if (g_mp_in_batch) return;  // <-- skip _EnterSendPacket only
+	// [MP] During batch injection, skip the ORIGINAL send so injected packets
+	// are not echoed back to the server.
+	if (g_mp_in_batch) return;
 
-	// [MP] Non-batch: also run original send (for login phase etc.)
-	// _EnterSendPacket(op);  // REMOVED: never call original (no real socket)
-	// _EnterSendPacket 会访问无效连接对象导致崩溃。
-	// 出站包已通过上面的 MP_SendGame 桥接到独立服务端。
-	// _EnterSendPacket(op); // REMOVED: causes crash on fake connection
+	// [CRITICAL v13] Call the ORIGINAL native send. This is what makes the client
+	// create/initialize its connection object (CWvsContext+0x180). Without it,
+	// the per-frame getter at 0x00463972 reads a NULL object and crashes every
+	// frame. This matches stock TenviTest single-player behavior.
+	_EnterSendPacket(op);
 }
 
 void (__thiscall *_ProcessPacketCaller)(void *) = NULL;
@@ -271,34 +260,9 @@ bool AutoResponseHook() {
 		SHookFunction(ConnectCaller, 0x0056A4FD);
 		SHookFunction(ProcessPacketCaller, 0x0056A579);
 
-		// [MP FIX v9] Prevent crash in network session update function.
-		// Tenvi.exe 0x00494901: MOV EAX,[ECX] crashes because [ESI+0x15F0]==NULL
-		// (ConnectCaller returned true without initializing connection objects).
-		// Patch: change "je path2" at 0x00494890 to "jmp epilogue" so that
-		// when connection objects are NULL, we skip the crash path entirely.
-		// Original: 74 66 (je +102 -> path2 at 0x4948F8)
-		// Patched:  EB 8F (jmp +143 -> epilogue at 0x494921)
-		r.Patch(0x00494890, L"EB 8F");
-
-		// [FIX v11] Patch the connection-object getter at 0x00463972 to return
-		// our fake connection object address instead of reading [CWvsContext+0x180].
-		// Original: 8B 81 80 01 00 00  C3   (MOV EAX,[ECX+0x180]; RET) = 7 bytes
-		// Patched:  B8 XX XX XX XX       C3   (MOV EAX, imm32; RET) = 6 bytes
-		// We use a 7-byte form to fill the same space: B8 addr C3 90 (MOV+EAX+NOP)
-		{
-			char patch[8];
-			patch[0] = 0xB8; // MOV EAX, imm32
-			DWORD fakeAddr = (DWORD)(void*)g_fake_connection_obj;
-			memcpy(&patch[1], &fakeAddr, 4); // little-endian address
-			patch[5] = 0xC3; // RET
-			patch[6] = 0x90; // NOP (pad to 7 bytes to match original length region)
-			wchar_t patchStr[32];
-			for (int i = 0; i < 7; i++) {
-				wsprintfW(patchStr + i*2, L"%02X", (unsigned char)patch[i]);
-			}
-			patchStr[14] = 0;
-			r.Patch(0x00463972, patchStr);
-		}
+		// [MP v13] No code patches needed. The connection object is now created
+		// by the client itself (via the restored native send in EnterSendPacket_Hook),
+		// matching stock TenviTest. The earlier 0x494890 / 0x463972 patches are removed.
 
 		Addr_OnPacketClass2 = 0x006FAF70;
 		Addr_OnPacket2 = 0x004CBE34;
