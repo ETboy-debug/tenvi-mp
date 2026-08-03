@@ -227,22 +227,22 @@ void __fastcall ProcessPacketCaller_Hook(void *ecx) {
 typedef void (__fastcall *NetSessionUpdatePath2Fn)(void *thisPtr);
 static NetSessionUpdatePath2Fn _NetSessionUpdatePath2_Orig = NULL;
 
-static void __fastcall NetSessionUpdate_Path2_Hook(void *thisPtr) {
+void __fastcall NetSessionUpdate_Path2_Hook(void *thisPtr) {
 	// thisPtr is in ESI (game state structure base)
-	// Check offset 0x15F0 — the pointer that gets dereferenced causing the crash
+	// Check offset 0x15F0 - the pointer that gets dereferenced causing the crash
 	DWORD *state = (DWORD *)thisPtr;
 	DWORD objPtr = state[0x15F0 / 4];  // [ESI + 0x15F0]
 
 	if (objPtr == 0) {
-		// All connection objects are NULL — skip to avoid crash
+		// All connection objects are NULL - skip to avoid crash
 		// Original path2 does: push edi; lea edi,[esi+0x15F0]; mov ecx,[edi];
-		// mov eax,[ecx]<<CRASH; call [eax+78]; ...; pop edi; <epilogue>
+		// mov eax,[ecx] then deref NULL -> crash; call [eax+78]; ...; pop edi; <epilogue>
 		// We skip all of it. Epilogue (pop esi; pop ebp; ret 0x10) is handled
 		// by the remaining original bytes after our hook point.
 		return;
 	}
 
-	// Pointer is valid — execute original path2 normally
+	// Pointer is valid - execute original path2 normally
 	_NetSessionUpdatePath2_Orig(thisPtr);
 }
 
