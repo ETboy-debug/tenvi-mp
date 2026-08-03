@@ -217,6 +217,35 @@ void __fastcall ProcessPacketCaller_Hook(void *ecx) {
 	}
 }
 
+// [MP FIX v9] Crash fix for Tenvi.exe network session update function.
+// CRASH: 0xC0000005 at Tenvi.exe 0x00494901 (MOV EAX,[ECX] where ECX=[ESI+0x15F0]==NULL)
+// ROOT CAUSE: ConnectCaller returns true without initializing connection objects at
+//   game state offsets 0x15E8 / 0x15EC / 0x15F0. This function is called every frame
+//   from the main loop; when all three objects are NULL it takes path2 which dereferences NULL.
+// FIX: Hook at path2 entry (0x004948F8). If the pointer at [ESI+0x15F0] is NULL,
+//   skip the entire crash path (function epilogue at 0x494921 handles cleanup).
+typedef void (__fastcall *NetSessionUpdatePath2Fn)(void *thisPtr);
+static NetSessionUpdatePath2Fn _NetSessionUpdatePath2_Orig = NULL;
+
+static void __fastcall NetSessionUpdate_Path2_Hook(void *thisPtr) {
+	// thisPtr is in ESI (game state structure base)
+	// Check offset 0x15F0 — the pointer that gets dereferenced causing the crash
+	DWORD *state = (DWORD *)thisPtr;
+	DWORD objPtr = state[0x15F0 / 4];  // [ESI + 0x15F0]
+
+	if (objPtr == 0) {
+		// All connection objects are NULL — skip to avoid crash
+		// Original path2 does: push edi; lea edi,[esi+0x15F0]; mov ecx,[edi];
+		// mov eax,[ecx]<<CRASH; call [eax+78]; ...; pop edi; <epilogue>
+		// We skip all of it. Epilogue (pop esi; pop ebp; ret 0x10) is handled
+		// by the remaining original bytes after our hook point.
+		return;
+	}
+
+	// Pointer is valid — execute original path2 normally
+	_NetSessionUpdatePath2_Orig(thisPtr);
+}
+
 bool AutoResponseHook() {
 	Rosemary r;
 
@@ -257,6 +286,9 @@ bool AutoResponseHook() {
 		SHookFunction(EnterSendPacket, 0x0056AADB);
 		SHookFunction(ConnectCaller, 0x0056A4FD);
 		SHookFunction(ProcessPacketCaller, 0x0056A579);
+
+		// [MP FIX v9] Prevent crash when connection objects are NULL (0x15E8/0x15EC/0x15F0)
+		SHookFunction(NetSessionUpdate_Path2, 0x004948F8);
 
 		Addr_OnPacketClass2 = 0x006FAF70;
 		Addr_OnPacket2 = 0x004CBE34;
