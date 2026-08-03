@@ -260,12 +260,15 @@ bool AutoResponseHook() {
 		SHookFunction(ConnectCaller, 0x0056A4FD);
 		SHookFunction(ProcessPacketCaller, 0x0056A579);
 
-		// [FIX v14] Skip crash in per-frame network session update function.
+		// [FIX v15] Disable crash in per-frame network session update function.
 		// Tenvi.exe 0x00494901: MOV EAX,[ECX] crashes because connection object
-		// at [ESI+0x15F0] is NULL (ConnectCaller returned true without full init).
-		// Patch: change "je path2" at 0x00494890 to "jmp epilogue" to skip it.
-		// Original: 74 66 (je +102)  Patched: EB 8F (jmp +143)
-		r.Patch(0x00494890, L"EB 8F");
+		// at [ESI+0x15F0] is NULL. The "je path2" at 0x00494890 falls into path2
+		// (crash) when the condition is met. We NOP out the conditional jump so
+		// execution ALWAYS falls through to path1 (normal connected behavior).
+		// v14 used EB 8F (unconditional jmp) which incorrectly skipped path1 too,
+		// causing regression back to channel-select crash at 0x463972.
+		// Original: 74 66 (je +102 -> path2)   Patched: 90 90 (NOP NOP -> always path1)
+		r.Patch(0x00494890, L"90 90");
 
 		Addr_OnPacketClass2 = 0x006FAF70;
 		Addr_OnPacket2 = 0x004CBE34;
