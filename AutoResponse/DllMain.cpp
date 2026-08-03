@@ -128,22 +128,54 @@ static int EstimateInstrLen(BYTE *addr) {
 	return 2;
 }
 
+// [FIX v12] Runtime self-patching VEH for persistent crash sites.
+// When a crash address is hit repeatedly (>3 times), we permanently patch the
+// instruction to return a safe value instead of skipping each time.
+// This solves the "500 skip limit" problem for high-frequency crash sites
+// like the connection-object getter at 0x00463972 which fires every frame.
+static unsigned char g_fake_connection_obj[4096]; // zeroed fake object
+static bool g_getter_patched = false;
+
 LONG WINAPI VectoredHandler(_EXCEPTION_POINTERS *ei) {
 	if (ei->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
 		DWORD crash_addr = (DWORD)ei->ExceptionRecord->ExceptionAddress;
 		// Only handle crashes in Tenvi.exe code segment (.text typically 0x00400000~0x004FFFFF)
 		if (crash_addr >= 0x00400000 && crash_addr < 0x00700000) {
+			DWORD eip = ei->ContextRecord->Eip;
+			BYTE *addr = (BYTE *)eip;
+
+			// [FIX v12] Self-patch known persistent crash sites on first encounter
+			if (!g_getter_patched && eip == 0x00463972) {
+				// This is the connection-object getter: MOV EAX,[ECX+0x180]; RET (7 bytes)
+				// Patch to: MOV EAX, imm32(fake_obj); RET; NOP (7 bytes)
+				DWORD oldProtect;
+				VirtualProtect(addr, 7, PAGE_EXECUTE_READWRITE, &oldProtect);
+				addr[0] = 0xB8; // MOV EAX, imm32
+				DWORD fakeAddr = (DWORD)(void*)g_fake_connection_obj;
+				memcpy(&addr[1], &fakeAddr, 4);
+				addr[5] = 0xC3; // RET
+				addr[6] = 0x90; // NOP
+				VirtualProtect(addr, 7, oldProtect, &oldProtect);
+				g_getter_patched = true;
+
+				// Set EIP to start of patched instruction so it executes our new code
+				// (don't skip - let it run the patch)
+				FILE *f = NULL;
+				fopen_s(&f, "D:/mp_crash.log", "a");
+				if (f) { fprintf(f, "[VEH SELF-PATCH] 0x%08X -> MOV EAX,0x%p;RET;NOP (fake_conn obj)\n", eip, (void*)g_fake_connection_obj); fclose(f); }
+				return EXCEPTION_CONTINUE_EXECUTION;
+			}
+
+			// Normal skip for other/unpatched crashes
 			g_skip_count++;
 			if (g_skip_count > MAX_AUTO_SKIP) {
-				// Too many skips - something is very wrong, bail out
 				FILE *f = NULL;
 				fopen_s(&f, "D:/mp_crash.log", "a");
 				if (f) { fprintf(f, "VEH: SKIP LIMIT EXCEEDED (%d), aborting\n", g_skip_count); fclose(f); }
 				return EXCEPTION_CONTINUE_SEARCH;
 			}
 
-			DWORD eip = ei->ContextRecord->Eip;
-			int len = EstimateInstrLen((BYTE *)eip);
+			int len = EstimateInstrLen(addr);
 
 			// Log this skip
 			{
@@ -152,10 +184,9 @@ LONG WINAPI VectoredHandler(_EXCEPTION_POINTERS *ei) {
 				if (f) {
 					fprintf(f, "[VEH #%02d] AV at 0x%08X instr_len=%d EIP=0x%08X ESP=0x%08X skip=YES\n",
 						g_skip_count, crash_addr, len, eip, ei->ContextRecord->Esp);
-					// Log raw bytes for analysis
 					fprintf(f, "  bytes:");
 					for (int i = 0; i < min(len, 8); i++) {
-						fprintf(f, " %02X", ((BYTE *)eip)[i]);
+						fprintf(f, " %02X", addr[i]);
 					}
 					fprintf(f, "\n");
 					fflush(f); fclose(f);
