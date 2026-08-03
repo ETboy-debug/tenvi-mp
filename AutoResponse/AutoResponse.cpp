@@ -79,6 +79,10 @@ void DelayExecution() {
 // 必须在客户端主线程执行, 所以挂在 ProcessPacketCaller 这个每帧轮询点上。
 // [FIX v3] 原子批处理：先把队列中所有包取到本地缓冲，再一口气注入。
 // 这样客户端原始代码不会在包序列中间插队（如换地图后发确认包打断出生包）。
+// [MP] Batch guard: suppress all client sends during packet injection batch
+// to prevent client-side state corruption (e.g. op=1E during op=10 processing)
+static bool g_mp_in_batch = false;
+
 void MP_Pump() {
 	std::vector<std::vector<BYTE>> batch;
 	std::vector<BYTE> packet;
@@ -87,6 +91,7 @@ void MP_Pump() {
 	}
 	if (batch.empty()) return;
 
+	g_mp_in_batch = true;  // <-- START guard: block all EnterSendPacket during batch
 	for (size_t i = 0; i < batch.size(); i++) {
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
@@ -110,6 +115,7 @@ void MP_Pump() {
 		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 		if (f) { fprintf(f, "=== BATCH END (%d) ===\n", (int)batch.size()); fflush(f); fclose(f); }
 	}
+	g_mp_in_batch = false;  // <-- END guard: allow sends again
 }
 
 // Login Button Click
@@ -162,6 +168,11 @@ bool __fastcall ConnectCaller_Hook(void *ecx, void *edx, void *v1, void *v2, voi
 
 void(__thiscall *_EnterSendPacket)(OutPacket *) = NULL;
 void __fastcall EnterSendPacket_Hook(OutPacket *op) {
+	// [MP] During batch injection, completely suppress client sends.
+	// Client may try to send op=1E etc. while processing injected packets
+	// (e.g. during op=10 ChangeMap), which causes state corruption / crash.
+	if (g_mp_in_batch) return;  // <-- silently drop
+
 	// [MP] 此处拿到的是加密前的明文包, 直接桥接给独立服务端
 	MP_SendGame(op->packet, op->encoded);
 	// [DIAG] 记录出站包，确认角色列表后客户端是否尝试发回包
