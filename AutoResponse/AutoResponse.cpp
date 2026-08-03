@@ -137,7 +137,18 @@ void(__thiscall *_EnterSendPacket)(OutPacket *) = NULL;
 void __fastcall EnterSendPacket_Hook(OutPacket *op) {
 	// [MP] 此处拿到的是加密前的明文包, 直接桥接给独立服务端
 	MP_SendGame(op->packet, op->encoded);
-	// 原始发送流程照常执行(没有真实连接, 会静默失败, 但保持客户端内部状态正常)
+	// [DIAG] 记录出站包，确认角色列表后客户端是否尝试发回包
+	{
+		FILE *f = NULL;
+		fopen_s(&f, "D:/mp_diag.log", "a");
+		if (f) {
+			BYTE opcode = (op->packet.size() > 0) ? op->packet[0] : 0xFF;
+			fprintf(f, "EnterSendPacket op=%02X len=%d\n", opcode, (int)op->packet.size());
+			fflush(f); fclose(f);
+		}
+	}
+	// [MP] 原始发送流程——没有真实连接时可能崩溃！
+	// 先诊断：如果日志显示角色列表后有出站包，说明崩在这里
 	_EnterSendPacket(op);
 }
 
