@@ -132,8 +132,12 @@ void __fastcall WorldSelectButton_Hook(void *ecx) {
 }
 
 bool (__thiscall *_ConnectCaller)(void *ecx, void *v1, void *v2, void *v3) = NULL;
+static int connect_call_count = 0;
 bool __fastcall ConnectCaller_Hook(void *ecx, void *edx, void *v1, void *v2, void *v3) {
+	connect_call_count++;
 	DEBUG(L"Connect is called!");
+	// [DIAG] 记录 ConnectCaller 调用次数
+	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[CONNECT #%d]\n", connect_call_count); fflush(f); fclose(f); } }
 	// [MP] 客户端原生网络栈带加密, 不走它。这里照旧假装连接成功,
 	// 真正的通讯由 MPClient 那条明文 socket 承担
 	return true;
@@ -161,8 +165,15 @@ void __fastcall EnterSendPacket_Hook(OutPacket *op) {
 }
 
 void (__thiscall *_ProcessPacketCaller)(void *) = NULL;
+static int mp_frame_count = 0;
 void __fastcall ProcessPacketCaller_Hook(void *ecx) {
 	_ProcessPacketCaller(ecx);
+	// [DIAG] 帧计数器：精确定位崩在第几帧
+	mp_frame_count++;
+	if (mp_frame_count <= 30 || mp_frame_count % 10 == 0) {
+		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+		if (f) { fprintf(f, "[FRAME %d] ProcessPacketCaller end\n", mp_frame_count); fflush(f); fclose(f); }
+	}
 	// [MP] 每帧把服务端发来的包注入客户端
 	MP_Pump();
 	DelayExecution();
