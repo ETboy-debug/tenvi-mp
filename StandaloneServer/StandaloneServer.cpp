@@ -293,12 +293,9 @@ static void HandleCtrl(BYTE cmd, const BYTE *p, DWORD n) {
 		break;
 	case MP_CTRL_CHARLIST:
 		Log("ctrl: character list");
-		CharacterSelectPacket();
-		// [DIAG] 临时跳过角色列表包(0x05)，只发角色选择包(0x04)
-		// 如果只发0x04也崩 → 问题在0x04或_WorldSelectButton本身
-		// 如果只发0x04不崩 → 问题确凿在0x05的处理
-		// CharacterListPacket_Test();
-		Log("[DIAG] skipped CharacterListPacket_Test - 0x04 only");
+		// [MP] 0x04(切到角色选择屏)改由客户端 WorldSelectButton_Hook 同步注入,
+		// 避免异步时机错位导致 UI 崩溃。这里只回 0x05 真实角色数据。
+		CharacterListPacket_Test();
 		break;
 	case MP_CTRL_LOGIN: {
 		// payload[2..] 为账号名(utf8)
