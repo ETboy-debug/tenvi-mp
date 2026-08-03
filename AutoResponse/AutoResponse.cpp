@@ -168,14 +168,9 @@ bool __fastcall ConnectCaller_Hook(void *ecx, void *edx, void *v1, void *v2, voi
 
 void(__thiscall *_EnterSendPacket)(OutPacket *) = NULL;
 void __fastcall EnterSendPacket_Hook(OutPacket *op) {
-	// [MP] During batch injection, completely suppress client sends.
-	// Client may try to send op=1E etc. while processing injected packets
-	// (e.g. during op=10 ChangeMap), which causes state corruption / crash.
-	if (g_mp_in_batch) return;  // <-- silently drop
-
-	// [MP] 此处拿到的是加密前的明文包, 直接桥接给独立服务端
+	// [MP] Bridge to standalone server always (so server can respond with more packets)
 	MP_SendGame(op->packet, op->encoded);
-	// [DIAG] 记录出站包，确认角色列表后客户端是否尝试发回包
+	// [DIAG] Log outbound packet
 	{
 		FILE *f = NULL;
 		fopen_s(&f, "D:/mp_diag.log", "a");
@@ -185,7 +180,13 @@ void __fastcall EnterSendPacket_Hook(OutPacket *op) {
 			fflush(f); fclose(f);
 		}
 	}
-	// [MP] 原始发送流程已跳过——没有真实 socket 连接,
+	// [MP] During batch injection, skip the ORIGINAL send only.
+	// The original _EnterSendPacket accesses fake connection object -> crash.
+	// But we still MP_SendGame above so server gets the message and continues sending.
+	if (g_mp_in_batch) return;  // <-- skip _EnterSendPacket only
+
+	// [MP] Non-batch: also run original send (for login phase etc.)
+	// _EnterSendPacket(op);  // REMOVED: never call original (no real socket)
 	// _EnterSendPacket 会访问无效连接对象导致崩溃。
 	// 出站包已通过上面的 MP_SendGame 桥接到独立服务端。
 	// _EnterSendPacket(op); // REMOVED: causes crash on fake connection
