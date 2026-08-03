@@ -160,8 +160,15 @@ bool __fastcall ConnectCaller_Hook(void *ecx, void *edx, void *v1, void *v2, voi
 	DEBUG(L"Connect is called!");
 	// [DIAG] 记录 ConnectCaller 调用次数
 	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[CONNECT #%d]\n", connect_call_count); fflush(f); fclose(f); } }
-	// [MP] 客户端原生网络栈带加密, 不走它。这里照旧假装连接成功,
-	// 真正的通讯由 MPClient 那条明文 socket 承担
+	// [FIX v10b] CRITICAL: call original _ConnectCaller FIRST so it allocates and
+	// initializes the connection object (real socket + state struct). Without this,
+	// [CWvsContext+0x180] stays NULL and EVERY frame the client dereferences it
+	// (getter at 0x00463972) -> crash. We still force-return true so the fake
+	// connection flow continues; all real game packets are routed via MP_SendGame
+	// (EnterSendPacket_Hook), so the real socket is never used for game traffic.
+	if (_ConnectCaller) {
+		_ConnectCaller(ecx, v1, v2, v3);
+	}
 	return true;
 }
 
