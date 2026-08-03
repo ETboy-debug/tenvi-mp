@@ -80,7 +80,6 @@ void DelayExecution() {
 // [FIX v3] 原子批处理：先把队列中所有包取到本地缓冲，再一口气注入。
 // 这样客户端原始代码不会在包序列中间插队（如换地图后发确认包打断出生包）。
 void MP_Pump() {
-	// Step 1: atomically pop all packets from queue
 	std::vector<std::vector<BYTE>> batch;
 	std::vector<BYTE> packet;
 	while (MP_PopPacket(packet)) {
@@ -88,32 +87,28 @@ void MP_Pump() {
 	}
 	if (batch.empty()) return;
 
-	// Step 2: inject all packets at once (no client interleaving)
 	for (size_t i = 0; i < batch.size(); i++) {
-		const std::vector<BYTE> &bp = batch[i];
-		BYTE opcode = bp.size() > 0 ? bp[0] : 0xFF;
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
-				fprintf(f, ">> exec op=%02X len=%d\n", opcode, (int)bp.size());
+				const std::vector<BYTE> &bp = batch[i];
+				fprintf(f, ">> inject op=%02X len=%d\n", bp.size()>0?bp[0]:0, (int)bp.size());
 				fflush(f); fclose(f);
 			}
 		}
-		ProcessPacketExec(bp);
+		ProcessPacketExec(batch[i]);
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
-				fprintf(f, "<< done op=%02X\n", opcode);
+				const std::vector<BYTE> &bp = batch[i];
+				fprintf(f, "<< done op=%02X\n", bp.size()>0?bp[0]:0);
 				fflush(f); fclose(f);
 			}
 		}
 	}
 	{
 		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
-		if (f) {
-			fprintf(f, "=== BATCH END (%d packets) ===\n", (int)batch.size());
-			fflush(f); fclose(f);
-		}
+		if (f) { fprintf(f, "=== BATCH END (%d) ===\n", (int)batch.size()); fflush(f); fclose(f); }
 	}
 }
 
