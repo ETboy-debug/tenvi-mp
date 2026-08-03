@@ -77,23 +77,29 @@ void DelayExecution() {
 
 // [MP] 把独立服务端发来的明文包注入客户端。
 // 必须在客户端主线程执行, 所以挂在 ProcessPacketCaller 这个每帧轮询点上。
-// 一次最多处理 32 个, 确保"进地图"等需要连续多包的场景能在一帧内完成,
-// 避免客户端原始代码在包序列中间执行导致状态不完整崩溃。
+// [FIX v3] 原子批处理：先把队列中所有包取到本地缓冲，再一口气注入。
+// 这样客户端原始代码不会在包序列中间插队（如换地图后发确认包打断出生包）。
 void MP_Pump() {
+	// Step 1: 原子取出队列中所有可用包
+	std::vector<std::vector<BYTE>> batch;
 	std::vector<BYTE> packet;
-	for (int i = 0; i < 32; i++) {
-		if (!MP_PopPacket(packet)) {
-			break;
-		}
+	while (MP_PopPacket(packet)) {
+		batch.push_back(packet);
+	}
+	if (batch.empty()) return;
+
+	// Step 2: 一口气注入全部包（无中间态，不给客户端插队机会）
+	for (size_t i = 0; i < batch.size(); i++) {
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
-				fprintf(f, "MP_Pump inject op=%02X len=%d bytes=", packet.size()>0?packet[0]:0, (int)packet.size());
-				for (size_t i = 0; i < packet.size() && i < 220; i++) fprintf(f, "%02X ", packet[i]);
+				const std::vector<BYTE> &bp = batch[i];
+				fprintf(f, "MP_Pump inject op=%02X len=%d bytes=", bp.size()>0?bp[0]:0, (int)bp.size());
+				for (size_t j = 0; j < bp.size() && j < 220; j++) fprintf(f, "%02X ", bp[j]);
 				fprintf(f, "\n"); fflush(f); fclose(f);
 			}
 		}
-		ProcessPacketExec(packet);
+		ProcessPacketExec(batch[i]);
 	}
 }
 
