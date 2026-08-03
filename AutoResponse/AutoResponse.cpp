@@ -77,10 +77,11 @@ void DelayExecution() {
 
 // [MP] 把独立服务端发来的明文包注入客户端。
 // 必须在客户端主线程执行, 所以挂在 ProcessPacketCaller 这个每帧轮询点上。
-// 一次最多处理 4 个, 避免单帧注入过多包导致客户端逻辑打结。
+// 一次最多处理 32 个, 确保"进地图"等需要连续多包的场景能在一帧内完成,
+// 避免客户端原始代码在包序列中间执行导致状态不完整崩溃。
 void MP_Pump() {
 	std::vector<BYTE> packet;
-	for (int i = 0; i < 4; i++) {
+	for (int i = 0; i < 32; i++) {
 		if (!MP_PopPacket(packet)) {
 			break;
 		}
