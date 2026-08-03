@@ -65,12 +65,7 @@ void CharacterListPacket_Test() {
 	TA.ReloadFromDB();
 #endif
 
-	// [DIAG] 强制发0角色来定位崩因：如果空列表也崩=UI切换问题；不崩=数据字段问题
-#ifdef MP_SERVER
-	const bool DIAG_EMPTY_CHARLIST = true;
-	sp.Encode1(DIAG_EMPTY_CHARLIST ? 0 : (BYTE)TA.GetCharacters().size()); // characters
-	if (!DIAG_EMPTY_CHARLIST)
-#endif
+	sp.Encode1((BYTE)TA.GetCharacters().size()); // characters
 	for (auto &chr : TA.GetCharacters()) {
 		sp.Encode4(chr.id); // ID
 		sp.Encode1(chr.job_mask);
