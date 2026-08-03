@@ -155,19 +155,25 @@ void __fastcall WorldSelectButton_Hook(void *ecx) {
 
 bool (__thiscall *_ConnectCaller)(void *ecx, void *v1, void *v2, void *v3) = NULL;
 static int connect_call_count = 0;
+
+// [FIX v11] Fake connection object - allocated statically so address never changes.
+// The client's CWvsContext+0x180 must hold a valid pointer; the original ConnectCaller
+// allocates this via operator new + socket init. We bypass all that and plant a
+// zeroed dummy here. 4KB should cover any field the client reads from this struct.
+static unsigned char g_fake_connection_obj[4096];
+
 bool __fastcall ConnectCaller_Hook(void *ecx, void *edx, void *v1, void *v2, void *v3) {
 	connect_call_count++;
 	DEBUG(L"Connect is called!");
 	// [DIAG] 记录 ConnectCaller 调用次数
-	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[CONNECT #%d]\n", connect_call_count); fflush(f); fclose(f); } }
-	// [FIX v10b] CRITICAL: call original _ConnectCaller FIRST so it allocates and
-	// initializes the connection object (real socket + state struct). Without this,
-	// [CWvsContext+0x180] stays NULL and EVERY frame the client dereferences it
-	// (getter at 0x00463972) -> crash. We still force-return true so the fake
-	// connection flow continues; all real game packets are routed via MP_SendGame
-	// (EnterSendPacket_Hook), so the real socket is never used for game traffic.
-	if (_ConnectCaller) {
-		_ConnectCaller(ecx, v1, v2, v3);
+	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[CONNECT #%d] fake_conn=0x%p\n", connect_call_count, (void*)g_fake_connection_obj); fflush(f); fclose(f); } }
+	// [FIX v11] Plant fake connection object pointer at CWvsContext+0x180.
+	// This is what the getter at 0x00463972 reads: MOV EAX,[ECX+0x180]; RET
+	// Without this, that getter returns NULL -> caller dereferences -> crash every frame.
+	// We also patch the getter itself (in AutoResponseHook/TENVI_CN) as belt-and-suspenders.
+	DWORD *pCtx = *(DWORD **)0x006FAF44; // CWvsContext global for CN v126
+	if (pCtx) {
+		*(DWORD **)((char *)pCtx + 0x180) = (DWORD *)g_fake_connection_obj;
 	}
 	return true;
 }
@@ -273,6 +279,26 @@ bool AutoResponseHook() {
 		// Original: 74 66 (je +102 -> path2 at 0x4948F8)
 		// Patched:  EB 8F (jmp +143 -> epilogue at 0x494921)
 		r.Patch(0x00494890, L"EB 8F");
+
+		// [FIX v11] Patch the connection-object getter at 0x00463972 to return
+		// our fake connection object address instead of reading [CWvsContext+0x180].
+		// Original: 8B 81 80 01 00 00  C3   (MOV EAX,[ECX+0x180]; RET) = 7 bytes
+		// Patched:  B8 XX XX XX XX       C3   (MOV EAX, imm32; RET) = 6 bytes
+		// We use a 7-byte form to fill the same space: B8 addr C3 90 (MOV+EAX+NOP)
+		{
+			char patch[8];
+			patch[0] = 0xB8; // MOV EAX, imm32
+			DWORD fakeAddr = (DWORD)(void*)g_fake_connection_obj;
+			memcpy(&patch[1], &fakeAddr, 4); // little-endian address
+			patch[5] = 0xC3; // RET
+			patch[6] = 0x90; // NOP (pad to 7 bytes to match original length region)
+			wchar_t patchStr[32];
+			for (int i = 0; i < 7; i++) {
+				wsprintfW(patchStr + i*2, L"%02X", (unsigned char)patch[i]);
+			}
+			patchStr[14] = 0;
+			r.Patch(0x00463972, patchStr);
+		}
 
 		Addr_OnPacketClass2 = 0x006FAF70;
 		Addr_OnPacket2 = 0x004CBE34;
