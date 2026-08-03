@@ -93,7 +93,6 @@ void CharacterListPacket_Test() {
 		}
 		sp.Encode2(chr.map); // mapid
 	}
-#endif // MP_SERVER DIAG_EMPTY_CHARLIST
 
 	if (GetRegion() == TENVI_KR) {
 		sp.Encode1(0);
