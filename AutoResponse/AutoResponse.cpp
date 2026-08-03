@@ -142,8 +142,8 @@ void __fastcall EnterSendPacket_Hook(OutPacket *op) {
 		FILE *f = NULL;
 		fopen_s(&f, "D:/mp_diag.log", "a");
 		if (f) {
-			BYTE opcode = (op->packet.size() > 0) ? op->packet[0] : 0xFF;
-			fprintf(f, "EnterSendPacket op=%02X len=%d\n", opcode, (int)op->packet.size());
+			BYTE opcode = (op->encoded > 0) ? op->packet[0] : 0xFF;
+			fprintf(f, "EnterSendPacket op=%02X len=%lu\n", opcode, (unsigned long)op->encoded);
 			fflush(f); fclose(f);
 		}
 	}
