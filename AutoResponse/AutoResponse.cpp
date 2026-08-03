@@ -90,16 +90,30 @@ void MP_Pump() {
 
 	// Step 2: 一口气注入全部包（无中间态，不给客户端插队机会）
 	for (size_t i = 0; i < batch.size(); i++) {
+		const std::vector<BYTE> &bp = batch[i];
+		BYTE opcode = bp.size() > 0 ? bp[0] : 0xFF;
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
-				const std::vector<BYTE> &bp = batch[i];
-				fprintf(f, "MP_Pump inject op=%02X len=%d bytes=", bp.size()>0?bp[0]:0, (int)bp.size());
-				for (size_t j = 0; j < bp.size() && j < 220; j++) fprintf(f, "%02X ", bp[j]);
-				fprintf(f, "\n"); fflush(f); fclose(f);
+				fprintf(f, ">> exec op=%02X len=%d\n", opcode, (int)bp.size());
+				fflush(f); fclose(f);
 			}
 		}
-		ProcessPacketExec(batch[i]);
+		ProcessPacketExec(bp);
+		{
+			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+			if (f) {
+				fprintf(f, "<< done op=%02X\n", opcode);
+				fflush(f); fclose(f);
+			}
+		}
+	}
+	{
+		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+		if (f) {
+			fprintf(f, "=== BATCH END (%d packets) ===\n", (int)batch.size());
+			fflush(f); fclose(f);
+		}
 	}
 }
 
@@ -174,6 +188,12 @@ void __fastcall EnterSendPacket_Hook(OutPacket *op) {
 void (__thiscall *_ProcessPacketCaller)(void *) = NULL;
 static int mp_frame_count = 0;
 void __fastcall ProcessPacketCaller_Hook(void *ecx) {
+	mp_frame_count++;
+	// [DIAG] 每帧开始时打标记（在 _ProcessPacketCaller 之前）
+	if (mp_frame_count > 2880) {  // 只在进地图阶段打，避免日志爆炸
+		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+		if (f) { fprintf(f, "[FRAME %d] _ProcessPacketCaller start\n", mp_frame_count); fflush(f); fclose(f); }
+	}
 	_ProcessPacketCaller(ecx);
 	// [DIAG] 帧计数器：精确定位崩在第几帧
 	mp_frame_count++;
