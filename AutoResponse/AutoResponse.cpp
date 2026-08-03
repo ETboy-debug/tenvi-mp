@@ -211,6 +211,8 @@ void __fastcall ProcessPacketCaller_Hook(void *ecx) {
 		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 		if (f) { fprintf(f, "[FRAME %d] after MP_Pump OK\n", mp_frame_count); fflush(f); fclose(f); }
 	}
+	// [DIAG v18] Report VEH skip count so we know if the handler is working
+	{ extern volatile LONG g_veh_skip_count; if (g_veh_skip_count > 0) { FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[VEH] skipped %ld NULL-derefs so far\n", (long)g_veh_skip_count); fflush(f); fclose(f); } } }
 	DelayExecution();
 	// [DIAG] Post-delay: confirm entire frame completed
 	if (mp_frame_count > 2190) {
