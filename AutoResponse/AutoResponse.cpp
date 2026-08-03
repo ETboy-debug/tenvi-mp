@@ -114,13 +114,20 @@ DWORD __fastcall LoginButton_KR_Hook(void *ecx, void *, void *, void *) {
 
 void (__thiscall *_WorldSelectButton)(void *) = NULL;
 void __fastcall WorldSelectButton_Hook(void *ecx) {
-	// [DIAG]
-	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "WSB clicked -> call original + send CHARLIST\n"); fflush(f); fclose(f); } }
-	// [MP] 原版 TenviTest 在这里先调用原始函数完成"频道->角色选择"界面切换,
-	// 否则客户端仍停在世界选择界面, 收到 0x05 角色列表包时访问未初始化的
-	// 角色选择 UI -> 崩溃. 桥接模式下 ConnectCaller 已被 hook 为假成功,
-	// 调用原函数不会真的连服务器, 安全.
+	// [MP] 修复角色列表崩溃: 原版 TenviTest 在 EnterSendPacket_Hook 里同步调
+	// FakeServer(cp) 把 0x04/0x05 当场注入(同一帧内完成切屏)。我们的桥接把
+	// 假服务端挪到远程 StandaloneServer, 回包变异步, 0x04 迟到时客户端 UI 还
+	// 停在世界选择界面 -> 崩。这里改为客户端本地同步注入 0x04(切屏),
+	// 0x05 角色数据仍由服务端异步补。
+	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "WSB clicked -> sync 0x04 + send CHARLIST\n"); fflush(f); fclose(f); } }
 	_WorldSelectButton(ecx);
+	// 同步注入 0x04 = CharacterSelectPacket (opcode 04 00 FF FF FF FF 00)
+	{
+		BYTE sel04[7] = { 0x04, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
+		std::vector<BYTE> p04(sel04, sel04 + 7);
+		ProcessPacketExec(p04);
+	}
+	// 服务端回 0x05 真实角色数据(异步)
 	MP_SendCtrl(MP_CTRL_CHARLIST);
 }
 
