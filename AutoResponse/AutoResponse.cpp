@@ -260,15 +260,18 @@ bool AutoResponseHook() {
 		SHookFunction(ConnectCaller, 0x0056A4FD);
 		SHookFunction(ProcessPacketCaller, 0x0056A579);
 
-		// [FIX v15] Disable crash in per-frame network session update function.
-		// Tenvi.exe 0x00494901: MOV EAX,[ECX] crashes because connection object
-		// at [ESI+0x15F0] is NULL. The "je path2" at 0x00494890 falls into path2
-		// (crash) when the condition is met. We NOP out the conditional jump so
-		// execution ALWAYS falls through to path1 (normal connected behavior).
-		// v14 used EB 8F (unconditional jmp) which incorrectly skipped path1 too,
-		// causing regression back to channel-select crash at 0x463972.
-		// Original: 74 66 (je +102 -> path2)   Patched: 90 90 (NOP NOP -> always path1)
-		r.Patch(0x00494890, L"90 90");
+		// [FIX v16] Disable the entire per-frame network session update function.
+		// This function (entry 0x4947F6, epilogue 0x494921) checks connection objects
+		// at [ESI+0x15e8], [ESI+0x15ec], [ESI+0x15f0] -- ALL are NULL because
+		// ConnectCaller returns true without initializing them. Every code path
+		// dereferences one of these NULL pointers and crashes:
+		//   path1a: [esi+0x15e8] -> crash if NULL
+		//   path1b: [esi+0x15ec] -> crash at 0x494898 (v15)
+		//   path2:  [esi+0x15f0] -> crash at 0x494901 (v13)
+		// Patching individual paths is whack-a-mole. Instead, make the entire
+		// function a no-op by jumping from entry directly to epilogue (ret 0x10).
+		// Entry: 0x4947F6  Epilogue: 0x494921  Rel32: 0x126
+		r.Patch(0x004947F6, L"E9 26010000");
 
 		Addr_OnPacketClass2 = 0x006FAF70;
 		Addr_OnPacket2 = 0x004CBE34;
