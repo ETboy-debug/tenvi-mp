@@ -115,9 +115,12 @@ DWORD __fastcall LoginButton_KR_Hook(void *ecx, void *, void *, void *) {
 void (__thiscall *_WorldSelectButton)(void *) = NULL;
 void __fastcall WorldSelectButton_Hook(void *ecx) {
 	// [DIAG]
-	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "WSB clicked -> send CHARLIST\n"); fflush(f); fclose(f); } }
-	// [MP] 原始函数依赖真实游戏服务器连接(原生加密栈)，桥接模式下那个连接是假的，
-	// 调用它会访问空连接对象 -> 客户端崩溃。跳过原始调用，直接请求角色列表。
+	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "WSB clicked -> call original + send CHARLIST\n"); fflush(f); fclose(f); } }
+	// [MP] 原版 TenviTest 在这里先调用原始函数完成"频道->角色选择"界面切换,
+	// 否则客户端仍停在世界选择界面, 收到 0x05 角色列表包时访问未初始化的
+	// 角色选择 UI -> 崩溃. 桥接模式下 ConnectCaller 已被 hook 为假成功,
+	// 调用原函数不会真的连服务器, 安全.
+	_WorldSelectButton(ecx);
 	MP_SendCtrl(MP_CTRL_CHARLIST);
 }
 
