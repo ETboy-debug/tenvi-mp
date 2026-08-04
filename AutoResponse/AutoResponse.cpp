@@ -121,33 +121,13 @@ void MP_Pump() {
 // Login Button Click
 DWORD (__thiscall *_LoginButton)(void *ecx) = NULL;
 DWORD __fastcall LoginButton_Hook(void *ecx) {
-	// [MP] 从冲锋岛原生登录界面读取账号密码, 发服务端认证(自动注册+校验合一)
-	std::string acc, pw;
-	if (!MP_ReadNativeCred(acc, pw)) {
-		MessageBoxA(NULL, "Cannot read login form", "Tenvi MP", MB_OK | MB_ICONERROR);
+	// [MP] 认证已由 MP_Thread 在连接时自动完成(从 ini 读账号密码 -> 发服务端 -> 等结果)
+	// 这里只做门控: 认证成功才放行, 失败则抑制原生登录.
+	if (MP_IsAuthed()) {
+		MP_SendCtrl(MP_CTRL_WORLDLIST);
 		return 0;
 	}
-	if (acc.empty()) {
-		MessageBoxA(NULL, "Please enter account", "Tenvi MP", MB_OK | MB_ICONWARNING);
-		return 0;
-	}
-
-	// 发送登录请求(服务端: 不存在则自动注册, 存在则校验密码)
-	MP_SendLogin(acc, pw);
-
-	BYTE res = 0;
-	if (!MP_WaitCtrlResult(MP_CTRL_LOGIN_RESULT, 8000, res)) {
-		MessageBoxA(NULL, "Auth timeout (server not responding?)", "Tenvi MP", MB_OK | MB_ICONERROR);
-		return 0;
-	}
-	if (res != 1) {
-		MessageBoxA(NULL, "Wrong password or account error", "Tenvi MP", MB_OK | MB_ICONWARNING);
-		return 0;
-	}
-
-	// 认证成功 -> 放行进游戏
-	MP_SetAuthed(true);
-	MP_SendCtrl(MP_CTRL_WORLDLIST);
+	// 认证失败(密码错): 抑制登录, 让 MP_Thread 的 MessageBoxA 提示用户.
 	return 0;
 }
 
