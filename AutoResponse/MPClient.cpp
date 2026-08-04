@@ -104,7 +104,7 @@ bool MP_GetNativeCred(std::string &outAcc, std::string &outPw) {
 	return !g_natAccount.empty();
 }
 
-static void NatClearCred() {
+void NatClearCred() {
 	g_natAccount.clear();
 	g_natPassword.clear();
 	g_natField = NAT_FIELD_ACCOUNT;
