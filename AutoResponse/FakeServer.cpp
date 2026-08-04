@@ -997,13 +997,29 @@ bool FakeServer(ClientPacket &cp) {
 			db().insertChar(TA.GetAccount(), TA.GetCharacters().back());
 		}
 #endif
+		CharacterSelectPacket(); // [FIX] 切回角色选择界面
 		CharacterListPacket_Test();
 		return true;
 	}
 	// Delete Character
 	case CP_DELETE_CHARACTER: {
 		DWORD character_id = cp.Decode4();
-		// not coded
+		// [FIX] 真正删除角色: 从内存列表移除 + 写回DB + 通知客户端
+		auto &chars = TA.GetCharacters();
+		for (auto it = chars.begin(); it != chars.end(); ++it) {
+			if (it->id == character_id) {
+#ifdef MP_SERVER
+				if (!TA.GetAccount().empty()) {
+					db().deleteChar(TA.GetAccount(), character_id);
+				}
+#endif
+				chars.erase(it);
+				break;
+			}
+		}
+		DeleteCharacter();        // 0x07 删除成功通知
+		CharacterSelectPacket();  // 切回选角界面
+		CharacterListPacket_Test(); // 刷新角色列表
 		return true;
 	}
 	// Character Select to World Select
