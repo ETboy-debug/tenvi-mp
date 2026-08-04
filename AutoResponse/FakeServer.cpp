@@ -6,6 +6,11 @@
 
 #ifdef MP_SERVER
 #include "../StandaloneServer/db.h"
+#include <cstdio>
+// [DIAG] 崩溃定位标记: 直接写 stdout(服务端无缓冲, 落到 server_live.log)
+#define MP_MARK(msg) do { printf("[TenviServer] MARK %s\n", msg); } while(0)
+#else
+#define MP_MARK(msg) do { } while(0)
 #endif
 
 thread_local TenviAccount TA; // [MP] 见 FakeServer.h: 按连接线程隔离会话
@@ -777,11 +782,15 @@ void BoardPacket(BoardAction action, std::wstring owner = L"", std::wstring msg 
 // ========== Functions ==================
 
 void SpawnObjects(TenviCharacter &chr, WORD map_id) {
-	for (auto &regen : tenvi_data.get_map(map_id)->GetRegen()) {
+	MP_MARK("SpawnObjects before get_map");
+	std::vector<TenviRegen> &regens = tenvi_data.get_map(map_id)->GetRegen();
+	MP_MARK("SpawnObjects after get_map");
+	for (auto &regen : regens) {
 		CreateObjectPacket(regen);
 		ShowObjectPacket(regen);
 		ActivateObjectPacket(regen);
 	}
+	MP_MARK("SpawnObjects loop done");
 }
 
 #ifdef MP_SERVER
@@ -812,8 +821,10 @@ void MP_BroadcastToSid(int sid, ServerPacket &sp) {}
 
 // go to map
 void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
+	MP_MARK("ChangeMap entry");
 	ChangeMapPacket(map_id, x, y);
-	
+	MP_MARK("ChangeMap after ChangeMapPacket");
+
 	switch (map_id) {
 	case MAPID_ITEM_SHOP:
 	case MAPID_EVENT:
@@ -838,8 +849,11 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 		db().updateCharMap(TA.GetAccount(), chr.id, chr.map, chr.x, chr.y);
 	}
 #endif
+	MP_MARK("ChangeMap before SpawnObjects");
 	SpawnObjects(chr, map_id);
+	MP_MARK("ChangeMap after SpawnObjects");
 	CharacterSpawnPacket(chr, x, y);
+	MP_MARK("ChangeMap after self CharacterSpawnPacket");
 
 #ifdef MP_SERVER
 	// [MP] 静态互见: 刷新自己进在线表, 并与同图其他人互刷
@@ -853,6 +867,7 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 		me.map = chr.map;
 		me.x = x; me.y = y;
 	}
+	MP_MARK("ChangeMap after players-table insert");
 	{
 		std::lock_guard<std::mutex> lk(g_playersMtx);
 		for (auto &kv : g_players) {
@@ -864,13 +879,18 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			CharacterSpawnPacket(chr, x, y, other_sid);          // 别人看到自己
 		}
 	}
+	MP_MARK("ChangeMap after broadcast loop");
 #endif
+	MP_MARK("ChangeMap exit");
 }
 
 // enter map by login or something
 void SetMap(TenviCharacter &chr, WORD map_id) {
+	MP_MARK("SetMap before get_map/FindSpawnPoint");
 	TenviSpawnPoint spawn_point = tenvi_data.get_map(map_id)->FindSpawnPoint(0);
+	MP_MARK("SetMap after FindSpawnPoint");
 	ChangeMap(chr, map_id, spawn_point.x, spawn_point.y);
+	MP_MARK("SetMap after ChangeMap");
 }
 
 // enter map by portal
@@ -924,6 +944,7 @@ bool FakeServer(ClientPacket &cp) {
 #endif
 
 		TA.Login(character_id);
+		MP_MARK("GAME_START after Login");
 
 		for (auto &chr : TA.GetCharacters()) {
 			if (chr.id == character_id) {
@@ -935,11 +956,15 @@ bool FakeServer(ClientPacket &cp) {
 				PlayerStatPacket(chr);
 				PlayerSPPacket(chr);
 				PlayerAPPacket(chr);
+				MP_MARK("GAME_START before InitSkill");
 				InitSkillPacket(chr);
+				MP_MARK("GAME_START before SetMap");
 
 				SetMap(chr, chr.map);
+				MP_MARK("GAME_START after SetMap");
 				BoardPacket(Board_Spawn, L"Riremito", L"Tenvi JP v127");
 				BoardPacket(Board_AddInfo, L"Riremito", L"Tenvi JP v127");
+				MP_MARK("GAME_START done");
 				return true;
 			}
 		}
