@@ -258,16 +258,13 @@ void __fastcall ProcessPacketCaller_Hook(void *ecx) {
 	// [MP] Inject server packets into client
 	MP_Pump();
 	// [v29] 延迟启动 GetAsyncKeyState 键盘捕获: 等第10帧时游戏窗口肯定已创建
+	// [v30 FIX] 不再传固定HWND(会在启动过程中过期), 改用进程ID判断前台窗口归属
 	if (!g_captureStarted && mp_frame_count >= 10) {
 		g_captureStarted = true;
-		HWND gameWnd = GetForegroundWindow();  // 最可能的游戏窗口
-		if (!gameWnd) gameWnd = GetActiveWindow();
-		if (gameWnd) {
-			MP_StartCapture(gameWnd);
-			DEBUG(L"[MP] Capture started at frame %d, hwnd=%p", mp_frame_count, gameWnd);
-			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
-			if (f) { fprintf(f, "[MP-CAP] Started at frame %d, hwnd=%p\n", mp_frame_count, (void*)gameWnd); fflush(f); fclose(f); }
-		}
+		MP_StartCapture();
+		DEBUG(L"[MP] Capture started at frame %d (pid-based)", mp_frame_count);
+		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+		if (f) { fprintf(f, "[MP-CAP] Started at frame %d (pid=%u)\n", mp_frame_count, GetCurrentProcessId()); fflush(f); fclose(f); }
 	}
 	// [DIAG] Post-pump: confirm MP_Pump returned safely
 	if (mp_frame_count > 2190) {
