@@ -152,6 +152,23 @@ DWORD __fastcall LoginButton_Hook(void *ecx) {
 	}
 
 	DEBUG(L"[MP] Native login: acc=%hs pw=%d chars", acc.c_str(), (int)pw.length());
+
+	// [v33] 登录前确保已连接服务端(解决"开游戏时服务端未启动导致连接线程退出"的问题)
+	if (!MP_IsConnected()) {
+		DEBUG(L"[MP] Not connected, reconnecting before login...");
+		if (!MP_Reconnect()) {
+			MessageBoxA(NULL,
+				"Cannot connect to server.\n"
+				"\n"
+				"Please make sure the server is running\n"
+				"(double-click StartServer.bat), then try again.",
+				"Tenvi MP", MB_OK | MB_ICONERROR);
+			return 0;
+		}
+		// 等一下让 HELLO 握手完成
+		Sleep(500);
+	}
+
 	MP_SendLogin(acc, pw);
 
 	BYTE res = 0;
