@@ -205,27 +205,25 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 							DEBUG(L"[MP-CAP] Tab -> field=%d", g_capField);
 							LeaveCriticalSection(&g_capCs);
 						}
-						// --- [v31] 鼠标左键: 用Y坐标判断点的哪个输入框 ---
-						else if (vk == VK_LBUTTON) {
-							POINT pt = {};
-							GetCursorPos(&pt);
-							ScreenToClient(fg, &pt);  // 转为客户区坐标
-							LONG y = pt.y;
+					// --- [v34] 鼠标左键: 按绝对Y位置判断点的哪个输入框 ---
+					// 旧版用"相邻两次点击Y差>30就切换", 点歪一点就来回乱跳, 导致账号/密码输错框。
+					// 改为: 登录框账号框在上、密码框在下, 以客户区高度58%为界, 上=账号(0) 下=密码(1), 确定性不乱跳。
+					else if (vk == VK_LBUTTON) {
+						POINT pt = {};
+						GetCursorPos(&pt);
+						ScreenToClient(fg, &pt);  // 转为客户区坐标
+						RECT rc = {};
+						GetClientRect(fg, &rc);
+						LONG h = rc.bottom - rc.top;
+						// 校准自登录界面: 账号框约51%高, 密码框约65%高, 取58%为界
+						int field = (h > 0 && pt.y < (LONG)(h * 0.58)) ? 0 : 1;
+						EnterCriticalSection(&g_capCs);
+						g_capField = field;
+						LeaveCriticalSection(&g_capCs);
 
-							if (g_lastClickY < 0) {
-								// 第一次点击: 记录Y, 默认账号框(field=0)
-								g_lastClickY = y;
-								g_capField = 0;
-							} else if (abs(y - g_lastClickY) > CLICK_Y_THRESHOLD) {
-								// Y变化大: 切换到另一个字段
-								g_capField = 1 - g_capField;
-								g_lastClickY = y;
-							}
-							// Y变化小: 认为还在同一个框, 不切换
-
-							FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-							if (df) { fprintf(df, "[MP-CAP] mouse click at (%ld,%ld) -> field=%d\n", pt.x, pt.y, g_capField); fflush(df); fclose(df); }
-						}
+						FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+						if (df) { fprintf(df, "[MP-CAP] mouse click at (%ld,%ld) h=%ld ratio=%d%% -> field=%d\n", pt.x, pt.y, h, h > 0 ? (int)(pt.y * 100 / h) : -1, g_capField); fflush(df); fclose(df); }
+					}
 						// --- Backspace: 删除末尾字符 ---
 						else if (vk == VK_BACK) {
 							EnterCriticalSection(&g_capCs);
