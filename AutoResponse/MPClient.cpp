@@ -14,6 +14,7 @@ static SOCKET g_sock = INVALID_SOCKET;
 static CRITICAL_SECTION g_cs;
 static bool g_csReady = false;
 static std::vector<std::vector<BYTE>> g_inQueue;
+static void MP_PushPacket(const BYTE *p, DWORD n); // [MP] forward decl, defined later in this file
 static std::string g_ip = "127.0.0.1";
 static int g_port = 8787;
 static std::string g_account = "Player"; // [MP] 账号名(utf8), 由游戏内弹窗提供, ini Account 兜底
