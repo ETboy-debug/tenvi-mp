@@ -26,12 +26,16 @@
 #define MP_CTRL_HELLO     1
 #define MP_CTRL_WORLDLIST 2
 #define MP_CTRL_CHARLIST  3
-#define MP_CTRL_LOGIN     4 // 客户端上报账号名(utf8), 紧接在 cmd 字节之后
+#define MP_CTRL_LOGIN     4 // 登录: payload[2..] = utf8 "账号\0密码"
+#define MP_CTRL_REGISTER  5 // 注册: payload[2..] = utf8 "账号\0密码"
+#define MP_CTRL_LOGIN_RESULT 6 // 服务端回: payload[2] = 1 成功 / 0 失败(密码错), 其后可选 utf8 原因
+#define MP_CTRL_REGISTER_RESULT 7 // 服务端回: payload[2] = 1 成功 / 0 账号已存在
 
 bool MP_Start(HINSTANCE hinstDLL);
 void MP_SendGame(const BYTE *p, DWORD n);
 void MP_SendCtrl(BYTE cmd);
 bool MP_PopPacket(std::vector<BYTE> &out);
 bool MP_IsConnected();
+bool MP_IsAuthed();   // [MP] 游戏内弹窗认证是否成功(门控原生登录)
 
 #endif
