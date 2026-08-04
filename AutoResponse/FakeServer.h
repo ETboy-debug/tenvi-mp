@@ -16,6 +16,12 @@ extern thread_local TenviAccount TA;
 #define MAPID_EVENT 62501
 
 bool FakeServer(ClientPacket &cp);
+
+// [MP] 跨连接/会话管理(实现分处 FakeServer.cpp / StandaloneServer.cpp)
+extern thread_local int t_sid;
+void MP_BroadcastToSid(int sid, ServerPacket &sp);
+void MP_RemovePlayer(int sid);
+
 // test
 void WorldListPacket();
 void CharacterSelectPacket();
