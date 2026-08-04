@@ -36,14 +36,6 @@ void MP_SendGame(const BYTE *p, DWORD n);
 void MP_SendCtrl(BYTE cmd);
 bool MP_PopPacket(std::vector<BYTE> &out);
 bool MP_IsConnected();
-bool MP_IsAuthed();   // [MP] 原生登录界面认证是否成功
-void MP_SetAuthed(bool v); // [MP] 设置认证成功标志(被 AutoResponse.cpp 调用)
-
-// [MP] 从冲锋岛原生登录界面读取账号密码(枚举 EDIT 子控件)
-bool MP_ReadNativeCred(std::string &outAcc, std::string &outPw);
-// [MP] 同步等待服务端 ctrl 结果(超时返回 false)
-bool MP_WaitCtrlResult(BYTE expectCmd, int timeoutMs, BYTE &outByte);
-// [MP] 发送带密码的登录请求
-void MP_SendLogin(const std::string &acc, const std::string &pw);
+bool MP_IsAuthed();   // [MP] 自动认证是否成功(1=成功, 0=进行中, MP_IsConnected 可辅助判断)
 
 #endif
