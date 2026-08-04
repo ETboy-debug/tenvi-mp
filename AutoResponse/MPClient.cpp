@@ -38,8 +38,8 @@ static volatile LONG g_authed = 0;        // 0=未认证 1=成功 -1=失败
 //      -> 成功: MP_SetAuthed(true) + MP_SendCtrl(MP_CTRL_WORLDLIST)
 //      -> 失败: 弹错误提示
 
-static volatile LONG g_loginPending = 0;     // LoginButton_Hook 已触发, 等待截获登录包
-static volatile LONG g_authInProgress = 0;    // 登录包已截获, 正在等待服务端认证结果
+volatile LONG g_loginPending = 0;     // LoginButton_Hook 已触发, 等待截获登录包
+volatile LONG g_authInProgress = 0;    // 登录包已截获, 正在等待服务端认证结果
 static std::string g_extractedAcc;            // 从登录包中提取的账号
 static std::string g_extractedPw;             // 从登录包中提取的密码
 static CRITICAL_SECTION g_authCs;
