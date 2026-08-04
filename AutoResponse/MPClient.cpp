@@ -181,11 +181,11 @@ static bool ShowLoginOverlay() {
 	if (x < 0) x = 0;
 	if (y < 0) y = 0;
 
-	// 创建浮层窗口
+	// 创建浮层窗口(无边框、无标题栏、不在任务栏显示 —— 看起来像游戏内面板)
 	g_hOverlay = CreateWindowExW(
-		WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
-		L"TenviMPOverlay", L"Tenvi MP",
-		WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+		WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+		L"TenviMPOverlay", L"",
+		WS_POPUP | WS_VISIBLE,
 		x, y, 360, 260,
 		hOwner, NULL, GetModuleHandleW(NULL), NULL);
 
