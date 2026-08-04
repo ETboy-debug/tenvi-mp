@@ -16,7 +16,9 @@ static bool g_csReady = false;
 static std::vector<std::vector<BYTE>> g_inQueue;
 static std::string g_ip = "127.0.0.1";
 static int g_port = 8787;
-static std::string g_account = "Player"; // [MP] 账号名(utf8), 由 ini Account 字段提供
+static std::string g_account = "Player"; // [MP] 账号名(utf8), 由游戏内弹窗提供, ini Account 兜底
+static std::string g_password;            // [MP] 密码(utf8), 由弹窗提供
+static volatile LONG g_authed = 0;        // [MP] 弹窗认证成功标志(门控原生登录)
 static volatile LONG g_connected = 0;
 
 bool MP_IsConnected() {
@@ -56,13 +58,147 @@ void MP_SendCtrl(BYTE cmd) {
 	MP_SendRaw(MP_TYPE_CTRL, &cmd, 1);
 }
 
-// [MP] 上报账号名: 帧 = [type=CTRL][cmd=MP_CTRL_LOGIN][utf8 account]
-void MP_SendLogin(const std::string &acc) {
+// [MP] 账号\0密码 组帧发送(注册/登录共用)
+static void MP_SendCred(BYTE cmd, const std::string &acc, const std::string &pw) {
 	std::vector<BYTE> buf;
-	buf.push_back((BYTE)MP_CTRL_LOGIN);
+	buf.push_back(cmd);
 	for (char c : acc) buf.push_back((BYTE)c);
-	if (buf.empty()) return;
-	MP_SendRaw(MP_TYPE_CTRL, &buf[0], (DWORD)buf.size());
+	buf.push_back((BYTE)'\0');
+	for (char c : pw) buf.push_back((BYTE)c);
+	if (!buf.empty()) MP_SendRaw(MP_TYPE_CTRL, &buf[0], (DWORD)buf.size());
+}
+
+void MP_SendLogin(const std::string &acc, const std::string &pw) {
+	MP_SendCred(MP_CTRL_LOGIN, acc, pw);
+}
+
+static void MP_SendRegister(const std::string &acc, const std::string &pw) {
+	MP_SendCred(MP_CTRL_REGISTER, acc, pw);
+}
+
+bool MP_IsAuthed() {
+	return g_authed != 0;
+}
+
+// ---- [MP] 游戏内登录/注册弹窗 ----
+#define DLG_ACC    101
+#define DLG_PW     102
+#define DLG_LOGIN  103
+#define DLG_REG    104
+#define DLG_STATUS 105
+
+struct AuthDlgCtx {
+	bool done = false;
+	bool authed = false;
+};
+
+static std::vector<BYTE> g_dlgBuf;
+
+// 阻塞等待服务端 ctrl 结果; 期间收到的游戏包入队
+static bool RecvCtrlResult(BYTE expectCmd, int timeoutMs, BYTE &outByte) {
+	std::vector<BYTE> &buf = g_dlgBuf;
+	DWORD start = GetTickCount();
+	while (true) {
+		fd_set fds; FD_ZERO(&fds); FD_SET(g_sock, &fds);
+		timeval tv; tv.tv_sec = 0; tv.tv_usec = 150000;
+		if (select(0, &fds, NULL, NULL, &tv) > 0) {
+			char tmp[16384];
+			int n = recv(g_sock, tmp, sizeof(tmp), 0);
+			if (n <= 0) return false;
+			buf.insert(buf.end(), tmp, tmp + n);
+			while (buf.size() >= 4) {
+				DWORD len = (DWORD)buf[0] | ((DWORD)buf[1] << 8) | ((DWORD)buf[2] << 16) | ((DWORD)buf[3] << 24);
+				if (len == 0 || len > 65536) { buf.clear(); return false; }
+				if (buf.size() < 4 + len) break;
+				BYTE type = buf[4];
+				if (type == MP_TYPE_CTRL && len >= 2) {
+					BYTE cmd = buf[5];
+					if (cmd == expectCmd) {
+						outByte = (len >= 3) ? buf[6] : 1;
+						buf.erase(buf.begin(), buf.begin() + 4 + len);
+						return true;
+					}
+				} else if (type == MP_TYPE_GAME && len > 1) {
+					MP_PushPacket(&buf[5], len - 1);
+				}
+				buf.erase(buf.begin(), buf.begin() + 4 + len);
+			}
+		}
+		if (GetTickCount() - start > (DWORD)timeoutMs) return false;
+	}
+}
+
+static LRESULT CALLBACK AuthDlgProc(HWND hDlg, UINT msg, WPARAM w, LPARAM l) {
+	AuthDlgCtx *ctx = (AuthDlgCtx *)GetWindowLongPtr(hDlg, GWLP_USERDATA);
+	switch (msg) {
+	case WM_COMMAND: {
+		int id = (int)LOWORD(w);
+		if (id == IDCANCEL) { ctx->done = true; DestroyWindow(hDlg); return 0; }
+		if (id == DLG_LOGIN || id == DLG_REG) {
+			char acc[128] = {}, pw[128] = {};
+			GetDlgItemTextA(hDlg, DLG_ACC, acc, sizeof(acc));
+			GetDlgItemTextA(hDlg, DLG_PW, pw, sizeof(pw));
+			bool reg = (id == DLG_REG);
+			BYTE res = 0;
+			if (reg) {
+				MP_SendRegister(acc, pw);
+				if (!RecvCtrlResult(MP_CTRL_REGISTER_RESULT, 6000, res)) { SetDlgItemTextA(hDlg, DLG_STATUS, "Register failed (net)"); return 0; }
+			} else {
+				MP_SendLogin(acc, pw);
+				if (!RecvCtrlResult(MP_CTRL_LOGIN_RESULT, 6000, res)) { SetDlgItemTextA(hDlg, DLG_STATUS, "Login failed (net)"); return 0; }
+			}
+			if (res == 1) {
+				g_account = acc; g_password = pw;
+				if (!reg) {
+					InterlockedExchange(&g_authed, 1);
+					ctx->authed = true; ctx->done = true; DestroyWindow(hDlg);
+				} else {
+					SetDlgItemTextA(hDlg, DLG_STATUS, "Registered OK, click Login");
+				}
+			} else {
+				SetDlgItemTextA(hDlg, DLG_STATUS, reg ? "Account exists" : "Wrong password");
+			}
+			return 0;
+		}
+		break;
+	}
+	case WM_CLOSE: ctx->done = true; DestroyWindow(hDlg); return 0;
+	}
+	return DefWindowProcA(hDlg, msg, w, l);
+}
+
+// 弹出登录/注册窗口, 阻塞到用户完成认证或取消
+static void ShowAuthDialog() {
+	AuthDlgCtx ctx;
+	HINSTANCE hInst = GetModuleHandle(NULL);
+	WNDCLASSEXA wc = {};
+	wc.cbSize = sizeof(wc);
+	wc.lpfnWndProc = AuthDlgProc;
+	wc.hInstance = hInst;
+	wc.lpszClassName = "TenviAuthCls";
+	wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+	RegisterClassExA(&wc);
+	HWND hwnd = CreateWindowExA(0, "TenviAuthCls", "Tenvi - Login",
+		WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 360, 230,
+		NULL, NULL, hInst, NULL);
+	if (!hwnd) return;
+	SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)&ctx);
+	CreateWindowExA(0, "STATIC", "Account", WS_CHILD | WS_VISIBLE, 20, 14, 80, 18, hwnd, NULL, hInst, NULL);
+	CreateWindowExA(0, "STATIC", "Password", WS_CHILD | WS_VISIBLE, 20, 54, 80, 18, hwnd, NULL, hInst, NULL);
+	CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 20, 32, 300, 22, hwnd, (HMENU)DLG_ACC, hInst, NULL);
+	CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_PASSWORD, 20, 72, 300, 22, hwnd, (HMENU)DLG_PW, hInst, NULL);
+	CreateWindowExA(0, "BUTTON", "Login", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 30, 110, 130, 30, hwnd, (HMENU)DLG_LOGIN, hInst, NULL);
+	CreateWindowExA(0, "BUTTON", "Register", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 190, 110, 130, 30, hwnd, (HMENU)DLG_REG, hInst, NULL);
+	CreateWindowExA(0, "STATIC", "Enter account and password", WS_CHILD | WS_VISIBLE, 20, 150, 300, 40, hwnd, (HMENU)DLG_STATUS, hInst, NULL);
+	if (!g_account.empty() && g_account != "Player") SetDlgItemTextA(hwnd, DLG_ACC, g_account.c_str());
+	MSG m;
+	while (!ctx.done) {
+		if (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) {
+			TranslateMessage(&m); DispatchMessageA(&m);
+			if (m.message == WM_QUIT) { ctx.done = true; break; }
+		} else Sleep(10);
+	}
+	DestroyWindow(hwnd);
 }
 
 bool MP_PopPacket(std::vector<BYTE> &out) {
@@ -148,7 +284,16 @@ static DWORD WINAPI MP_Thread(LPVOID) {
 	InterlockedExchange(&g_connected, 1);
 	DEBUG(L"MP connected");
 	MP_SendCtrl(MP_CTRL_HELLO);
-	MP_SendLogin(g_account); // [MP] 连接即上报账号, 服务端据此建/载角色
+	// [MP] 游戏内登录/注册弹窗: 收集账号密码并认证; 成功后服务端已建/载角色
+	ShowAuthDialog();
+	if (!MP_IsAuthed()) {
+		DEBUG(L"MP auth cancelled/failed");
+		InterlockedExchange(&g_connected, 0);
+		closesocket(g_sock); g_sock = INVALID_SOCKET;
+		return 0;
+	}
+	// 驱动原生流程(原生 LoginButton_Hook 已门控, 这里主动发 WORLDLIST)
+	MP_SendCtrl(MP_CTRL_WORLDLIST);
 
 	std::vector<BYTE> buf;
 	char tmp[16384];
