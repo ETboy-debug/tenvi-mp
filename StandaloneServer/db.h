@@ -70,6 +70,25 @@ public:
 		return accounts_.find(acc) != accounts_.end();
 	}
 
+	// [MP] 注册：账号不存在才建，带密码。返回 false 表示已存在。
+	bool registerAccount(const std::wstring &acc, const std::wstring &pw) {
+		std::lock_guard<std::mutex> lk(m_);
+		if (accounts_.find(acc) != accounts_.end()) return false;
+		accounts_[acc] = 1;
+		pw_[acc] = pw;
+		save();
+		return true;
+	}
+
+	// [MP] 校验密码：账号不存在返回 false；旧账号(无密码)兼容放行。
+	bool checkPassword(const std::wstring &acc, const std::wstring &pw) {
+		std::lock_guard<std::mutex> lk(m_);
+		if (accounts_.find(acc) == accounts_.end()) return false;
+		auto it = pw_.find(acc);
+		if (it == pw_.end() || it->second.empty()) return true; // 旧账号无密码, 兼容
+		return it->second == pw;
+	}
+
 	// 读取账号的角色；若账号无任何角色，自动建一个默认角色并存盘
 	std::vector<TenviCharacter> loadChars(const std::wstring &acc) {
 		std::lock_guard<std::mutex> lk(m_);
@@ -174,8 +193,13 @@ private:
 			while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
 			if (line.empty() || line[0] == '#') continue;
 			if (line[0] == 'A') {
-				std::string name = trim(line.substr(1));
-				if (!name.empty()) accounts_[Utf8ToW(name)] = 1;
+				// [MP] 格式: "A <账号> [密码]"  (旧档无密码字段亦兼容)
+				std::vector<std::string> tok = split(line.substr(1), ' ');
+				if (tok.size() >= 1 && !tok[0].empty()) {
+					std::wstring acc = Utf8ToW(tok[0]);
+					accounts_[acc] = 1;
+					if (tok.size() >= 2) pw_[acc] = Utf8ToW(tok[1]);
+				}
 			}
 			else if (line[0] == 'C') {
 				// 解析
@@ -214,7 +238,11 @@ private:
 		fprintf(f, "# Tenvi standalone server database\n");
 		for (auto &a : accounts_) {
 			std::string an = WToUtf8(a.first);
-			fprintf(f, "A %s\n", an.c_str());
+			auto pit = pw_.find(a.first);
+			if (pit != pw_.end() && !pit->second.empty())
+				fprintf(f, "A %s %s\n", an.c_str(), WToUtf8(pit->second).c_str());
+			else
+				fprintf(f, "A %s\n", an.c_str());
 		}
 		for (auto &kv : chars_) {
 			std::string an = WToUtf8(kv.first);
@@ -249,6 +277,7 @@ private:
 	std::wstring dir_;
 	std::wstring path_;
 	std::map<std::wstring, int> accounts_;
+	std::map<std::wstring, std::wstring> pw_;   // [MP] 账号 -> 密码(明文, 仅供小伙伴联机)
 	std::map<std::wstring, std::vector<DBCharRow>> chars_;
 	volatile LONG idCounter_ = 1337;
 	std::mutex m_;
