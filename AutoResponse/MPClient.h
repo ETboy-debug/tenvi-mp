@@ -64,4 +64,7 @@ void MP_ClearCred();
 /// 重置登录状态(清凭据+重置认证标志)
 void MP_ResetLoginState();
 
+/// [v33] 同步重连服务端(阻塞式, 用于登录前按需连接)。返回是否成功。
+bool MP_Reconnect();
+
 #endif // MP_CLIENT_H
