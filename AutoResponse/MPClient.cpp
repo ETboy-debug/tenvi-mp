@@ -14,14 +14,13 @@ static SOCKET g_sock = INVALID_SOCKET;
 static CRITICAL_SECTION g_cs;
 static bool g_csReady = false;
 static std::vector<std::vector<BYTE>> g_inQueue;
-static std::vector<std::vector<BYTE>> g_ctrlQueue; // [MP] 服务端 ctrl 包队列(MP_Thread 填充, MP_WaitCtrlResult 轮询)
 static void MP_PushPacket(const BYTE *p, DWORD n); // [MP] forward decl, defined later in this file
 static std::string g_ip = "127.0.0.1";
 static int g_port = 8787;
-static std::string g_account = "Player"; // [MP] 账号名(utf8), 由游戏内弹窗提供, ini Account 兜底
-static std::string g_password;            // [MP] 密码(utf8), 由弹窗提供
-static volatile LONG g_authed = 0;        // [MP] 弹窗认证成功标志(门控原生登录)
+static std::string g_account = "Player"; // [MP] 账号(utf8), 从 ini Account 字段读取
+static std::string g_password;            // [MP] 密码(utf8), 从 ini Password 字段读取
 static volatile LONG g_connected = 0;
+static volatile LONG g_authed = 0;       // [MP] 登录认证是否成功(0=未/1=成功/-1=失败)
 
 bool MP_IsConnected() {
 	return g_connected != 0;
@@ -79,75 +78,7 @@ static void MP_SendRegister(const std::string &acc, const std::string &pw) {
 }
 
 bool MP_IsAuthed() {
-	return g_authed != 0;
-}
-
-void MP_SetAuthed(bool v) {
-	InterlockedExchange(&g_authed, v ? 1 : 0);
-}
-
-// ---- [MP] 从冲锋岛原生登录界面读取账号密码 ----
-static struct {
-	char acc[128];
-	char pw[128];
-	int nEdit;
-} s_nativeCred;
-
-static BOOL CALLBACK EnumNativeEdits(HWND hwnd, LPARAM) {
-	char cls[64];
-	GetClassNameA(hwnd, cls, sizeof(cls));
-	if (_stricmp(cls, "EDIT") == 0) {
-		LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
-		bool isPwd = (style & ES_PASSWORD) != 0;
-		if (isPwd)
-			GetWindowTextA(hwnd, s_nativeCred.pw, sizeof(s_nativeCred.pw));
-		else
-			GetWindowTextA(hwnd, s_nativeCred.acc, sizeof(s_nativeCred.acc));
-		s_nativeCred.nEdit++;
-	}
-	return TRUE;
-}
-
-/// 从游戏原生登录界面的 EDIT 控件读取账号和密码。
-/// 返回 true 表示至少读到了一个非空字段。
-bool MP_ReadNativeCred(std::string &outAcc, std::string &outPw) {
-	memset(&s_nativeCred, 0, sizeof(s_nativeCred));
-	HWND hMain = GetForegroundWindow();
-	if (!hMain) return false;
-	EnumChildWindows(hMain, EnumNativeEdits, 0);
-	if (s_nativeCred.nEdit < 2) {
-		// 向上搜索父窗口（有些游戏的编辑框在子面板里）
-		HWND hParent = GetParent(hMain);
-		while (hParent && s_nativeCred.nEdit < 2) {
-			EnumChildWindows(hParent, EnumNativeEdits, 0);
-			hParent = GetParent(hParent);
-		}
-	}
-	outAcc = s_nativeCred.acc;
-	outPw = s_nativeCred.pw;
-	return s_nativeCred.acc[0] != '\0' || s_nativeCred.pw[0] != '\0';
-}
-
-// 同步等待服务端 ctrl 结果; MP_Thread 是唯一收包线程, ctrl 包已入 g_ctrlQueue, 这里轮询该队列
-bool MP_WaitCtrlResult(BYTE expectCmd, int timeoutMs, BYTE &outByte) {
-	DWORD start = GetTickCount();
-	while (true) {
-		EnterCriticalSection(&g_cs);
-		for (size_t i = 0; i < g_ctrlQueue.size(); ) {
-			std::vector<BYTE> &pkt = g_ctrlQueue[i];
-			// pkt[0]=type, pkt[1]=cmd, pkt[2]=可选数据
-			if (pkt.size() >= 2 && pkt[1] == expectCmd) {
-				outByte = (pkt.size() >= 3) ? pkt[2] : 1;
-				g_ctrlQueue.erase(g_ctrlQueue.begin() + i);
-				LeaveCriticalSection(&g_cs);
-				return true;
-			}
-			++i; // 非期望的 ctrl 包: 保留, 不误删其他等待者
-		}
-		LeaveCriticalSection(&g_cs);
-		if (GetTickCount() - start > (DWORD)timeoutMs) return false;
-		Sleep(30);
-	}
+	return g_authed == 1;
 }
 
 bool MP_PopPacket(std::vector<BYTE> &out) {
@@ -233,13 +164,14 @@ static DWORD WINAPI MP_Thread(LPVOID) {
 	InterlockedExchange(&g_connected, 1);
 	DEBUG(L"MP connected");
 	MP_SendCtrl(MP_CTRL_HELLO);
-	// [MP] 不再弹 Win32 对话框。认证由原生登录界面驱动:
-	//   用户在游戏原生登录界面输入账号密码 -> 点"登录"
-	//   -> LoginButton_Hook 读取原生控件文本 -> 发服务端 -> 等结果 -> 成功才放行
-	// 这里只做收包转发，不阻塞。
+	// [MP] 自动认证: 用 ini 里的账号密码发登录请求(新号自动注册+老号校验合一)
+	// 同步等待结果, 成功后才驱动原生流程.
+	MP_SendLogin(g_account, g_password);
+	DEBUG(L"MP login sent, waiting result...");
 
 	std::vector<BYTE> buf;
 	char tmp[16384];
+	bool authDone = false;
 	while (true) {
 		int n = recv(g_sock, tmp, sizeof(tmp), 0);
 		if (n <= 0) {
@@ -259,11 +191,23 @@ static DWORD WINAPI MP_Thread(LPVOID) {
 			BYTE type = buf[4];
 			if (type == MP_TYPE_GAME && len > 1) {
 				MP_PushPacket(&buf[5], len - 1);
-			} else if (type == MP_TYPE_CTRL && len >= 2) {
-				std::vector<BYTE> cpkt(buf.begin() + 4, buf.begin() + 4 + len);
-				EnterCriticalSection(&g_cs);
-				g_ctrlQueue.push_back(cpkt);
-				LeaveCriticalSection(&g_cs);
+			} else if (type == MP_TYPE_CTRL && len >= 2 && !authDone) {
+				BYTE cmd = buf[5];
+				if (cmd == MP_CTRL_LOGIN_RESULT) {
+					BYTE res = (len >= 3) ? buf[6] : 0;
+					if (res == 1) {
+						InterlockedExchange(&g_authed, 1);
+						DEBUG(L"MP login OK, driving world list");
+						MP_SendCtrl(MP_CTRL_WORLDLIST);
+					} else {
+						InterlockedExchange(&g_authed, -1);
+						DEBUG(L"MP login FAILED (wrong password?)");
+						MessageBoxA(NULL, "Login failed: wrong password or server error.",
+						            "Tenvi MP", MB_OK | MB_ICONERROR);
+					}
+					authDone = true;
+				}
+				// 其他 ctrl 包丢弃
 			}
 			buf.erase(buf.begin(), buf.begin() + 4 + len);
 		}
@@ -304,6 +248,13 @@ bool MP_Start(HINSTANCE hinstDLL) {
 		g_account = abuf;
 	}
 	if (g_account.empty()) g_account = "Player";
+	// [MP] 读密码(Password 字段, utf8 存盘)
+	std::wstring wPw;
+	if (conf.Read(MP_INI_NAME, L"Password", wPw) && wPw.length()) {
+		char pbuf[128] = {};
+		WideCharToMultiByte(CP_UTF8, 0, wPw.c_str(), -1, pbuf, sizeof(pbuf) - 1, NULL, NULL);
+		g_password = pbuf;
+	}
 
 	HANDLE hThread = CreateThread(NULL, 0, MP_Thread, NULL, 0, NULL);
 	if (hThread) {
