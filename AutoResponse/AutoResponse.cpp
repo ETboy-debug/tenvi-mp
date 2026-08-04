@@ -121,8 +121,9 @@ void MP_Pump() {
 // Login Button Click
 DWORD (__thiscall *_LoginButton)(void *ecx) = NULL;
 DWORD __fastcall LoginButton_Hook(void *ecx) {
-	// [MP] 点登录时客户端并不会真的发登录包(原版直接本地伪造世界列表),
-	// 桥接后改为通知独立服务端, 由服务端回世界列表
+	// [MP] 登录由游戏内弹窗驱动: 未认证前抑制原生登录, 防止 TA 未建就推进;
+	// 认证成功后由 MP_Thread 主动发 WORLDLIST, 这里放行即可(避免抢跑/重复)。
+	if (!MP_IsAuthed()) return 0;
 	MP_SendCtrl(MP_CTRL_WORLDLIST);
 	return 0;
 }
