@@ -54,7 +54,7 @@ static LRESULT CALLBACK NatMsgHookProc(int code, WPARAM wParam, LPARAM lParam) {
 		break;
 	}
 	case WM_KEYDOWN: {
-		VK vkey = (VK)(msg->wParam & 0xFF);
+		WPARAM vkey = msg->wParam & 0xFF;
 		if (vkey == VK_TAB) {
 			g_natField = (g_natField == NAT_FIELD_ACCOUNT) ? NAT_FIELD_PASSWORD : NAT_FIELD_ACCOUNT;
 		} else if (vkey == VK_BACK) {
@@ -82,7 +82,7 @@ static void NatInstallHook() {
 	if (g_hMsgHook) return;
 	g_hGameWnd = GetForegroundWindow();
 	if (!g_hGameWnd) g_hGameWnd = GetActiveWindow();
-	g_hMsgHook = SetWindowsHookEx(WH_GETMESSAGE, NatMsgHookProc, NULL, GetCurrentThread());
+	g_hMsgHook = SetWindowsHookEx(WH_GETMESSAGE, NatMsgHookProc, NULL, GetCurrentThreadId());
 	if (g_hMsgHook)
 		DEBUG(L"[MP] Native input hook installed");
 	else
