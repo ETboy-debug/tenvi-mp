@@ -11,8 +11,10 @@
 #endif
 
 TenviMap::TenviMap(DWORD mapid) {
+	TM_MARK("[TenviServer] MARK TenviMap ctor entry id=%u\n", (unsigned)mapid);
 	id = mapid;
 	LoadXML();
+	TM_MARK("[TenviServer] MARK TenviMap ctor exit id=%u\n", (unsigned)mapid);
 }
 
 rapidxml::xml_node<>* xml_find_dir(rapidxml::xml_node<>* parent, std::string name) {
@@ -103,6 +105,7 @@ bool TenviMap::LoadSubXML() {
 
 	std::string map_xml = tenvi_data.get_xml_path() + +"\\" + region_str + "\\npc\\regen\\" + mapid_str + "_0.xml";
 	OutputDebugStringA(("[Maple] subxml = " + map_xml).c_str());
+	TM_MARK("[TenviServer] MARK LoadSubXML(%s) entry\n", map_xml.c_str());
 	rapidxml::xml_document<> doc;
 
 	try {
@@ -110,8 +113,10 @@ bool TenviMap::LoadSubXML() {
 		doc.parse<0>(xmlFile.data());
 	}
 	catch (...) {
+		TM_MARK("[TenviServer] MARK LoadSubXML parse threw\n");
 		return false;
 	}
+	TM_MARK("[TenviServer] MARK LoadSubXML after parse\n");
 
 	rapidxml::xml_node<>* root = doc.first_node();
 
@@ -121,6 +126,7 @@ bool TenviMap::LoadSubXML() {
 
 	// regen
 	for (rapidxml::xml_node<>* node = root->first_node(); node; node = node->next_sibling()) {
+		TM_MARK("[TenviServer] MARK LoadSubXML regen node\n");
 		TenviRegen regen = {};
 		regen.id = atoi(node->first_attribute("id")->value());
 		regen.flip = atoi(node->first_attribute("flip")->value());
