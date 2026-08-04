@@ -47,10 +47,10 @@ bool MP_PopPacket(std::vector<BYTE> &out);
 /// 阻塞等待指定类型的 ctrl 包结果。timeoutMs=0 为非阻塞。
 bool MP_WaitCtrlResult(BYTE expectCmd, int timeoutMs, BYTE &outByte);
 
-// ---- [v29] GetAsyncKeyState 键盘捕获 API ----
+// ---- [v30] GetAsyncKeyState 键盘捕获 API ----
 
-/// 启动键盘捕获线程(gameWnd=游戏主窗口句柄)
-void MP_StartCapture(HWND gameWnd);
+/// 启动键盘捕获线程(使用进程ID判断前台窗口, 无需传HWND)
+void MP_StartCapture();
 
 /// 停止键盘捕获
 void MP_StopCapture();
