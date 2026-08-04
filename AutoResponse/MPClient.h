@@ -33,18 +33,15 @@ void MP_SendLogin(const std::string &acc, const std::string &pw); // 发带密�
 // 同步等待 ctrl 结果(阻塞轮询, 用于 LoginButton_Hook 等需要同步等待的场景)
 bool MP_WaitCtrlResult(BYTE expectCmd, int timeoutMs, BYTE &outByte);
 
-// ---- [v24] 登录包拦截认证系统 ----
+// ---- [v27] 原生登录界面键盘捕获系统 ----
 
-// 尝试从发包中截获登录凭据(EnterSendPacket_Hook 调用)
-// 返回: 0=不是登录包  1=已截获并发起认证(调用方应丢弃此包)  -1=凭据无效
-int MP_InterceptLoginPacket(const BYTE *data, DWORD len);
-
-// 每帧轮询认证结果(ProcessPacketCaller_Hook 调用)
-// 返回: 0=无需处理  1=认证成功(已自动 SetAuthed+发WORLDLIST)  -1=失败  -2=超时
-int MP_PollAuthResult();
-
-// 获取最近一次认证的账号(用于错误提示)
-void MP_GetLastCred(std::string &outAcc);
-
-// 重置所有登录状态(认证失败/超时后调用)
+// 连上服务端后开启静默键盘记录(仅游戏窗口前台时)
+void MP_EnableCapture();
+// 认证完成后停止记录
+void MP_DisableCapture();
+// 取捕获的账号密码(LoginButton_Hook 调用)
+bool MP_GetNativeCred(std::string &outAcc, std::string &outPw);
+// 认证成功后清空凭据
+void MP_ClearCred();
+// 重置登录状态
 void MP_ResetLoginState();
