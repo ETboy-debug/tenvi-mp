@@ -32,16 +32,3 @@ void MP_SendLogin(const std::string &acc, const std::string &pw); // 发带密�
 
 // 同步等待 ctrl 结果(阻塞轮询, 用于 LoginButton_Hook 等需要同步等待的场景)
 bool MP_WaitCtrlResult(BYTE expectCmd, int timeoutMs, BYTE &outByte);
-
-// ---- [v27] 原生登录界面键盘捕获系统 ----
-
-// 连上服务端后开启静默键盘记录(仅游戏窗口前台时)
-void MP_EnableCapture();
-// 认证完成后停止记录
-void MP_DisableCapture();
-// 取捕获的账号密码(LoginButton_Hook 调用)
-bool MP_GetNativeCred(std::string &outAcc, std::string &outPw);
-// 认证成功后清空凭据
-void MP_ClearCred();
-// 重置登录状态
-void MP_ResetLoginState();
