@@ -1,12 +1,28 @@
 #include"FakeServer.h"
 #include"AutoResponse.h"
 #include"TemporaryData.h"
+#include <mutex>
+#include <map>
 
 #ifdef MP_SERVER
 #include "../StandaloneServer/db.h"
 #endif
 
 thread_local TenviAccount TA; // [MP] 见 FakeServer.h: 按连接线程隔离会话
+
+#ifdef MP_SERVER
+// [MP] 在线玩家快照表(服务端跨线程共享): 用于把同图真人互刷给对方
+struct RemotePlayer {
+	int sid;
+	std::wstring account;
+	DWORD char_id;
+	TenviCharacter chr;
+	WORD map;
+	float x, y;
+};
+static std::mutex g_playersMtx;
+static std::map<int, RemotePlayer> g_players;
+#endif
 // ========== TENVI Packet Response ==========
 #define TENVI_VERSION 0x1023
 
@@ -227,7 +243,7 @@ void ChangeMapPacket(WORD mapid, float x = 0, float y = 0) {
 }
 
 // 0x11
-void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0) {
+void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, int target_sid = -1) {
 	ServerPacket sp(SP_CHARACTER_SPAWN);
 	sp.Encode4(chr.id); // 0048DB9B id, where checks id?
 	sp.EncodeFloat(x); // 0048DBA5, coordinate x
@@ -323,14 +339,16 @@ void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0) {
 		sp.Encode1(0);
 	}
 
-	SendPacket(sp);
+	if (target_sid < 0) SendPacket(sp);
+	else MP_BroadcastToSid(target_sid, sp);
 }
 
 // 0x12
-void RemoveObjectPacket(DWORD object_id) {
+void RemoveObjectPacket(DWORD object_id, int target_sid = -1) {
 	ServerPacket sp(SP_REMOVE_OBJECT);
 	sp.Encode4(object_id); // not only for character
-	SendPacket(sp);
+	if (target_sid < 0) SendPacket(sp);
+	else MP_BroadcastToSid(target_sid, sp);
 }
 
 // 0x14
@@ -766,6 +784,27 @@ void SpawnObjects(TenviCharacter &chr, WORD map_id) {
 	}
 }
 
+#ifdef MP_SERVER
+// [MP] 玩家断开: 从在线表移除, 并通知同图其他人移除其对象
+void MP_RemovePlayer(int sid) {
+	RemotePlayer rp;
+	{
+		std::lock_guard<std::mutex> lk(g_playersMtx);
+		auto it = g_players.find(sid);
+		if (it == g_players.end()) return;
+		rp = it->second;
+		g_players.erase(it);
+	}
+	std::lock_guard<std::mutex> lk(g_playersMtx);
+	for (auto &kv : g_players) {
+		if (kv.second.map == rp.map)
+			RemoveObjectPacket(rp.char_id, kv.first);
+	}
+}
+#else
+void MP_RemovePlayer(int) {}
+#endif
+
 // go to map
 void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 	ChangeMapPacket(map_id, x, y);
@@ -796,6 +835,31 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 #endif
 	SpawnObjects(chr, map_id);
 	CharacterSpawnPacket(chr, x, y);
+
+#ifdef MP_SERVER
+	// [MP] 静态互见: 刷新自己进在线表, 并与同图其他人互刷
+	{
+		std::lock_guard<std::mutex> lk(g_playersMtx);
+		RemotePlayer &me = g_players[t_sid];
+		me.sid = t_sid;
+		me.account = TA.GetAccount();
+		me.char_id = chr.id;
+		me.chr = chr;
+		me.map = chr.map;
+		me.x = x; me.y = y;
+	}
+	{
+		std::lock_guard<std::mutex> lk(g_playersMtx);
+		for (auto &kv : g_players) {
+			int other_sid = kv.first;
+			RemotePlayer &other = kv.second;
+			if (other_sid == t_sid) continue;
+			if (other.map != chr.map) continue;
+			CharacterSpawnPacket(other.chr, other.x, other.y);   // 自己看到别人
+			CharacterSpawnPacket(chr, x, y, other_sid);          // 别人看到自己
+		}
+	}
+#endif
 }
 
 // enter map by login or something
