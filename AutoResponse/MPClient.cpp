@@ -223,6 +223,9 @@ static bool ShowLoginOverlay() {
 	// 聚焦到账号输入框
 	SetFocus(g_hEdtAcc);
 
+	// [关键] 禁用游戏窗口, 防止用户点底部的原生登录按钮
+	EnableWindow(hOwner, FALSE);
+
 	// 模态消息循环
 	InterlockedExchange(&g_ovResult, 0);
 	ShowWindow(g_hOverlay, SW_SHOW);
@@ -235,6 +238,10 @@ static bool ShowLoginOverlay() {
 			DispatchMessageW(&msg);
 		}
 	}
+
+	// [关键] 恢复游戏窗口(无论成功/取消/关闭都要恢复)
+	EnableWindow(hOwner, TRUE);
+	SetForegroundWindow(hOwner); // 把焦点还给游戏
 
 	bool ok = (g_ovResult == 1);
 	FreeOverlayResources();
