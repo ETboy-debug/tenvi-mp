@@ -121,9 +121,32 @@ void MP_Pump() {
 // Login Button Click
 DWORD (__thiscall *_LoginButton)(void *ecx) = NULL;
 DWORD __fastcall LoginButton_Hook(void *ecx) {
-	// [MP] 登录由游戏内弹窗驱动: 未认证前抑制原生登录, 防止 TA 未建就推进;
-	// 认证成功后由 MP_Thread 主动发 WORLDLIST, 这里放行即可(避免抢跑/重复)。
-	if (!MP_IsAuthed()) return 0;
+	// [MP] 从冲锋岛原生登录界面读取账号密码, 发服务端认证(自动注册+校验合一)
+	std::string acc, pw;
+	if (!MP_ReadNativeCred(acc, pw)) {
+		MessageBoxA(NULL, "Cannot read login form", "Tenvi MP", MB_OK | MB_ICONERROR);
+		return 0;
+	}
+	if (acc.empty()) {
+		MessageBoxA(NULL, "Please enter account", "Tenvi MP", MB_OK | MB_ICONWARNING);
+		return 0;
+	}
+
+	// 发送登录请求(服务端: 不存在则自动注册, 存在则校验密码)
+	MP_SendLogin(acc, pw);
+
+	BYTE res = 0;
+	if (!MP_WaitCtrlResult(MP_CTRL_LOGIN_RESULT, 8000, res)) {
+		MessageBoxA(NULL, "Auth timeout (server not responding?)", "Tenvi MP", MB_OK | MB_ICONERROR);
+		return 0;
+	}
+	if (res != 1) {
+		MessageBoxA(NULL, "Wrong password or account error", "Tenvi MP", MB_OK | MB_ICONWARNING);
+		return 0;
+	}
+
+	// 认证成功 -> 放行进游戏
+	InterlockedExchange(&g_authed, 1);
 	MP_SendCtrl(MP_CTRL_WORLDLIST);
 	return 0;
 }
