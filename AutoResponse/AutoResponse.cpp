@@ -121,23 +121,31 @@ void MP_Pump() {
 // Login Button Click
 DWORD (__thiscall *_LoginButton)(void *ecx) = NULL;
 DWORD __fastcall LoginButton_Hook(void *ecx) {
-	// [MP v24] 用户点了原生"登录"按钮 -> 放行原始处理(让它发登录包)
-	// -> EnterSendPacket_Hook 会拦截登录包并提取凭据 -> 发服务端认证
+	// [MP 保底 v24-fix] 冲锋岛原生登录框的输入无法从外部捕获
+	// (DirectX 自绘 + DirectInput 独占键盘, 已实测 5 种方案全部失败:
+	//  枚举控件 / WM_GETMESSAGE / WH_KEYBOARD_LL / 登录包拦截 / DLL 浮层被否决)。
+	// 改用本机名作为联机账号: 点原生"登录"按钮即一键进游戏,
+	// 每台机器角色独立、可联机。账号密码系统后续单独实现。
 	if (MP_IsAuthed()) {
-		DEBUG(L"[MP] LoginButton: already authed, allowing pass-through");
-		return 0; // 原始登录已被 TenviTest 替换, WORLDLIST 已发送
+		DEBUG(L"[MP] LoginButton: already authed");
+		return 0;
 	}
 
-	DEBUG(L"[MP] LoginButton clicked -> setting login pending, calling original handler");
-	// 标记: 等待截获即将发出的登录包
-	extern volatile LONG g_loginPending;
-	InterlockedExchange(&g_loginPending, 1);
-
-	// 调用原始按钮处理函数 -> 游戏会读取输入框内容 -> 构造登录包 -> 调用 EnterSendPacket
-	// 我们的 EnterSendPacket_Hook 会在那里拦截包并提取凭据
-	if (_LoginButton) {
-		_LoginButton(ecx);
+	// 用本机名当账号(每台机器不同 -> 满足"角色不互通 / 能联机")
+	char cn[64] = {};
+	DWORD cnSize = sizeof(cn);
+	std::string acc = "Player";
+	if (GetComputerNameA(cn, &cnSize) && cnSize > 0 && cnSize <= 63) {
+		acc = std::string(cn, cnSize);
 	}
+
+	DEBUG(L"[MP] LoginButton -> fallback login, account='%hs'", acc.c_str());
+	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+	  if (f) { fprintf(f, "[LOGINBTN] fallback account=%s\n", acc.c_str()); fflush(f); fclose(f); } }
+
+	// 发联机登录(机器名当账号, 密码同值, 仅隔离用) + 直接进入选世界流程
+	MP_SendLogin(acc, acc);
+	MP_SendCtrl(MP_CTRL_WORLDLIST);
 	return 0;
 }
 
