@@ -31,9 +31,10 @@ bool MP_IsConnected();
 bool MP_IsAuthed();
 void MP_SetAuthed(bool v);
 
-// [MP] 登录凭据(深色浮层输入)
+// [MP] 原生登录界面凭据捕获(低级键盘钩子 WH_KEYBOARD_LL)
 bool MP_GetNativeCred(std::string &outAcc, std::string &outPw);
-void NatClearCred();  // 清空捕获的凭据
+void NatClearCred();       // 清空捕获的凭据
+void UninstallKBHook();    // 卸载键盘钩子(认证成功后调用)
 
 // [MP] 发送带密码的登录请求 + 同步等待结果
 void MP_SendLogin(const std::string &acc, const std::string &pw);
