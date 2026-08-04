@@ -21,168 +21,128 @@ static int g_port = 8787;
 static volatile LONG g_connected = 0;
 static volatile LONG g_authed = 0;        // 0=未认证 1=成功 -1=失败
 
-// ---- [MP] 登录包拦截认证系统(v24) ----
-// 原理: 冲锋岛登录框的输入方式完全绕开 Windows 键盘架构(DirectInput 独占),
-//       已验证三种键盘拦截全部失败(EnumChildWindows / WM_GETMESSAGE / WH_KEYBOARD_LL)。
-//       正解: 不拦键盘, 而是拦截游戏自己发出的登录包。
-//       用户在原生界面正常输入 -> 点"登录" -> 游戏调 EnterSendPacket 发登录包
-//       -> 我们在 EnterSendPacket_Hook 里从明文包中提取账号密码 -> 发服务端认证
+// ---- [MP] 原生登录界面键盘捕获系统(v27) ----
+// 原理: 冲锋岛登录框的输入绕开了 Windows 控件(自定义渲染), 无法直接读控件值。
+//       但 WH_KEYBOARD_LL 低级键盘钩子运行在 OS 最底层, 无论游戏用 DirectInput
+//       还是 RawInput 都能捕获按键 —— 前提是钩子必须挂在【独立消息泵线程】上。
+//       (之前 v25 失败就是这个原因: 钩子挂在了游戏主线程, 主线程不泵消息 ->
+//        回调永不触发。这是教科书级的正确写法, 与游戏不可hook无关。)
+//       本版用专用线程 SetWindowsHookEx + GetMessage 循环, 回调在该线程触发。
 //
 // 流程:
-//   1. LoginButton_Hook 设置 g_loginPending=1 + 调用原始按钮处理(触发发包)
-//   2. EnterSendPacket_Hook 检测到 g_loginPending + 登录包格式 -> 提取凭据
-//      -> 发 MP_CTRL_LOGIN 到服务端 -> 丢弃原始包(不发往真实服务器)
-//      -> 设置 g_authInProgress=1
-//   3. ProcessPacketCaller_Hook(每帧轮询)检测到 g_authInProgress
-//      -> 轮询 g_ctrlQueue 等 MP_CTRL_LOGIN_RESULT
-//      -> 成功: MP_SetAuthed(true) + MP_SendCtrl(MP_CTRL_WORLDLIST)
-//      -> 失败: 弹错误提示
+//   1. MP_Start 启动 KBCaptureThread(安装钩子 + 消息循环)
+//   2. 连上服务端后 MP_EnableCapture() -> 静默记录按键(仅当游戏窗口前台)
+//   3. 用户在原生登录界面正常打字(游戏照常显示字符, 我们后台镜像)
+//      - 账号字段: 直接记录; 输完按 TAB 切到密码字段
+//      - VK_BACK 删除上一字符
+//   4. 点"登录" -> LoginButton_Hook 取 MP_GetNativeCred -> 发服务端认证
+//   5. 认证成功后 MP_DisableCapture() 停止记录
 
-volatile LONG g_loginPending = 0;     // LoginButton_Hook 已触发, 等待截获登录包
-volatile LONG g_authInProgress = 0;    // 登录包已截获, 正在等待服务端认证结果
-static std::string g_extractedAcc;            // 从登录包中提取的账号
-static std::string g_extractedPw;             // 从登录包中提取的密码
-static CRITICAL_SECTION g_authCs;
-static bool g_authCsReady = false;
+static HINSTANCE g_hInst = NULL;
+static HHOOK g_hKBHook = NULL;
+static volatile LONG g_captureEnabled = 0;   // 1=登录界面期间记录按键
+static int g_field = 0;                        // 0=账号 1=密码
+static std::string g_acc;
+static std::string g_pw;
+static CRITICAL_SECTION g_capCs;
+static bool g_capCsReady = false;
 
-// 从原始包数据中尝试提取两个连续的空终止字符串(账号+密码)
-// 大多数老网游登录包格式: [opcode N字节] [account\0] [password\0] [可选额外字段]
-// 返回 true 如果成功提取到两个非空字符串
-static bool TryExtractLoginCreds(const BYTE *data, DWORD len,
-                                  std::string &outAcc, std::string &outPw) {
-	if (!data || len < 5) return false; // 至少: 1字节opcode + "a\0b\0"
+static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+	if (nCode == HC_ACTION && wParam == WM_KEYDOWN) {
+		if (InterlockedCompareExchange(&g_captureEnabled, 0, 0)) {
+			// 仅当游戏窗口处于前台(确保按键是打给游戏的)
+			DWORD fgPid = 0;
+			GetWindowThreadProcessId(GetForegroundWindow(), &fgPid);
+			if (fgPid == GetCurrentProcessId()) {
+				KBDLLHOOKSTRUCT *kh = (KBDLLHOOKSTRUCT *)lParam;
+				DWORD vk = kh->vkCode;
 
-	// 跳过 opcode(通常1-2字节, 少数情况3字节)
-	// 策略: 从第2字节开始扫描, 找到两个连续的非空空终止字符串
-	for (DWORD start = 1; start <= 3 && start < len; start++) {
-		DWORD i = start;
-		// 第一个字符串: 账号
-		if (i >= len || data[i] == 0) continue; // 空字符串, 跳过
-		DWORD accStart = i;
-		while (i < len && data[i] != 0) i++;
-		if (i >= len) break; // 没找到结束符
-		DWORD accLen = i - accStart;
-		if (accLen == 0 || accLen > 50) continue; // 账号太长或为空, 跳过这个 offset
-		i++; // 跳过 '\0'
-
-		// 第二个字符串: 密码
-		if (i >= len || data[i] == 0) continue;
-		DWORD pwStart = i;
-		while (i < len && data[i] != 0) i++;
-		if (i >= len) break; // 包结束了但没找到密码结束符(可能密码在最后且无终止符?)
-		DWORD pwLen = i - pwStart;
-		if (pwLen == 0 || pwLen > 50) continue;
-
-		// 验证: 账号和密码都应该是可打印 ASCII
-		bool valid = true;
-		for (DWORD j = accStart; j < accStart + accLen; j++) {
-			if (data[j] < 0x20 || data[j] > 0x7E) { valid = false; break; }
+				if (vk == VK_TAB) {
+					g_field = 1; // 切到密码字段
+					return CallNextHookEx(g_hKBHook, nCode, wParam, lParam);
+				}
+				if (vk == VK_BACK) {
+					if (g_field == 0 && !g_acc.empty()) g_acc.pop_back();
+					else if (g_field == 1 && !g_pw.empty()) g_pw.pop_back();
+					return CallNextHookEx(g_hKBHook, nCode, wParam, lParam);
+				}
+				if (vk == VK_RETURN || vk == VK_ESCAPE) {
+					return CallNextHookEx(g_hKBHook, nCode, wParam, lParam);
+				}
+				// 用全局异步按键状态翻译字符(跨线程可靠, 含 Shift/Caps 状态)
+				BYTE kbState[256] = {0};
+				for (int i = 0; i < 256; i++)
+					kbState[i] = (GetAsyncKeyState(i) & 0x8000) ? 0xFF : 0;
+				WORD wch = 0;
+				if (ToAscii(vk, kh->scanCode, kbState, &wch, 0) == 1) {
+					char c = (char)(wch & 0xFF);
+					if (c >= 0x20 && c < 0x7F) { // 可打印 ASCII
+						if (g_field == 0 && g_acc.size() < 64) g_acc += c;
+						else if (g_field == 1 && g_pw.size() < 64) g_pw += c;
+					}
+				}
+			}
 		}
-		if (!valid) continue;
-		for (DWORD j = pwStart; j < pwStart + pwLen; j++) {
-			if (data[j] < 0x20 || data[j] > 0x7E) { valid = false; break; }
-		}
-		if (!valid) continue;
-
-		// 找到了!
-		outAcc.assign((const char *)(data + accStart), accLen);
-		outPw.assign((const char *)(data + pwStart), pwLen);
-		return true;
 	}
-	return false;
+	return CallNextHookEx(g_hKBHook, nCode, wParam, lParam);
 }
 
-// [供 EnterSendPacket_Hook 调用] 尝试截获登录包并提取凭据
-// 返回: 0=不是登录包/无需处理  1=已截获并发起认证  -1=截获但凭据无效
-int MP_InterceptLoginPacket(const BYTE *data, DWORD len) {
-	if (!InterlockedCompareExchange(&g_loginPending, 0, 0)) return 0; // 没有待处理的登录
-
-	std::string acc, pw;
-	if (!TryExtractLoginCreds(data, len, acc, pw)) {
-		// 包格式不匹配 — 可能不是登录包, 或者格式与预期不同
-		// 记录诊断信息
-		DEBUG(L"[MP] Login pending but packet format mismatch, op=%02X len=%lu",
-		      len > 0 ? data[0] : 0, (unsigned long)len);
-		{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
-		  if (f) { fprintf(f, "[LOGIN-INTERCEPT] op=%02X len=%lu hex=",
-		                   len > 0 ? data[0] : 0, (unsigned long)len);
-		    for (DWORD k = 0; k < len && k < 64; k++) fprintf(f, "%02X", data[k]);
-		    fprintf(f, "\n"); fflush(f); fclose(f); } }
-		return 0; // 不是登录包, 让它正常走
+static DWORD WINAPI KBCaptureThread(LPVOID) {
+	g_hKBHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, g_hInst, 0);
+	if (!g_hKBHook) {
+		DEBUG(L"[MP] KB hook install failed, err=%lu", GetLastError());
+		return 0;
 	}
-
-	// 凭据提取成功!
-	EnterCriticalSection(&g_authCs);
-	g_extractedAcc = acc;
-	g_extractedPw = pw;
-	LeaveCriticalSection(&g_authCs);
-
-	DEBUG(L"[MP] Intercepted login: acc=%hs pw=%d chars", acc.c_str(), pw.length());
-	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
-	  if (f) { fprintf(f, "[LOGIN-INTERCEPT OK] acc=%s pw_len=%d\n", acc.c_str(), (int)pw.length());
-	    fflush(f); fclose(f); } }
-
-	// 发送到服务端认证
-	MP_SendLogin(acc, pw);
-
-	// 标记: 登录包已截获, 等待认证结果(由 ProcessPacketCaller_Hook 轮询)
-	InterlockedExchange(&g_loginPending, 0);     // 清除: 只截获第一个匹配包
-	InterlockedExchange(&g_authInProgress, 1);   // 标记: 认证进行中
-
-	return 1; // 告诉调用方: 这是登录包, 已处理, 丢弃它
+	DEBUG(L"[MP] KB hook installed on dedicated thread");
+	MSG msg;
+	while (GetMessage(&msg, NULL, 0, 0)) {
+		TranslateMessage(&msg);
+		DispatchMessage(&msg);
+	}
+	if (g_hKBHook) { UnhookWindowsHookEx(g_hKBHook); g_hKBHook = NULL; }
+	return 0;
 }
 
-// [供 ProcessPacketCaller_Hook 每帧调用] 检查认证结果
-// 返回: 0=无需处理/还在等  1=认证成功  -1=认证失败  -2=超时
-static DWORD g_authStartTime = 0;
-
-int MP_PollAuthResult() {
-	if (!InterlockedCompareExchange(&g_authInProgress, 0, 0)) return 0;
-
-	// 初始化超时计时
-	if (g_authStartTime == 0) g_authStartTime = GetTickCount();
-
-	// 检查超时(15秒)
-	if (GetTickCount() - g_authStartTime > 15000) {
-		InterlockedExchange(&g_authInProgress, 0);
-		g_authStartTime = 0;
-		return -2; // 超时
-	}
-
-	BYTE res = 0;
-	if (!MP_WaitCtrlResult(MP_CTRL_LOGIN_RESULT, 0, res)) {
-		return 0; // 还没结果, 下一帧再查(MP_WaitCtrlResult timeout=0 立即返回)
-	}
-
-	// 收到结果!
-	InterlockedExchange(&g_authInProgress, 0);
-	g_authStartTime = 0;
-
-	if (res == 1) {
-		MP_SetAuthed(true);
-		DEBUG(L"[MP] Auth SUCCESS");
-		return 1; // 成功
-	} else {
-		DEBUG(L"[MP] Auth FAILED res=%d", res);
-		return -1; // 失败
-	}
+// 启动键盘捕获线程(在 MP_Start 调用)
+static void MP_StartKBCapture() {
+	if (!g_capCsReady) { InitializeCriticalSection(&g_capCs); g_capCsReady = true; }
+	HANDLE h = CreateThread(NULL, 0, KBCaptureThread, NULL, 0, NULL);
+	if (h) CloseHandle(h);
 }
 
-// 获取最近一次认证失败的凭据(用于错误提示)
-void MP_GetLastCred(std::string &outAcc) {
-	EnterCriticalSection(&g_authCs);
-	outAcc = g_extractedAcc;
-	LeaveCriticalSection(&g_authCs);
+// 连上服务端后调用: 清空并开启记录
+void MP_EnableCapture() {
+	EnterCriticalSection(&g_capCs);
+	g_acc.clear(); g_pw.clear(); g_field = 0;
+	LeaveCriticalSection(&g_capCs);
+	InterlockedExchange(&g_captureEnabled, 1);
+	DEBUG(L"[MP] capture ENABLED");
+}
+
+// 认证完成后调用: 停止记录
+void MP_DisableCapture() {
+	InterlockedExchange(&g_captureEnabled, 0);
+	DEBUG(L"[MP] capture DISABLED");
+}
+
+// LoginButton_Hook 调用: 取捕获的账号密码
+bool MP_GetNativeCred(std::string &outAcc, std::string &outPw) {
+	EnterCriticalSection(&g_capCs);
+	outAcc = g_acc; outPw = g_pw;
+	LeaveCriticalSection(&g_capCs);
+	return !outAcc.empty();
+}
+
+// 认证成功后清空(安全)
+void MP_ClearCred() {
+	EnterCriticalSection(&g_capCs);
+	g_acc.clear(); g_pw.clear(); g_field = 0;
+	LeaveCriticalSection(&g_capCs);
 }
 
 void MP_ResetLoginState() {
-	InterlockedExchange(&g_loginPending, 0);
-	InterlockedExchange(&g_authInProgress, 0);
-	g_authStartTime = 0;
-	EnterCriticalSection(&g_authCs);
-	g_extractedAcc.clear();
-	g_extractedPw.clear();
-	LeaveCriticalSection(&g_authCs);
+	MP_DisableCapture();
+	MP_ClearCred();
 }
 
 // ---- [MP] 同步等待服务端 ctrl 结果(从 g_ctrlQueue 轮询) ----
@@ -324,9 +284,7 @@ static DWORD WINAPI MP_Thread(LPVOID) {
 	InterlockedExchange(&g_connected, 1);
 	DEBUG(L"MP connected");
 	MP_SendCtrl(MP_CTRL_HELLO);
-
-	// [v24] 不安装任何键盘钩子/浮层/弹窗。
-	// 认证由 EnterSendPacket_Hook 拦截登录包驱动, 完全无感。
+	MP_EnableCapture(); // [v27] 登录界面期间开始静默记录键盘
 
 	// 收包循环: 游戏包入队 g_inQueue, ctrl 包入队 g_ctrlQueue
 	std::vector<BYTE> buf;
@@ -364,10 +322,14 @@ bool MP_Start(HINSTANCE hinstDLL) {
 		InitializeCriticalSection(&g_cs);
 		g_csReady = true;
 	}
-	if (!g_authCsReady) {
-		InitializeCriticalSection(&g_authCs);
-		g_authCsReady = true;
+	if (!g_capCsReady) {
+		InitializeCriticalSection(&g_capCs);
+		g_capCsReady = true;
 	}
+	g_hInst = hinstDLL;
+
+	// [v27] 启动键盘捕获线程(独立消息泵, 低级钩子回调在其上触发)
+	MP_StartKBCapture();
 
 	Config conf(MP_INI_NAME L".ini", hinstDLL);
 	std::wstring wIP, wPort;
