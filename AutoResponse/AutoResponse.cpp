@@ -119,57 +119,36 @@ void MP_Pump() {
 }
 
 // Login Button Click
+// [v28] MP_Thread 连上服务端后已自动发送登录请求(账号密码来自 ini)。
+//       这里只等结果: 成功->放行进游戏, 失败/超时->拦截并提示。
 DWORD (__thiscall *_LoginButton)(void *ecx) = NULL;
 DWORD __fastcall LoginButton_Hook(void *ecx) {
-	// [MP v27] 用户在原生登录界面直接打字(后台键盘钩子静默捕获),
-	// 点"登录"时取捕获的账号密码 -> 发服务端认证(自动注册/验密合一)。
 	if (MP_IsAuthed()) {
-		DEBUG(L"[MP] LoginButton: already authed");
-		return 0;
+		DEBUG(L"[MP] LoginButton: already authed, let pass");
+		return 0; // 已认证, 放行(不调用原始登录函数, 由我们的流程接管)
 	}
 
-	std::string acc, pw;
-	if (!MP_GetNativeCred(acc, pw)) {
-		// 没有捕获到任何输入 —— 提示用户先在登录界面打字
+	DEBUG(L"[MP] LoginButton: waiting for auth result...");
+	BYTE res = 0;
+	if (!MP_WaitCtrlResult(MP_CTRL_LOGIN_RESULT, 8000, res)) {
 		MessageBoxA(NULL,
-			"Please type your account and password in the login form,\n"
-			"then click Login.\n\n"
-			"(After the account, press TAB to switch to the password field.)",
-			"Tenvi MP", MB_OK | MB_ICONINFORMATION);
+			"Login timeout.\n"
+			"Server may be down or network issue.",
+			"Tenvi MP", MB_OK | MB_ICONERROR);
 		return 0;
 	}
-	if (pw.empty()) {
-		// 只捕获到账号, 没捕获到密码 —— 多半是没按 TAB 切到密码框
+	if (res != 1) {
 		MessageBoxA(NULL,
-			"Account captured, but no password.\n"
-			"After typing the account, press TAB to move to the\n"
-			"password field, then type the password, then click Login.",
+			"Login failed.\n"
+			"Wrong password or account error.",
 			"Tenvi MP", MB_OK | MB_ICONWARNING);
 		return 0;
 	}
 
-	DEBUG(L"[MP] Native login: acc=%hs pw=%d chars", acc.c_str(), pw.length());
-	MP_SendLogin(acc, pw);
-
-	BYTE res = 0;
-	if (!MP_WaitCtrlResult(MP_CTRL_LOGIN_RESULT, 8000, res)) {
-		MessageBoxA(NULL, "Login timeout (server not responding?).",
-		            "Tenvi MP", MB_OK | MB_ICONERROR);
-		MP_DisableCapture();
-		return 0;
-	}
-	if (res != 1) {
-		MessageBoxA(NULL, "Login failed: wrong password or account error.",
-		            "Tenvi MP", MB_OK | MB_ICONWARNING);
-		MP_DisableCapture();
-		return 0;
-	}
-
-	// 认证成功: 停止捕获、清空凭据(安全)、放行
-	MP_ClearCred();
-	MP_DisableCapture();
+	// 认证成功 -> 放行
 	MP_SetAuthed(true);
 	MP_SendCtrl(MP_CTRL_WORLDLIST);
+	DEBUG(L"[MP] LoginButton: auth OK, sending worldlist");
 	return 0;
 }
 
