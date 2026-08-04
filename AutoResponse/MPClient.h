@@ -31,7 +31,7 @@ bool MP_IsConnected();
 bool MP_IsAuthed();
 void MP_SetAuthed(bool v);
 
-// [MP] 原生登录界面凭据捕获(消息钩子)
+// [MP] 登录凭据(深色浮层输入)
 bool MP_GetNativeCred(std::string &outAcc, std::string &outPw);
 void NatClearCred();  // 清空捕获的凭据
 
