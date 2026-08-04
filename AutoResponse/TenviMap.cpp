@@ -4,6 +4,7 @@
 #include"TenviData.h"
 #include"../EmuMainTenvi/ConfigTenvi.h"
 #include<cstdio>
+#include<cstring>
 #ifdef MP_SERVER
 #define TM_MARK(...) do { printf(__VA_ARGS__); fflush(stdout); } while(0)
 #else
@@ -18,11 +19,21 @@ TenviMap::TenviMap(DWORD mapid) {
 }
 
 rapidxml::xml_node<>* xml_find_dir(rapidxml::xml_node<>* parent, std::string name) {
+	TM_MARK("[TenviServer] MARK xml_find_dir(%s) entry parent=%p\n", name.c_str(), (void*)parent);
+	if (!parent) return NULL;
+	int i = 0;
 	for (rapidxml::xml_node<>* child = parent->first_node(); child; child = child->next_sibling()) {
-		if (name.compare(child->name()) == 0) {
+		const char *cn = child->name();
+		std::size_t cnlen = child->name_size();
+		TM_MARK("[TenviServer] MARK   xfd child[%d] type=%d cnlen=%d cn=%p\n", i, (int)child->type(), (int)cnlen, (void*)cn);
+		i++;
+		// [FIX] 用 name_size()+memcmp 比较, 不依赖 name() 以 null 结尾(防止 compare 内部 strlen 越界)
+		if (cn && cnlen == name.size() && cnlen > 0 && memcmp(cn, name.c_str(), cnlen) == 0) {
+			TM_MARK("[TenviServer] MARK   xfd FOUND\n");
 			return child;
 		}
 	}
+	TM_MARK("[TenviServer] MARK   xfd not found\n");
 	return NULL;
 }
 
