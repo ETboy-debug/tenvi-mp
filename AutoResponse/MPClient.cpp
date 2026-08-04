@@ -190,8 +190,8 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 						}
 					}
 
-				// 扫描所有虚拟键(只扫描常用范围以提高性能)
-				for (UINT vk = 0x08; vk <= 0xFE; vk++) {
+				// 扫描所有虚拟键(从0x01开始以包含鼠标按键)
+				for (UINT vk = 0x01; vk <= 0xFE; vk++) {
 					SHORT state = GetAsyncKeyState(vk);
 					bool nowDown = (state & 0x8000) != 0;
 					bool wasDown = (g_prevKeys[vk] & 0x80) != 0;
