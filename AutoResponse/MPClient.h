@@ -37,6 +37,7 @@ void MP_SendCtrl(BYTE cmd);
 bool MP_PopPacket(std::vector<BYTE> &out);
 bool MP_IsConnected();
 bool MP_IsAuthed();   // [MP] 原生登录界面认证是否成功
+void MP_SetAuthed(bool v); // [MP] 设置认证成功标志(被 AutoResponse.cpp 调用)
 
 // [MP] 从冲锋岛原生登录界面读取账号密码(枚举 EDIT 子控件)
 bool MP_ReadNativeCred(std::string &outAcc, std::string &outPw);
