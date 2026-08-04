@@ -146,7 +146,7 @@ DWORD __fastcall LoginButton_Hook(void *ecx) {
 	}
 
 	// 认证成功 -> 放行进游戏
-	InterlockedExchange(&g_authed, 1);
+	MP_SetAuthed(true);
 	MP_SendCtrl(MP_CTRL_WORLDLIST);
 	return 0;
 }
