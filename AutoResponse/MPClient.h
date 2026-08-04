@@ -15,7 +15,8 @@
 #define MP_CTRL_HELLO           1  // 客户端握手
 #define MP_CTRL_LOGIN           4  // 登录请求(账号\0密码, 自动注册+验密)
 #define MP_CTRL_WORLDLIST       6  // 请求世界列表
-#define MP_CTRL_LOGIN_RESULT    10 // 登录结果(1=成功)
+#define MP_CTRL_CHARLIST        7  // 请求角色列表
+#define MP_CTRL_LOGIN_RESULT   10  // 登录结果(1=成功)
 
 // ---- 网络基础 API ----
 
