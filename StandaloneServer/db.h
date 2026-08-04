@@ -135,6 +135,16 @@ public:
 		}
 	}
 
+	void deleteChar(const std::wstring &acc, DWORD id) {
+		std::lock_guard<std::mutex> lk(m_);
+		auto it = chars_.find(acc);
+		if (it == chars_.end()) return;
+		auto &v = it->second;
+		for (auto ci = v.begin(); ci != v.end(); ++ci) {
+			if (ci->id == id) { v.erase(ci); save(); return; }
+		}
+	}
+
 	const std::map<std::wstring, int> &accounts() { return accounts_; }
 	const std::map<std::wstring, std::vector<DBCharRow>> &chars() { return chars_; }
 
