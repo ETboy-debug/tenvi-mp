@@ -43,7 +43,10 @@ using namespace std;
 #define MP_CTRL_HELLO     1
 #define MP_CTRL_WORLDLIST 2
 #define MP_CTRL_CHARLIST  3
-#define MP_CTRL_LOGIN     4   // [MP] 客户端上报账号名(utf8), payload[2..] 为账号
+#define MP_CTRL_LOGIN     4   // [MP] 登录: payload[2..] = utf8 "账号\0密码"
+#define MP_CTRL_REGISTER  5   // [MP] 注册: payload[2..] = utf8 "账号\0密码"
+#define MP_CTRL_LOGIN_RESULT   6 // 服务端回: payload[2] = 1 成功 / 0 失败(密码错)
+#define MP_CTRL_REGISTER_RESULT 7 // 服务端回: payload[2] = 1 成功 / 0 账号已存在
 
 #define MP_MAX_PLAYERS 65535   // [MP] 人数上限(单机私服用, 对小伙伴联机等于无上限; 保留拒绝逻辑防连接风暴)
 
@@ -76,7 +79,7 @@ static std::mutex g_adminMutex;
 
 // ---- 会话级(线程局部): 每个玩家一份 ----
 static thread_local SOCKET t_client = INVALID_SOCKET;
-static thread_local int t_sid = 0;
+thread_local int t_sid = 0;
 static thread_local int t_sendCount = 0;
 static thread_local int t_recvCount = 0;
 
@@ -147,6 +150,22 @@ void SendPacket(ServerPacket &sp) {
 void SendPacket2(ServerPacket &sp) { SendPacket(sp); }
 void DelaySendPacket(ServerPacket &sp) { SendPacket(sp); }
 
+// [MP] 向本线程客户端回一条控制结果(登录成功/失败、注册结果等)
+static void SendCtrlResult(BYTE cmd, const BYTE *data, DWORD dn) {
+	if (t_client == INVALID_SOCKET) return;
+	DWORD len = 1 + 1 + dn; // type + cmd + data
+	vector<BYTE> frame;
+	frame.push_back((BYTE)(len & 0xFF));
+	frame.push_back((BYTE)((len >> 8) & 0xFF));
+	frame.push_back((BYTE)((len >> 16) & 0xFF));
+	frame.push_back((BYTE)((len >> 24) & 0xFF));
+	frame.push_back(MP_TYPE_CTRL);
+	frame.push_back(cmd);
+	if (dn) frame.insert(frame.end(), data, data + dn);
+	int r = send(t_client, (const char *)&frame[0], (int)frame.size(), 0);
+	if (r == SOCKET_ERROR) Log("SendCtrlResult send failed, err=%d", WSAGetLastError());
+}
+
 // [MP] 向指定 socket 发游戏包(供 GM 广播用)
 static void SendPacketTo(SOCKET s, ServerPacket &sp) {
 	if (s == INVALID_SOCKET) return;
@@ -160,6 +179,17 @@ static void SendPacketTo(SOCKET s, ServerPacket &sp) {
 	frame.push_back(MP_TYPE_GAME);
 	frame.insert(frame.end(), data.begin(), data.end());
 	send(s, (const char *)&frame[0], (int)frame.size(), 0);
+}
+
+// [MP] 把包发给指定 sid 的连接(供 FakeServer 做跨玩家广播)
+void MP_BroadcastToSid(int sid, ServerPacket &sp) {
+	SOCKET s = INVALID_SOCKET;
+	{
+		std::lock_guard<std::mutex> lk(g_adminMutex);
+		auto it = g_onlineSock.find(sid);
+		if (it != g_onlineSock.end()) s = it->second;
+	}
+	if (s != INVALID_SOCKET) SendPacketTo(s, sp);
 }
 
 // [MP] GM 广播: 给所有在线客户端发一条 Board 公告
@@ -298,15 +328,21 @@ static void HandleCtrl(BYTE cmd, const BYTE *p, DWORD n) {
 		CharacterListPacket_Test();
 		break;
 	case MP_CTRL_LOGIN: {
-		// payload[2..] 为账号名(utf8)
-		std::string acc;
-		if (n >= 3) {
-			acc.assign((const char *)(p + 2), n - 2);
-		}
-		// 去掉可能的结尾 \0
-		while (!acc.empty() && acc.back() == '\0') acc.pop_back();
-		std::wstring wacc = Utf8ToW(acc);
+		// [MP] payload[2..] = utf8 "账号\0密码"
+		std::string body;
+		if (n >= 3) body.assign((const char *)(p + 2), n - 2);
+		size_t z = body.find('\0');
+		std::string acc8 = (z == std::string::npos) ? body : body.substr(0, z);
+		std::string pw8  = (z == std::string::npos) ? std::string() : body.substr(z + 1);
+		std::wstring wacc = Utf8ToW(acc8);
+		std::wstring wpw  = Utf8ToW(pw8);
 		if (wacc.empty()) wacc = L"Player";
+		if (!db().checkPassword(wacc, wpw)) {
+			Log("ctrl: login FAILED (wrong password) account = %s", acc8.c_str());
+			BYTE fail = 0;
+			SendCtrlResult(MP_CTRL_LOGIN_RESULT, &fail, 1); // 通知 DLL: 密码错
+			break; // 不 SetAccount, 客户端停留在登录界面
+		}
 		TA.SetAccount(wacc);
 		TA.ReloadFromDB();
 		// [MP] 登录后才知道账号名, 这里补登记到 GM 在线表, 否则 LIST 永远显示 (none)
@@ -314,7 +350,28 @@ static void HandleCtrl(BYTE cmd, const BYTE *p, DWORD n) {
 			std::lock_guard<std::mutex> lock(g_adminMutex);
 			g_onlineAcc[t_sid] = wacc;
 		}
-		Log("ctrl: login account = %s (chars=%d)", acc.c_str(), (int)TA.GetCharacters().size());
+		BYTE ok = 1;
+		SendCtrlResult(MP_CTRL_LOGIN_RESULT, &ok, 1); // 通知 DLL: 登录成功
+		Log("ctrl: login account = %s (chars=%d)", acc8.c_str(), (int)TA.GetCharacters().size());
+		break;
+	}
+	case MP_CTRL_REGISTER: {
+		// [MP] payload[2..] = utf8 "账号\0密码"
+		std::string body;
+		if (n >= 3) body.assign((const char *)(p + 2), n - 2);
+		size_t z = body.find('\0');
+		std::string acc8 = (z == std::string::npos) ? body : body.substr(0, z);
+		std::string pw8  = (z == std::string::npos) ? std::string() : body.substr(z + 1);
+		std::wstring wacc = Utf8ToW(acc8);
+		std::wstring wpw  = Utf8ToW(pw8);
+		if (wacc.empty()) {
+			Log("ctrl: register FAILED (empty account)");
+			break;
+		}
+		bool ok = db().registerAccount(wacc, wpw);
+		BYTE rb = ok ? 1 : 0;
+		SendCtrlResult(MP_CTRL_REGISTER_RESULT, &rb, 1);
+		Log("ctrl: register account = %s -> %s", acc8.c_str(), ok ? "OK" : "EXISTS");
 		break;
 	}
 	default:
@@ -406,6 +463,7 @@ static DWORD WINAPI ClientThread(LPVOID param) {
 		g_onlineAcc.erase(t_sid);
 		g_kickSet.erase(t_sid);
 	}
+	MP_RemovePlayer(t_sid); // [MP] 通知同图玩家移除本对象(锁外调用, 避免重入 g_adminMutex)
 
 	closesocket(t_client);
 	t_client = INVALID_SOCKET;
