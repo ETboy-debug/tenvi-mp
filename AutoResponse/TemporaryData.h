@@ -52,6 +52,7 @@ public:
 	std::vector<WORD> gequipped;
 	std::vector<TenviSkill> skill;
 
+	TenviCharacter() = default;
 	TenviCharacter(std::wstring nName, BYTE nJob_Mask, WORD nJob, WORD nSkin, WORD nHair, WORD nFace, WORD nCloth, WORD nGColor, std::vector<WORD> &nGEquipped);
 
 	void TestSilva();
