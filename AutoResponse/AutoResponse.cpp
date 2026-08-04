@@ -121,45 +121,23 @@ void MP_Pump() {
 // Login Button Click
 DWORD (__thiscall *_LoginButton)(void *ecx) = NULL;
 DWORD __fastcall LoginButton_Hook(void *ecx) {
-	// [MP] 用户点了原生"登录"按钮 -> 从键盘钩子捕获的输入中取账号密码
-	// -> 发服务端认证(自动注册+校验合一) -> 成功才放行进游戏
+	// [MP v24] 用户点了原生"登录"按钮 -> 放行原始处理(让它发登录包)
+	// -> EnterSendPacket_Hook 会拦截登录包并提取凭据 -> 发服务端认证
 	if (MP_IsAuthed()) {
 		DEBUG(L"[MP] LoginButton: already authed, allowing pass-through");
 		return 0; // 原始登录已被 TenviTest 替换, WORLDLIST 已发送
 	}
 
-	std::string acc, pw;
-	if (!MP_GetNativeCred(acc, pw)) {
-		MessageBoxA(NULL,
-			"No account entered.\n"
-			"Please type your account and password in the login form,\n"
-			"then click Login again.",
-			"Tenvi MP", MB_OK | MB_ICONWARNING);
-		return 0;
-	}
-	if (acc.empty()) {
-		MessageBoxA(NULL, "Account cannot be empty.", "Tenvi MP", MB_OK | MB_ICONWARNING);
-		return 0;
-	}
+	DEBUG(L"[MP] LoginButton clicked -> setting login pending, calling original handler");
+	// 标记: 等待截获即将发出的登录包
+	extern volatile LONG g_loginPending;
+	InterlockedExchange(&g_loginPending, 1);
 
-	DEBUG(L"[MP] Native login: acc=%hs pw=%d chars", acc.c_str(), pw.length());
-	MP_SendLogin(acc, pw);
-
-	BYTE res = 0;
-	if (!MP_WaitCtrlResult(MP_CTRL_LOGIN_RESULT, 8000, res)) {
-		MessageBoxA(NULL, "Login timeout (server not responding?).", "Tenvi MP", MB_OK | MB_ICONERROR);
-		return 0;
+	// 调用原始按钮处理函数 -> 游戏会读取输入框内容 -> 构造登录包 -> 调用 EnterSendPacket
+	// 我们的 EnterSendPacket_Hook 会在那里拦截包并提取凭据
+	if (_LoginButton) {
+		_LoginButton(ecx);
 	}
-	if (res != 1) {
-		MessageBoxA(NULL, "Login failed: wrong password or server error.", "Tenvi MP", MB_OK | MB_ICONWARNING);
-		return 0;
-	}
-
-	// 认证成功: 清空已捕获凭据(安全), 放行
-	NatClearCred();
-	UninstallKBHook(); // 认证完成, 不再需要键盘钩子
-	MP_SetAuthed(true);
-	MP_SendCtrl(MP_CTRL_WORLDLIST);
 	return 0;
 }
 
@@ -207,6 +185,17 @@ bool __fastcall ConnectCaller_Hook(void *ecx, void *edx, void *v1, void *v2, voi
 
 void(__thiscall *_EnterSendPacket)(OutPacket *) = NULL;
 void __fastcall EnterSendPacket_Hook(OutPacket *op) {
+	// [MP v24] 登录包拦截: 如果用户刚点了"登录"按钮, 检查当前包是否为登录包
+	// 如果是 -> 提取凭据发服务端认证 -> 丢弃此包(不发往真实服务器)
+	int intercepted = MP_InterceptLoginPacket(op->packet, op->encoded);
+	if (intercepted == 1) {
+		// 这是登录包, 已被截获并处理, 丢弃它
+		DEBUG(L"[MP] Login packet intercepted and consumed");
+		{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+		  if (f) { fprintf(f, "[ENTERSEND] LOGIN PACKET INTERCEPTED, DROPPED\n"); fflush(f); fclose(f); } }
+		return; // 不调用 _EnterSendPacket, 也不转发到 MP 服务器
+	}
+
 	// [MP] Bridge to standalone server always (so server can respond with more packets)
 	MP_SendGame(op->packet, op->encoded);
 	// [DIAG] Log outbound packet
@@ -240,6 +229,31 @@ void __fastcall ProcessPacketCaller_Hook(void *ecx) {
 		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 		if (f) { fprintf(f, "[FRAME %d] ProcessPacketCaller end\n", mp_frame_count); fflush(f); fclose(f); }
 	}
+	// [MP v24] 轮询登录包认证结果(如果正在等待)
+	int authResult = MP_PollAuthResult();
+	if (authResult == 1) {
+		// 认证成功!
+		DEBUG(L"[MP] Auth success from poll -> sending WORLDLIST");
+		MP_SendCtrl(MP_CTRL_WORLDLIST);
+	} else if (authResult == -1) {
+		// 认证失败(错密码等)
+		std::string acc;
+		MP_GetLastCred(acc);
+		char msg[256];
+		sprintf_s(msg, sizeof(msg),
+			"Login failed for account '%s'.\nWrong password or server error.",
+			acc.c_str());
+		MessageBoxA(NULL, msg, "Tenvi MP", MB_OK | MB_ICONWARNING);
+		MP_ResetLoginState();
+	} else if (authResult == -2) {
+		// 认证超时
+		MessageBoxA(NULL,
+			"Login timeout.\nThe server did not respond in time.",
+			"Tenvi MP", MB_OK | MB_ICONERROR);
+		MP_ResetLoginState();
+	}
+	// authResult == 0 表示还在等待或无需处理, 什么都不做
+
 	// [MP] Inject server packets into client
 	MP_Pump();
 	// [DIAG] Post-pump: confirm MP_Pump returned safely
