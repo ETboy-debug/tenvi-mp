@@ -3,6 +3,7 @@
 #include<locale>
 #include<codecvt>
 #include<mutex>
+#include<cstdio>
 
 TenviData tenvi_data; // global
 
@@ -12,6 +13,9 @@ TenviData tenvi_data; // global
 static std::mutex g_mapMutex;
 
 TenviMap* TenviData::get_map(DWORD id) {
+#ifdef MP_SERVER
+	printf("[TenviServer] MARK get_map(%u) entry\n", (unsigned)id); fflush(stdout);
+#endif
 	std::lock_guard<std::mutex> lock(g_mapMutex);
 
 	// map data is already loaded
@@ -21,8 +25,14 @@ TenviMap* TenviData::get_map(DWORD id) {
 		}
 	}
 
+#ifdef MP_SERVER
+	printf("[TenviServer] MARK get_map(%u) before new TenviMap\n", (unsigned)id); fflush(stdout);
+#endif
 	// load map data
 	TenviMap *map = new TenviMap(id);
+#ifdef MP_SERVER
+	printf("[TenviServer] MARK get_map(%u) after new TenviMap\n", (unsigned)id); fflush(stdout);
+#endif
 	data_map.push_back(map);
 	return map;
 }
