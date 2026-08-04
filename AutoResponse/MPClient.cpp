@@ -83,10 +83,11 @@ static void NatInstallHook() {
 	g_hGameWnd = GetForegroundWindow();
 	if (!g_hGameWnd) g_hGameWnd = GetActiveWindow();
 	g_hMsgHook = SetWindowsHookEx(WH_GETMESSAGE, NatMsgHookProc, NULL, GetCurrentThreadId());
-	if (g_hMsgHook)
+	if (g_hMsgHook) {
 		DEBUG(L"[MP] Native input hook installed");
-	else
+	} else {
 		DEBUG(L"[MP] WARNING: failed to install input hook");
+	}
 }
 
 static void NatUninstallHook() {
