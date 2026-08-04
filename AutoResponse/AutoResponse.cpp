@@ -121,13 +121,36 @@ void MP_Pump() {
 // Login Button Click
 DWORD (__thiscall *_LoginButton)(void *ecx) = NULL;
 DWORD __fastcall LoginButton_Hook(void *ecx) {
-	// [MP] 认证已由 MP_Thread 在连接时自动完成(从 ini 读账号密码 -> 发服务端 -> 等结果)
-	// 这里只做门控: 认证成功才放行, 失败则抑制原生登录.
-	if (MP_IsAuthed()) {
-		MP_SendCtrl(MP_CTRL_WORLDLIST);
+	// [MP] 用户点了原生登录按钮 -> 从消息钩子捕获的输入中取账号密码
+	// -> 发服务端认证(自动注册+校验合一) -> 成功才放行进游戏
+	std::string acc, pw;
+	if (!MP_GetNativeCred(acc, pw)) {
+		MessageBoxA(NULL, "Please enter account and password in the login form.",
+		            "Tenvi MP", MB_OK | MB_ICONWARNING);
 		return 0;
 	}
-	// 认证失败(密码错): 抑制登录, 让 MP_Thread 的 MessageBoxA 提示用户.
+	if (acc.empty()) {
+		MessageBoxA(NULL, "Account cannot be empty.", "Tenvi MP", MB_OK | MB_ICONWARNING);
+		return 0;
+	}
+
+	DEBUG(L"[MP] Native login: acc=%hs pw=%d chars", acc.c_str(), pw.length());
+	MP_SendLogin(acc, pw);
+
+	BYTE res = 0;
+	if (!MP_WaitCtrlResult(MP_CTRL_LOGIN_RESULT, 8000, res)) {
+		MessageBoxA(NULL, "Login timeout (server not responding?).", "Tenvi MP", MB_OK | MB_ICONERROR);
+		return 0;
+	}
+	if (res != 1) {
+		MessageBoxA(NULL, "Login failed: wrong password or server error.", "Tenvi MP", MB_OK | MB_ICONWARNING);
+		return 0;
+	}
+
+	// 认证成功: 清空已捕获凭据(安全), 放行
+	NatClearCred();
+	MP_SetAuthed(true);
+	MP_SendCtrl(MP_CTRL_WORLDLIST);
 	return 0;
 }
 
