@@ -1,11 +1,14 @@
 // MPClient.cpp - 客户端侧明文桥接 socket
-// [v28] 启动器输入账号密码 -> 写 ini -> DLL 读 ini 自动发服务端认证
-//       不再依赖游戏原生登录界面的键盘捕获( DirectInput 独占导致所有
-//       钩子方案均失败: WH_GETMESSAGE / WH_KEYBOARD_LL 主线程 / 独立线程 )
+// [v29] GetAsyncKeyState 轮询键盘捕获 —— 不走 Windows 消息系统，
+//       直接查询内核键盘状态表。即使游戏用 DirectInput 独占键盘也能拿到按键。
+//       流程: 启动器无账号框 -> 游戏登录界面打字(DLL后台静默捕获) ->
+//             点登录 -> DLL取凭据发服务端(自动注册+验密合一)
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
+#define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <cstdio>
+#include <windows.h>
 #include "MPClient.h"
 #include "../Share/Simple/Simple.h"
 
@@ -13,22 +16,19 @@
 
 #define MP_INI_NAME L"RunEmuTenvi"
 
+// ---- 网络基础设施(同 v28) ----
 static SOCKET g_sock = INVALID_SOCKET;
 static CRITICAL_SECTION g_cs;
 static bool g_csReady = false;
 static std::vector<std::vector<BYTE>> g_inQueue;
-static std::vector<std::vector<BYTE>> g_ctrlQueue; // ctrl 包队列(MP_Thread 填, 等待方轮询)
-static void MP_PushPacket(const BYTE *p, DWORD n); // forward decl
+static std::vector<std::vector<BYTE>> g_ctrlQueue;
+static void MP_PushPacket(const BYTE *p, DWORD n);
 static std::string g_ip = "127.0.0.1";
 static int g_port = 8787;
 static volatile LONG g_connected = 0;
-static volatile LONG g_authed = 0;        // 0=未认证 1=成功 -1=失败
+static volatile LONG g_authed = 0;
 
-// ---- [v28] 从 ini 读取的账号密码(启动器写入) ----
-static std::string g_account;   // UTF-8
-static std::string g_password;  // UTF-8
-
-// ---- 同步等待服务端 ctrl 结果(从 g_ctrlQueue 轮询) ----
+// ---- 同步等待服务端 ctrl 结果 ----
 bool MP_WaitCtrlResult(BYTE expectCmd, int timeoutMs, BYTE &outByte) {
 	DWORD start = GetTickCount();
 	while (true) {
@@ -44,17 +44,14 @@ bool MP_WaitCtrlResult(BYTE expectCmd, int timeoutMs, BYTE &outByte) {
 			++i;
 		}
 		LeaveCriticalSection(&g_cs);
-		if (timeoutMs == 0) return false;        // 非阻塞模式, 立即返回
+		if (timeoutMs == 0) return false;
 		if (GetTickCount() - start > (DWORD)timeoutMs) return false;
 		Sleep(30);
 	}
 }
 
-// ---- 基础设施 ----
-
-bool MP_IsConnected() {
-	return g_connected != 0;
-}
+// ---- 网络发送 ----
+bool MP_IsConnected() { return g_connected != 0; }
 
 static void MP_SendRaw(BYTE type, const BYTE *p, DWORD n) {
 	if (g_sock == INVALID_SOCKET || !g_connected) return;
@@ -78,11 +75,8 @@ void MP_SendGame(const BYTE *p, DWORD n) {
 	MP_SendRaw(MP_TYPE_GAME, p, n);
 }
 
-void MP_SendCtrl(BYTE cmd) {
-	MP_SendRaw(MP_TYPE_CTRL, &cmd, 1);
-}
+void MP_SendCtrl(BYTE cmd) { MP_SendRaw(MP_TYPE_CTRL, &cmd, 1); }
 
-// [MP] 发送带密码的登录请求(账号\0密码)
 void MP_SendLogin(const std::string &acc, const std::string &pw) {
 	std::vector<BYTE> buf;
 	buf.push_back(MP_CTRL_LOGIN);
@@ -92,23 +86,14 @@ void MP_SendLogin(const std::string &acc, const std::string &pw) {
 	if (buf.size() > 1) MP_SendRaw(MP_TYPE_CTRL, &buf[0], (DWORD)buf.size());
 }
 
-bool MP_IsAuthed() {
-	return g_authed == 1;
-}
-
-void MP_SetAuthed(bool v) {
-	InterlockedExchange(&g_authed, v ? 1 : -1);
-}
+bool MP_IsAuthed() { return g_authed == 1; }
+void MP_SetAuthed(bool v) { InterlockedExchange(&g_authed, v ? 1 : -1); }
 
 bool MP_PopPacket(std::vector<BYTE> &out) {
 	if (!g_csReady) return false;
 	bool got = false;
 	EnterCriticalSection(&g_cs);
-	if (!g_inQueue.empty()) {
-		out = g_inQueue.front();
-		g_inQueue.erase(g_inQueue.begin());
-		got = true;
-	}
+	if (!g_inQueue.empty()) { out = g_inQueue.front(); g_inQueue.erase(g_inQueue.begin()); got = true; }
 	LeaveCriticalSection(&g_cs);
 	return got;
 }
@@ -121,7 +106,202 @@ static void MP_PushPacket(const BYTE *p, DWORD n) {
 	LeaveCriticalSection(&g_cs);
 }
 
-// ---- 收包线程: 连接服务端 + 收包转发 + 自动登录 ----
+// ============================================================
+// [v29] GetAsyncKeyState 轮询键盘捕获
+// ============================================================
+// 原理: GetAsyncKeyState 直接查内核键盘状态表，不经过 Windows
+//       消息循环。即使游戏用 DirectInput 独占键盘，这个 API 仍然
+//       能正确返回按键状态（因为它读的是驱动层状态）。
+//
+//       对比之前失败的方案:
+//         WH_GETMESSAGE      -> DirectInput 不走 WM_KEYDOWN, 抓不到
+//         WH_KEYBOARD_LL     -> 需要消息泵驱动回调, 游戏主线程无泵
+//         WH_KEYBOARD_LL+独立线程-> 回调仍不触发(原因可能是 DI 低级过滤)
+//         GetAsyncKeyState   -> 内核级查询, 不依赖任何消息机制 ✅
+
+static volatile LONG g_captureRunning = 0;   // 捕获线程运行标志
+static volatile LONG g_captureEnabled = 0;   // 是否启用捕获(MP_StartCapture/Stop)
+static HWND    g_gameWnd = NULL;            // 游戏主窗口句柄(启动时记录)
+static std::string g_capAccount;            // 捕获的账号
+static std::string g_capPassword;           // 捕获的密码
+static int      g_capField = 0;             // 当前输入字段: 0=账号 1=密码
+static CRITICAL_SECTION g_capCs;            // 保护捕获缓冲区
+static bool     g_capCsReady = false;
+
+// 上一次的按键状态(用于检测边沿: 新按下)
+static BYTE g_prevKeys[256];
+
+// 可打印字符范围判断
+static bool IsPrintableChar(WCHAR ch) {
+	// ASCII 可打印字符 + 常见拉丁扩展
+	if (ch >= 0x20 && ch < 0x7F) return true;  // 空格~DEL
+	return false;
+}
+
+// 将虚拟键码转换为宽字符(处理 Shift/CapsLock 状态)
+static int VkToChar(UINT vk, WCHAR &outCh) {
+	BYTE keyState[256] = {};
+	// 从 GetKeyboardState 获取当前 Shift/CapsLock/Ctrl 等状态
+	GetKeyboardState(keyState);
+
+	// ToUnicode 需要的参数
+	WCHAR buf[4] = {};
+	UINT scanCode = MapVirtualKey(vk, MAPVK_VK_TO_VSC);
+	int ret = ToUnicode(vk, scanCode, keyState, buf, 4, 0);
+	if (ret == 1 && IsPrintableChar(buf[0])) {
+		outCh = buf[0];
+		return 1;
+	}
+	return 0;
+}
+
+// 将宽字符转为 UTF-8 字符串追加到目标缓冲区
+static void AppendChar(std::string &target, WCHAR ch) {
+	char mb[8] = {};
+	int n = WideCharToMultiByte(CP_UTF8, 0, &ch, 1, mb, sizeof(mb), NULL, NULL);
+	if (n > 0) target.append(mb, n);
+}
+
+// 捕获线程主函数: ~100Hz 轮询 GetAsyncKeyState
+static DWORD WINAPI CaptureThread(LPVOID) {
+	// 初始化上一次状态为全释放
+	memset(g_prevKeys, 0, sizeof(g_prevKeys));
+
+	while (InterlockedCompareExchange(&g_captureRunning, 0, 0)) {
+		// 只在游戏窗口前台时捕获
+		if (g_captureEnabled && g_gameWnd) {
+			HWND fg = GetForegroundWindow();
+			if (fg == g_gameWnd || IsChild(g_gameWnd, fg)) {
+
+				// 扫描所有虚拟键(只扫描常用范围以提高性能)
+				for (UINT vk = 0x08; vk <= 0xFE; vk++) {
+					SHORT state = GetAsyncKeyState(vk);
+					bool nowDown = (state & 0x8000) != 0;
+					bool wasDown = (g_prevKeys[vk] & 0x80) != 0;
+
+					// 只处理"新按下"的边沿(避免重复触发)
+					if (nowDown && !wasDown) {
+						// --- Tab: 切换账号/密码字段 ---
+						if (vk == VK_TAB) {
+							EnterCriticalSection(&g_capCs);
+							g_capField = 1 - g_capField;
+							DEBUG(L"[MP-CAP] Tab -> field=%d", g_capField);
+							LeaveCriticalSection(&g_capCs);
+						}
+						// --- Backspace: 删除末尾字符 ---
+						else if (vk == VK_BACK) {
+							EnterCriticalSection(&g_capCs);
+							std::string &target = (g_capField == 0) ? g_capAccount : g_capPassword;
+							if (!target.empty()) {
+								// UTF-8 安全删除: 从末尾找完整字符
+								size_t len = target.size();
+								while (len > 0 && (target[len - 1] & 0xC0) == 0x80) len--;
+								if (len > 0) len--;
+								target.resize(len);
+							}
+							LeaveCriticalSection(&g_capCs);
+						}
+						// --- Delete: 也删除(有些用户用Delete) ---
+						else if (vk == VK_DELETE) {
+							EnterCriticalSection(&g_capCs);
+							std::string &target = (g_capField == 0) ? g_capAccount : g_capPassword;
+							target.clear();  // Delete 清空整个字段(简单处理)
+							LeaveCriticalSection(&g_capCs);
+						}
+						// --- Enter/Return: 不处理(留给游戏登录按钮) ---
+						else if (vk == VK_RETURN || vk == VK_ESCAPE) {
+							// 忽略, 让游戏自己处理
+						}
+						// --- 其他键: 尝试转换为可打印字符 ---
+						else {
+							WCHAR ch = 0;
+							if (VkToChar(vk, ch)) {
+								EnterCriticalSection(&g_capCs);
+								std::string &target = (g_capField == 0) ? g_capAccount : g_capPassword;
+								AppendChar(target, ch);
+								// 限制长度防溢出
+								if (target.size() > 64) target.resize(64);
+								LeaveCriticalSection(&g_capCs);
+							}
+						}
+					} // end if (newly pressed)
+
+					// 更新上一次状态(只保存 down 位)
+					g_prevKeys[vk] = nowDown ? 0x80 : 0;
+				} // end for each vk
+			} // end if foreground window is game
+		} // end if capture enabled
+
+		Sleep(10); // ~100Hz poll rate
+	} // end while running
+
+	DEBUG(L"[MP-CAP] capture thread exited");
+	return 0;
+}
+
+// ---- 捕获 API (供 AutoResponse.cpp 调用) ----
+
+/// 启动键盘捕获。应在游戏窗口创建后调用。
+void MP_StartCapture(HWND gameWnd) {
+	if (!g_capCsReady) {
+		InitializeCriticalSection(&g_capCs);
+		g_capCsReady = true;
+	}
+	g_gameWnd = gameWnd;
+	g_capAccount.clear();
+	g_capPassword.clear();
+	g_capField = 0;
+	memset(g_prevKeys, 0, sizeof(g_prevKeys));
+
+	if (InterlockedCompareExchange(&g_captureRunning, 0, 0) == 0) {
+		InterlockedExchange(&g_captureEnabled, 1);
+		InterlockedExchange(&g_captureRunning, 1);
+		HANDLE hThread = CreateThread(NULL, 0, CaptureThread, NULL, 0, NULL);
+		if (hThread) CloseHandle(hThread);
+		DEBUG(L"[MP-CAP] started, gameWnd=%p", gameWnd);
+	} else {
+		InterlockedExchange(&g_captureEnabled, 1);
+		DEBUG(L"[MP-CAP] re-enabled");
+	}
+}
+
+/// 停止键盘捕获
+void MP_StopCapture() {
+	InterlockedExchange(&g_captureEnabled, 0);
+	DEBUG(L"[MP-CAP] stopped");
+}
+
+/// 取出捕获到的凭据。返回 true 表示有内容。
+/// [out] acc = 账号(UTF-8), pw = 密码(UTF-8)
+bool MP_GetNativeCred(std::string &acc, std::string &pw) {
+	if (!g_capCsReady) return false;
+	EnterCriticalSection(&g_capCs);
+	acc = g_capAccount;
+	pw = g_capPassword;
+	bool hasAcc = !g_capAccount.empty();
+	LeaveCriticalSection(&g_capCs);
+	return hasAcc;
+}
+
+/// 清空捕获的凭据(认证成功后调用)
+void MP_ClearCred() {
+	if (!g_capCsReady) return;
+	EnterCriticalSection(&g_capCs);
+	g_capAccount.clear();
+	g_capPassword.clear();
+	g_capField = 0;
+	LeaveCriticalSection(&g_capCs);
+}
+
+/// 重置登录状态(用于重试)
+void MP_ResetLoginState() {
+	MP_ClearCred();
+	InterlockedExchange(&g_authed, 0);
+}
+
+// ============================================================
+// 收包线程: 连接服务端 + 收包转发
+// ============================================================
 static DWORD WINAPI MP_Thread(LPVOID) {
 	WSADATA wsa;
 	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -168,15 +348,7 @@ static DWORD WINAPI MP_Thread(LPVOID) {
 	DEBUG(L"MP connected");
 	MP_SendCtrl(MP_CTRL_HELLO);
 
-	// [v28] 连上后立即用 ini 里的账号密码发登录请求(自动注册+验密合一)
-	if (!g_account.empty()) {
-		DEBUG(L"[MP] auto-login with account=%hs", g_account.c_str());
-		MP_SendLogin(g_account, g_password);
-	} else {
-		DEBUG(L"[MP] no account in ini, skipping login");
-	}
-
-	// 收包循环: 游戏包入队 g_inQueue, ctrl 包入队 g_ctrlQueue
+	// 收包循环
 	std::vector<BYTE> buf;
 	char tmp[16384];
 	while (true) {
@@ -207,25 +379,16 @@ static DWORD WINAPI MP_Thread(LPVOID) {
 	return 0;
 }
 
+// ---- 启动入口 ----
 bool MP_Start(HINSTANCE hinstDLL) {
 	if (!g_csReady) {
 		InitializeCriticalSection(&g_cs);
 		g_csReady = true;
 	}
 
-	// [v28] 从 ini 读取启动器写入的账号和密码
+	// 从 ini 只读取服务器地址和端口(账号密码不再经过 ini)
 	Config conf(MP_INI_NAME L".ini", hinstDLL);
-	std::wstring wAcc, wPw, wIP, wPort;
-	if (conf.Read(MP_INI_NAME, L"Account", wAcc) && wAcc.length()) {
-		char abuf[256] = {};
-		WideCharToMultiByte(CP_UTF8, 0, wAcc.c_str(), -1, abuf, sizeof(abuf) - 1, NULL, NULL);
-		g_account = abuf;
-	}
-	if (conf.Read(MP_INI_NAME, L"Password", wPw) && wPw.length()) {
-		char pbuf[256] = {};
-		WideCharToMultiByte(CP_UTF8, 0, wPw.c_str(), -1, pbuf, sizeof(pbuf) - 1, NULL, NULL);
-		g_password = pbuf;
-	}
+	std::wstring wIP, wPort;
 	if (conf.Read(MP_INI_NAME, L"ServerIP", wIP) && wIP.length()) {
 		char abuf[64] = {};
 		WideCharToMultiByte(CP_ACP, 0, wIP.c_str(), -1, abuf, sizeof(abuf) - 1, NULL, NULL);
@@ -235,8 +398,7 @@ bool MP_Start(HINSTANCE hinstDLL) {
 		int p = _wtoi(wPort.c_str());
 		if (p > 0 && p < 65536) g_port = p;
 	}
-	DEBUG(L"[MP] account=%hs pwd=%dchars server=%s:%d",
-	      g_account.c_str(), (int)g_password.length(), g_ip.c_str(), g_port);
+	DEBUG(L"[MP] server=%s:%d (v29 GetAsyncKeyState capture)", g_ip.c_str(), g_port);
 
 	HANDLE hThread = CreateThread(NULL, 0, MP_Thread, NULL, 0, NULL);
 	if (hThread) { CloseHandle(hThread); return true; }
