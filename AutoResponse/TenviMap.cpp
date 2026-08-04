@@ -5,6 +5,7 @@
 #include"../EmuMainTenvi/ConfigTenvi.h"
 #include<cstdio>
 #include<cstring>
+#include<memory>
 #ifdef MP_SERVER
 #define TM_MARK(...) do { printf(__VA_ARGS__); fflush(stdout); } while(0)
 #else
@@ -44,10 +45,14 @@ bool TenviMap::LoadXML() {
 	OutputDebugStringA(("[Maple] xml = " + map_xml).c_str());
 	TM_MARK("[TenviServer] MARK LoadXML(%s) before parse\n", map_xml.c_str());
 	rapidxml::xml_document<> doc;
+	// [FIX] xmlFile 必须活到 doc 用完。rapidxml 就地解析, doc 的节点指针全部指向
+	//       xmlFile 的内部缓冲区; 若 xmlFile 先析构(原代码声明在 try 块内, try 结束即释放),
+	//       之后 first_node/name/next_sibling 访问节点就是 use-after-free 崩溃(c0000005)。
+	std::unique_ptr<rapidxml::file<>> xmlFile;
 
 	try {
-		rapidxml::file<> xmlFile(map_xml.c_str());
-		doc.parse<0>(xmlFile.data());
+		xmlFile.reset(new rapidxml::file<>(map_xml.c_str()));
+		doc.parse<0>(xmlFile->data());
 	}
 	catch (...) {
 		TM_MARK("[TenviServer] MARK LoadXML parse threw\n");
@@ -118,10 +123,12 @@ bool TenviMap::LoadSubXML() {
 	OutputDebugStringA(("[Maple] subxml = " + map_xml).c_str());
 	TM_MARK("[TenviServer] MARK LoadSubXML(%s) entry\n", map_xml.c_str());
 	rapidxml::xml_document<> doc;
+	// [FIX] 同 LoadXML: xmlFile 必须活到 doc 用完, 防止 use-after-free
+	std::unique_ptr<rapidxml::file<>> xmlFile;
 
 	try {
-		rapidxml::file<> xmlFile(map_xml.c_str());
-		doc.parse<0>(xmlFile.data());
+		xmlFile.reset(new rapidxml::file<>(map_xml.c_str()));
+		doc.parse<0>(xmlFile->data());
 	}
 	catch (...) {
 		TM_MARK("[TenviServer] MARK LoadSubXML parse threw\n");
