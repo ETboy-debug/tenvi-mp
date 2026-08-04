@@ -805,6 +805,11 @@ void MP_RemovePlayer(int sid) {
 void MP_RemovePlayer(int) {}
 #endif
 
+#ifndef MP_SERVER
+// [MP] dll 侧无其它连接, 跨连接广播为空操作(符号需存在供链接)
+void MP_BroadcastToSid(int sid, ServerPacket &sp) {}
+#endif
+
 // go to map
 void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 	ChangeMapPacket(map_id, x, y);
