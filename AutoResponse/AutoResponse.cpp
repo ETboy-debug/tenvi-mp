@@ -119,34 +119,59 @@ void MP_Pump() {
 }
 
 // Login Button Click
-// [v28] MP_Thread 连上服务端后已自动发送登录请求(账号密码来自 ini)。
-//       这里只等结果: 成功->放行进游戏, 失败/超时->拦截并提示。
+// [v29] 用户在游戏原生登录界面打字(DLL通过GetAsyncKeyState后台静默捕获)，
+//       点"登录"时取出捕获的账号密码 -> 发服务端认证(自动注册+验密合一)。
+//       流程: 启动器无账号框 -> 进游戏 -> 登录界面打字(被捕获) ->
+//             点登录 -> 这里取凭据 -> 发服务端 -> 成功进游戏
 DWORD (__thiscall *_LoginButton)(void *ecx) = NULL;
 DWORD __fastcall LoginButton_Hook(void *ecx) {
 	if (MP_IsAuthed()) {
 		DEBUG(L"[MP] LoginButton: already authed, let pass");
-		return 0; // 已认证, 放行(不调用原始登录函数, 由我们的流程接管)
-	}
-
-	DEBUG(L"[MP] LoginButton: waiting for auth result...");
-	BYTE res = 0;
-	if (!MP_WaitCtrlResult(MP_CTRL_LOGIN_RESULT, 8000, res)) {
-		MessageBoxA(NULL,
-			"Login timeout.\n"
-			"Server may be down or network issue.",
-			"Tenvi MP", MB_OK | MB_ICONERROR);
 		return 0;
 	}
-	if (res != 1) {
+
+	// 从 GetAsyncKeyState 捕获缓冲区取用户在登录界面输入的账号密码
+	std::string acc, pw;
+	if (!MP_GetNativeCred(acc, pw)) {
 		MessageBoxA(NULL,
-			"Login failed.\n"
-			"Wrong password or account error.",
+			"No account entered.\n"
+			"\n"
+			"Please type your account in the login form,\n"
+			"press TAB to switch to password field,\n"
+			"type your password, then click Login.",
+			"Tenvi MP", MB_OK | MB_ICONINFORMATION);
+		return 0;
+	}
+	if (pw.empty()) {
+		MessageBoxA(NULL,
+			"Account captured but no password.\n"
+			"After typing the account, press TAB to move to\n"
+			"the password field, type it, then click Login.",
 			"Tenvi MP", MB_OK | MB_ICONWARNING);
 		return 0;
 	}
 
-	// 认证成功 -> 放行
+	DEBUG(L"[MP] Native login: acc=%hs pw=%d chars", acc.c_str(), (int)pw.length());
+	MP_SendLogin(acc, pw);
+
+	BYTE res = 0;
+	if (!MP_WaitCtrlResult(MP_CTRL_LOGIN_RESULT, 8000, res)) {
+		MessageBoxA(NULL, "Login timeout (server not responding?).",
+		            "Tenvi MP", MB_OK | MB_ICONERROR);
+		MP_ResetLoginState();
+		return 0;
+	}
+	if (res != 1) {
+		MessageBoxA(NULL, "Login failed: wrong password or account error.",
+		            "Tenvi MP", MB_OK | MB_ICONWARNING);
+		MP_ResetLoginState();
+		return 0;
+	}
+
+	// 认证成功: 清空凭据(安全)、放行进游戏
+	MP_ClearCred();
 	MP_SetAuthed(true);
+	MP_StopCapture();  // 停止捕获, 不再需要
 	MP_SendCtrl(MP_CTRL_WORLDLIST);
 	DEBUG(L"[MP] LoginButton: auth OK, sending worldlist");
 	return 0;
@@ -221,6 +246,7 @@ void __fastcall EnterSendPacket_Hook(OutPacket *op) {
 
 void (__thiscall *_ProcessPacketCaller)(void *) = NULL;
 static int mp_frame_count = 0;
+static bool g_captureStarted = false;  // [v29] 捕获是否已启动(只启动一次)
 void __fastcall ProcessPacketCaller_Hook(void *ecx) {
 	_ProcessPacketCaller(ecx);
 	// [DIAG] Frame counter
@@ -231,6 +257,18 @@ void __fastcall ProcessPacketCaller_Hook(void *ecx) {
 	}
 	// [MP] Inject server packets into client
 	MP_Pump();
+	// [v29] 延迟启动 GetAsyncKeyState 键盘捕获: 等第10帧时游戏窗口肯定已创建
+	if (!g_captureStarted && mp_frame_count >= 10) {
+		g_captureStarted = true;
+		HWND gameWnd = GetForegroundWindow();  // 最可能的游戏窗口
+		if (!gameWnd) gameWnd = GetActiveWindow();
+		if (gameWnd) {
+			MP_StartCapture(gameWnd);
+			DEBUG(L"[MP] Capture started at frame %d, hwnd=%p", mp_frame_count, gameWnd);
+			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+			if (f) { fprintf(f, "[MP-CAP] Started at frame %d, hwnd=%p\n", mp_frame_count, (void*)gameWnd); fflush(f); fclose(f); }
+		}
+	}
 	// [DIAG] Post-pump: confirm MP_Pump returned safely
 	if (mp_frame_count > 2190) {
 		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
