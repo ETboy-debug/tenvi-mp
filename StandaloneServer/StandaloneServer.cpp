@@ -329,6 +329,7 @@ static void HandleCtrl(BYTE cmd, const BYTE *p, DWORD n) {
 		break;
 	case MP_CTRL_LOGIN: {
 		// [MP] payload[2..] = utf8 "账号\0密码"
+		// 登录 = 自动注册 + 校验合一：新号自动建，老号验密码
 		std::string body;
 		if (n >= 3) body.assign((const char *)(p + 2), n - 2);
 		size_t z = body.find('\0');
@@ -337,22 +338,28 @@ static void HandleCtrl(BYTE cmd, const BYTE *p, DWORD n) {
 		std::wstring wacc = Utf8ToW(acc8);
 		std::wstring wpw  = Utf8ToW(pw8);
 		if (wacc.empty()) wacc = L"Player";
-		if (!db().checkPassword(wacc, wpw)) {
+
+		if (!db().accountExists(wacc)) {
+			// 新账号 -> 自动注册
+			db().registerAccount(wacc, wpw);
+			Log("ctrl: auto-registered new account = %s", acc8.c_str());
+		} else if (!db().checkPassword(wacc, wpw)) {
+			// 老账号 -> 校验密码
 			Log("ctrl: login FAILED (wrong password) account = %s", acc8.c_str());
 			BYTE fail = 0;
-			SendCtrlResult(MP_CTRL_LOGIN_RESULT, &fail, 1); // 通知 DLL: 密码错
+			SendCtrlResult(MP_CTRL_LOGIN_RESULT, &fail, 1);
 			break; // 不 SetAccount, 客户端停留在登录界面
 		}
+
 		TA.SetAccount(wacc);
 		TA.ReloadFromDB();
-		// [MP] 登录后才知道账号名, 这里补登记到 GM 在线表, 否则 LIST 永远显示 (none)
 		{
 			std::lock_guard<std::mutex> lock(g_adminMutex);
 			g_onlineAcc[t_sid] = wacc;
 		}
 		BYTE ok = 1;
-		SendCtrlResult(MP_CTRL_LOGIN_RESULT, &ok, 1); // 通知 DLL: 登录成功
-		Log("ctrl: login account = %s (chars=%d)", acc8.c_str(), (int)TA.GetCharacters().size());
+		SendCtrlResult(MP_CTRL_LOGIN_RESULT, &ok, 1);
+		Log("ctrl: login OK account = %s (chars=%d)", acc8.c_str(), (int)TA.GetCharacters().size());
 		break;
 	}
 	case MP_CTRL_REGISTER: {
