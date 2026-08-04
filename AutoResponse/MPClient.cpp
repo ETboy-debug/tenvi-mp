@@ -1,8 +1,7 @@
 // MPClient.cpp - 客户端侧明文桥接 socket
-// [v29] GetAsyncKeyState 轮询键盘捕获 —— 不走 Windows 消息系统，
-//       直接查询内核键盘状态表。即使游戏用 DirectInput 独占键盘也能拿到按键。
-//       流程: 启动器无账号框 -> 游戏登录界面打字(DLL后台静默捕获) ->
-//             点登录 -> DLL取凭据发服务端(自动注册+验密合一)
+// [v31] GetAsyncKeyState 轮询 + 鼠标点击字段切换
+//       键盘: 内核级查询, 绕过 DirectInput
+//       鼠标: 检测左键点击Y坐标, 自动判断账号框/密码框(无需Tab)
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -128,6 +127,10 @@ static int      g_capField = 0;             // 当前输入字段: 0=账号 1=�
 static CRITICAL_SECTION g_capCs;            // 保护捕获缓冲区
 static bool     g_capCsReady = false;
 
+// [v31] 鼠标点击字段切换: 记录上次点击的Y坐标, 用Y差值自动判断点的哪个框
+static LONG     g_lastClickY = -1;          // 上次鼠标点击的Y坐标(客户区), -1=未初始化
+static const int CLICK_Y_THRESHOLD = 30;    // Y变化超过此值认为切换了字段
+
 // 上一次的按键状态(用于检测边沿: 新按下)
 static BYTE g_prevKeys[256];
 
@@ -202,6 +205,27 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 							DEBUG(L"[MP-CAP] Tab -> field=%d", g_capField);
 							LeaveCriticalSection(&g_capCs);
 						}
+						// --- [v31] 鼠标左键: 用Y坐标判断点的哪个输入框 ---
+						else if (vk == VK_LBUTTON) {
+							POINT pt = {};
+							GetCursorPos(&pt);
+							ScreenToClient(fg, &pt);  // 转为客户区坐标
+							LONG y = pt.y;
+
+							if (g_lastClickY < 0) {
+								// 第一次点击: 记录Y, 默认账号框(field=0)
+								g_lastClickY = y;
+								g_capField = 0;
+							} else if (abs(y - g_lastClickY) > CLICK_Y_THRESHOLD) {
+								// Y变化大: 切换到另一个字段
+								g_capField = 1 - g_capField;
+								g_lastClickY = y;
+							}
+							// Y变化小: 认为还在同一个框, 不切换
+
+							FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+							if (df) { fprintf(df, "[MP-CAP] mouse click at (%ld,%ld) -> field=%d\n", pt.x, pt.y, g_capField); fflush(df); fclose(df); }
+						}
 						// --- Backspace: 删除末尾字符 ---
 						else if (vk == VK_BACK) {
 							EnterCriticalSection(&g_capCs);
@@ -267,6 +291,7 @@ void MP_StartCapture() {
 	g_capAccount.clear();
 	g_capPassword.clear();
 	g_capField = 0;
+	g_lastClickY = -1;  // [v31] 重置鼠标点击基线
 	memset(g_prevKeys, 0, sizeof(g_prevKeys));
 
 	if (InterlockedCompareExchange(&g_captureRunning, 0, 0) == 0) {
@@ -414,7 +439,7 @@ bool MP_Start(HINSTANCE hinstDLL) {
 		int p = _wtoi(wPort.c_str());
 		if (p > 0 && p < 65536) g_port = p;
 	}
-	DEBUG(L"[MP] server=%s:%d (v29 GetAsyncKeyState capture)", g_ip.c_str(), g_port);
+	DEBUG(L"[MP] server=%s:%d (v31 GetAsyncKeyState+mouse click)", g_ip.c_str(), g_port);
 
 	HANDLE hThread = CreateThread(NULL, 0, MP_Thread, NULL, 0, NULL);
 	if (hThread) { CloseHandle(hThread); return true; }
