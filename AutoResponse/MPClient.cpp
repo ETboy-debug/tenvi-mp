@@ -81,6 +81,10 @@ bool MP_IsAuthed() {
 	return g_authed != 0;
 }
 
+void MP_SetAuthed(bool v) {
+	InterlockedExchange(&g_authed, v ? 1 : 0);
+}
+
 // ---- [MP] 从冲锋岛原生登录界面读取账号密码 ----
 static struct {
 	char acc[128];
@@ -92,7 +96,7 @@ static BOOL CALLBACK EnumNativeEdits(HWND hwnd, LPARAM) {
 	char cls[64];
 	GetClassNameA(hwnd, cls, sizeof(cls));
 	if (_stricmp(cls, "EDIT") == 0) {
-		LONG_PTR style = GetWindowLongPtr(hwnd, GWLP_STYLE);
+		LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
 		bool isPwd = (style & ES_PASSWORD) != 0;
 		if (isPwd)
 			GetWindowTextA(hwnd, s_nativeCred.pw, sizeof(s_nativeCred.pw));
