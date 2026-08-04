@@ -121,20 +121,45 @@ void MP_Pump() {
 // Login Button Click
 DWORD (__thiscall *_LoginButton)(void *ecx) = NULL;
 DWORD __fastcall LoginButton_Hook(void *ecx) {
-	// [MP] 认证已在 MP_Thread 连接后通过登录浮层完成(自动注册+校验合一)。
-	// 这里只检查认证状态: 已认证则放行, 未认证则提示。
+	// [MP] 用户点了原生"登录"按钮 -> 从键盘钩子捕获的输入中取账号密码
+	// -> 发服务端认证(自动注册+校验合一) -> 成功才放行进游戏
 	if (MP_IsAuthed()) {
 		DEBUG(L"[MP] LoginButton: already authed, allowing pass-through");
-		// 原始登录按钮行为已被 TenviTest 替换, 返回 0=阻止原始逻辑
-		// WORLDLIST 已由 MP_Thread 在认证成功后发送
+		return 0; // 原始登录已被 TenviTest 替换, WORLDLIST 已发送
+	}
+
+	std::string acc, pw;
+	if (!MP_GetNativeCred(acc, pw)) {
+		MessageBoxA(NULL,
+			"No account entered.\n"
+			"Please type your account and password in the login form,\n"
+			"then click Login again.",
+			"Tenvi MP", MB_OK | MB_ICONWARNING);
 		return 0;
 	}
-	MessageBoxA(NULL,
-		"Not authenticated yet.\n"
-		"Please enter your account/password in the login overlay\n"
-		"that appeared after connecting to the server.\n"
-		"If you missed it, restart the game.",
-		"Tenvi MP", MB_OK | MB_ICONWARNING);
+	if (acc.empty()) {
+		MessageBoxA(NULL, "Account cannot be empty.", "Tenvi MP", MB_OK | MB_ICONWARNING);
+		return 0;
+	}
+
+	DEBUG(L"[MP] Native login: acc=%hs pw=%d chars", acc.c_str(), pw.length());
+	MP_SendLogin(acc, pw);
+
+	BYTE res = 0;
+	if (!MP_WaitCtrlResult(MP_CTRL_LOGIN_RESULT, 8000, res)) {
+		MessageBoxA(NULL, "Login timeout (server not responding?).", "Tenvi MP", MB_OK | MB_ICONERROR);
+		return 0;
+	}
+	if (res != 1) {
+		MessageBoxA(NULL, "Login failed: wrong password or server error.", "Tenvi MP", MB_OK | MB_ICONWARNING);
+		return 0;
+	}
+
+	// 认证成功: 清空已捕获凭据(安全), 放行
+	NatClearCred();
+	UninstallKBHook(); // 认证完成, 不再需要键盘钩子
+	MP_SetAuthed(true);
+	MP_SendCtrl(MP_CTRL_WORLDLIST);
 	return 0;
 }
 
