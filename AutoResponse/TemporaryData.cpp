@@ -23,15 +23,15 @@ TenviCharacter::TenviCharacter(std::wstring nName, BYTE nJob_Mask, WORD nJob, WO
 	gequipped.resize(15);
 	map = 2002;
 	map_return = 0;
-	level = 30;
-	sp = 500;
-	ap = 300;
-	// test stat
-	stat_str = 16;
-	stat_dex = 18;
-	stat_hp = 199;
-	stat_int = 712;
-	stat_mp = 158;
+	// [FIX] 新角色默认 1 级、0 技能点 0 属性点, 一级小号起步(原值是测试模式 30级满点)
+	level = 1;
+	sp = 0;
+	ap = 0;
+	stat_str = 10;
+	stat_dex = 10;
+	stat_hp = 50;
+	stat_int = 10;
+	stat_mp = 10;
 	x = 0.0;
 	y = 0.0;
 	gold = 0;
