@@ -14,6 +14,7 @@ static SOCKET g_sock = INVALID_SOCKET;
 static CRITICAL_SECTION g_cs;
 static bool g_csReady = false;
 static std::vector<std::vector<BYTE>> g_inQueue;
+static std::vector<std::vector<BYTE>> g_ctrlQueue; // [MP] 服务端 ctrl 包队列(MP_Thread 填充, MP_WaitCtrlResult 轮询)
 static void MP_PushPacket(const BYTE *p, DWORD n); // [MP] forward decl, defined later in this file
 static std::string g_ip = "127.0.0.1";
 static int g_port = 8787;
@@ -127,37 +128,25 @@ bool MP_ReadNativeCred(std::string &outAcc, std::string &outPw) {
 	return s_nativeCred.acc[0] != '\0' || s_nativeCred.pw[0] != '\0';
 }
 
-// 同步等待服务端 ctrl 结果(复用收包线程的 socket); 超时返回 false
-static bool MP_WaitCtrlResult(BYTE expectCmd, int timeoutMs, BYTE &outByte) {
+// 同步等待服务端 ctrl 结果; MP_Thread 是唯一收包线程, ctrl 包已入 g_ctrlQueue, 这里轮询该队列
+bool MP_WaitCtrlResult(BYTE expectCmd, int timeoutMs, BYTE &outByte) {
 	DWORD start = GetTickCount();
-	char tmp[16384];
-	std::vector<BYTE> buf;
 	while (true) {
-		fd_set fds; FD_ZERO(&fds); FD_SET(g_sock, &fds);
-		timeval tv; tv.tv_sec = 0; tv.tv_usec = 150000;
-		if (select(0, &fds, NULL, NULL, &tv) > 0) {
-			int n = recv(g_sock, tmp, sizeof(tmp), 0);
-			if (n <= 0) return false;
-			buf.insert(buf.end(), tmp, tmp + n);
-			while (buf.size() >= 4) {
-				DWORD len = (DWORD)buf[0] | ((DWORD)buf[1] << 8) | ((DWORD)buf[2] << 16) | ((DWORD)buf[3] << 24);
-				if (len == 0 || len > 65536) { return false; }
-				if (buf.size() < 4 + len) break;
-				BYTE type = buf[4];
-				if (type == MP_TYPE_CTRL && len >= 2) {
-					BYTE cmd = buf[5];
-					if (cmd == expectCmd) {
-						outByte = (len >= 3) ? buf[6] : 1;
-						return true; // 剩余字节留给主循环消费
-					}
-					// 不是期望的 ctrl 包，丢弃（避免阻塞）
-				} else if (type == MP_TYPE_GAME && len > 1) {
-					MP_PushPacket(&buf[5], len - 1);
-				}
-				buf.erase(buf.begin(), buf.begin() + 4 + len);
+		EnterCriticalSection(&g_cs);
+		for (size_t i = 0; i < g_ctrlQueue.size(); ) {
+			std::vector<BYTE> &pkt = g_ctrlQueue[i];
+			// pkt[0]=type, pkt[1]=cmd, pkt[2]=可选数据
+			if (pkt.size() >= 2 && pkt[1] == expectCmd) {
+				outByte = (pkt.size() >= 3) ? pkt[2] : 1;
+				g_ctrlQueue.erase(g_ctrlQueue.begin() + i);
+				LeaveCriticalSection(&g_cs);
+				return true;
 			}
+			++i; // 非期望的 ctrl 包: 保留, 不误删其他等待者
 		}
+		LeaveCriticalSection(&g_cs);
 		if (GetTickCount() - start > (DWORD)timeoutMs) return false;
+		Sleep(30);
 	}
 }
 
@@ -270,6 +259,11 @@ static DWORD WINAPI MP_Thread(LPVOID) {
 			BYTE type = buf[4];
 			if (type == MP_TYPE_GAME && len > 1) {
 				MP_PushPacket(&buf[5], len - 1);
+			} else if (type == MP_TYPE_CTRL && len >= 2) {
+				std::vector<BYTE> cpkt(buf.begin() + 4, buf.begin() + 4 + len);
+				EnterCriticalSection(&g_cs);
+				g_ctrlQueue.push_back(cpkt);
+				LeaveCriticalSection(&g_cs);
 			}
 			buf.erase(buf.begin(), buf.begin() + 4 + len);
 		}
