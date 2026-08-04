@@ -89,21 +89,15 @@ public:
 		return it->second == pw;
 	}
 
-	// 读取账号的角色；若账号无任何角色，自动建一个默认角色并存盘
+	// 读取账号的角色；新账号返回空，让玩家自建角色。
 	std::vector<TenviCharacter> loadChars(const std::wstring &acc) {
 		std::lock_guard<std::mutex> lk(m_);
 		std::vector<TenviCharacter> out;
 		auto it = chars_.find(acc);
 		if (it == chars_.end() || it->second.empty()) {
-			std::vector<WORD> emptyG;
-			TenviCharacter hero(acc, (BYTE)((1 << 4) | 4), 6, 3, 19, 24, 479, 157, emptyG);
-			hero.TestSilva();
-			hero.level = 1;
-			hero.id = nextId();
-			chars_[acc].push_back(toRow(hero));
+			// 新账号：不自动建角色，返回空列表。player可点"创建角色"自建。
 			accounts_[acc] = 1;
 			save();
-			out.push_back(hero);
 			return out;
 		}
 		for (auto &row : it->second) {
