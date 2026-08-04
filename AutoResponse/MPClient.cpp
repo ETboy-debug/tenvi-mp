@@ -21,242 +21,110 @@ static int g_port = 8787;
 static volatile LONG g_connected = 0;
 static volatile LONG g_authed = 0;        // 0=未认证 1=成功 -1=失败
 
-// ---- [MP] 自定义登录浮层（深色风格）----
-// 冲锋岛原生登录框使用 DirectInput/Raw Input, 不走标准 Win32 消息循环。
-// 已验证无效的方案: EnumChildWindows(非标准控件)、WH_GETMESSAGE(消息不经过队列)。
-// 正解: 在游戏窗口上创建一个自定义绘制的深色浮层窗口, 让用户输入账号密码。
-// 视觉上看起来像"游戏内的登录界面", 实际是独立 Win32 窗口。
+// ---- [MP] 低级键盘钩子(WH_KEYBOARD_LL) 捕获原生登录界面输入 ----
+// 冲锋岛登录框是自定义 DirectX 渲染, 输入走 DirectInput/Raw Input。
+// 已验证无效: EnumChildWindows(非标准控件)、WH_GETMESSAGE(消息不经过队列)。
+// 正解: WH_KEYBOARD_LL 在操作系统内核层拦截按键, 比 DirectInput 更底层,
+//       无论游戏用什么方式读取键盘都能捕获。用户在原生界面正常打字即可。
 
-static HWND   g_hOverlay = NULL;
-static HWND   g_hEdtAcc = NULL;
-static HWND   g_hEdtPw  = NULL;
-static std::string g_ovAccount;
-static std::string g_ovPassword;
-static volatile LONG g_ovResult = 0;     // 0=显示中 1=用户确认 -1=取消/关闭
+enum NatField { NAT_ACC = 0, NAT_PW = 1 };
 
-// 浮层配色(深色主题, 与启动器 GUI 风格统一)
-#define OVR_BG       RGB(30,31,43)       // 主背景
-#define OVR_CARD     RGB(40,42,58)       // 卡片背景
-#define OVR_INPUT    RGB(26,27,38)       // 输入框背景
-#define OVR_TEXT     RGB(232,232,240)    // 主文字
-#define OVR_SUB      RGB(154,154,176)    // 副文字
-#define OVR_ACCENT   RGB(91,140,255)     // 强调色
-#define OVR_OK_BG    RGB(62,207,142)     // 确认按钮背景
-#define OVR_OK_TEXT  RGB(15,36,25)       // 确认按钮文字
-#define OVR_BORDER   RGB(60,62,80)       // 边框
+static NatField g_natField = NAT_ACC;          // 当前输入字段(账号/密码)
+static std::string g_natAccount;               // 捕获的账号
+static std::string g_natPassword;              // 捕获的密码
+static HHOOK g_hKbHook = NULL;                 // 低级键盘钩子句柄
+static HWND  g_hGameWnd = NULL;                // 游戏窗口句柄
+static volatile LONG g_hookActive = 0;         // 钩子是否激活(连接后激活, 认证后停用)
+static CRITICAL_SECTION g_credCs;              // 保护凭据的 CS
+static bool g_credCsReady = false;
 
-static HBRUSH g_hBrushBg    = NULL;
-static HBRUSH g_hBrushInput = NULL;
-static HBRUSH g_hBrushCard  = NULL;
-static HFONT  g_hFontTitle  = NULL;
-static HFONT  g_hFontNormal = NULL;
+// 钩子回调(在系统线程运行, 必须快)
+static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+	if (nCode >= 0 && wParam == WM_KEYDOWN && InterlockedCompareExchange(&g_hookActive, 0, 0)) {
+		KBDLLHOOKSTRUCT *kb = (KBDLLHOOKSTRUCT *)lParam;
 
-static void InitOverlayResources() {
-	if (!g_hBrushBg)    g_hBrushBg    = CreateSolidBrush(OVR_BG);
-	if (!g_hBrushInput) g_hBrushInput = CreateSolidBrush(OVR_INPUT);
-	if (!g_hBrushCard)  g_hBrushCard  = CreateSolidBrush(OVR_CARD);
-	if (!g_hFontTitle)  g_hFontTitle  = CreateFontW(-20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-		DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-		ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
-	if (!g_hFontNormal) g_hFontNormal = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-		DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-		ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
-}
+		// 只在游戏窗口聚焦时捕获
+		HWND fg = GetForegroundWindow();
+		if (fg != g_hGameWnd) return CallNextHookEx(NULL, nCode, wParam, lParam);
 
-static void FreeOverlayResources() {
-	if (g_hBrushBg)    { DeleteObject(g_hBrushBg);    g_hBrushBg    = NULL; }
-	if (g_hBrushInput) { DeleteObject(g_hBrushInput); g_hBrushInput = NULL; }
-	if (g_hBrushCard)  { DeleteObject(g_hBrushCard);  g_hBrushCard  = NULL; }
-	if (g_hFontTitle)  { DeleteObject(g_hFontTitle);  g_hFontTitle  = NULL; }
-	if (g_hFontNormal) { DeleteObject(g_hFontNormal); g_hFontNormal = NULL; }
-}
+		DWORD vk = kb->vkCode;
+		EnterCriticalSection(&g_credCs);
 
-// 绘制浮层背景(标题栏 + 提示文字)
-static void PaintOverlayBg(HWND hwnd) {
-	PAINTSTRUCT ps;
-	HDC hdc = BeginPaint(hwnd, &ps);
-	RECT rc;
-	GetClientRect(hwnd, &rc);
-
-	// 主背景
-	FillRect(hdc, &rc, g_hBrushBg);
-
-	// 标题
-	SetBkMode(hdc, TRANSPARENT);
-	HFONT oldFont = (HFONT)SelectObject(hdc, g_hFontTitle);
-	SetTextColor(hdc, OVR_TEXT);
-	TextOutW(hdc, 24, 20, L"Tenvi MP", 9);
-
-	// 副标题
-	SelectObject(hdc, g_hFontNormal);
-	SetTextColor(hdc, OVR_SUB);
-	const char *hint = "New accounts auto-register. Wrong password rejected.";
-	TextOutA(hdc, 24, 52, hint, (int)strlen(hint));
-
-	// 底部提示
-	SetTextColor(hdc, OVR_SUB);
-	const char *footer = "Press Enter or click Login to continue.";
-	int footerLen = (int)strlen(footer);
-	SIZE sz = {};
-	GetTextExtentPoint32A(hdc, footer, footerLen, &sz);
-	TextOutA(hdc, 24, rc.bottom - 36, footer, footerLen);
-
-	SelectObject(hdc, oldFont);
-	EndPaint(hwnd, &ps);
-}
-
-static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-	switch (msg) {
-	case WM_PAINT:
-		PaintOverlayBg(hwnd);
-		return 0;
-
-	case WM_COMMAND:
-		if (LOWORD(wParam) == 100 || LOWORD(wParam) == IDOK) {
-			// [Login] button pressed or Enter in an edit
-			char acc[256] = {}, pw[256] = {};
-			GetWindowTextA(g_hEdtAcc, acc, sizeof(acc));
-			GetWindowTextA(g_hEdtPw, pw, sizeof(pw));
-			g_ovAccount = acc;
-			g_ovPassword = pw;
-			InterlockedExchange(&g_ovResult, 1);
-			DestroyWindow(hwnd);
-			g_hOverlay = NULL;
-			return 0;
+		if (vk == VK_TAB) {
+			// TAB 切换账号/密码字段
+			g_natField = (g_natField == NAT_ACC) ? NAT_PW : NAT_ACC;
+		} else if (vk == VK_BACK) {
+			// 退格删除
+			std::string &s = (g_natField == NAT_ACC) ? g_natAccount : g_natPassword;
+			if (!s.empty()) s.pop_back();
+		} else if (vk == VK_RETURN) {
+			// 回车不做特殊处理(让游戏自己处理"登录"按钮点击)
+		} else if (vk >= 0x20 && vk <= 0x7E) {
+			// 可打印 ASCII 字符
+			BYTE ks[256] = {};
+			GetKeyboardState(ks);
+			WCHAR uch[4] = {};
+			int ret = ToUnicode(vk, kb->scanCode, ks, uch, 4, 0);
+			if (ret > 0) {
+				char mb[8] = {};
+				int mblen = WideCharToMultiByte(CP_ACP, 0, uch, ret, mb, sizeof(mb), NULL, NULL);
+				if (mblen > 0) {
+					std::string &s = (g_natField == NAT_ACC) ? g_natAccount : g_natPassword;
+					s.append(mb, mblen);
+				}
+			}
 		}
-		break;
+		// 其他键(Shift/Ctrl/Alt/箭头等)忽略, 不阻止传递给游戏
 
-	case WM_CTLCOLORSTATIC: {
-		HDC hdcS = (HDC)wParam;
-		SetBkMode(hdcS, TRANSPARENT);
-		SetTextColor(hdcS, OVR_TEXT);
-		return (LRESULT)g_hBrushBg;
-	}
-	case WM_CTLCOLOREDIT: {
-		HDC hdcE = (HDC)wParam;
-		SetBkColor(hdcE, OVR_INPUT);
-		SetTextColor(hdcE, OVR_TEXT);
-		return (LRESULT)g_hBrushInput;
+		LeaveCriticalSection(&g_credCs);
 	}
 
-	case WM_DESTROY:
-		if (g_ovResult == 0) InterlockedExchange(&g_ovResult, -1); // 用户关了窗但没点确认
-		return 0;
-
-	case WM_CLOSE:
-		InterlockedExchange(&g_ovResult, -1);
-		DestroyWindow(hwnd);
-		g_hOverlay = NULL;
-		return 0;
-	}
-	return DefWindowProcW(hwnd, msg, wParam, lParam);
+	return CallNextHookEx(NULL, nCode, wParam, lParam);
 }
 
-// 显示模态登录浮层。返回 true 表示用户点了确认(false=取消/关闭)。
-// 阻塞调用方线程直到用户操作完毕。
-static bool ShowLoginOverlay() {
-	InitOverlayResources();
-
-	// 注册窗口类(仅一次)
-	static bool classRegistered = false;
-	if (!classRegistered) {
-		WNDCLASSW wc = {};
-		wc.lpfnWndProc   = OverlayWndProc;
-		wc.hInstance     = GetModuleHandleW(NULL);
-		wc.hCursor       = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
-		wc.hbrBackground = g_hBrushBg;
-		wc.lpszClassName = L"TenviMPOverlay";
-		RegisterClassW(&wc);
-		classRegistered = true;
+// 安装低级键盘钩子
+static void InstallKBHook() {
+	if (!g_credCsReady) {
+		InitializeCriticalSection(&g_credCs);
+		g_credCsReady = true;
 	}
+	g_hGameWnd = GetForegroundWindow(); // 游戏窗口(连接时应该已经显示)
+	g_natAccount.clear();
+	g_natPassword.clear();
+	g_natField = NAT_ACC;
+	InterlockedExchange(&g_hookActive, 1);
+	g_hKbHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc,
+		GetModuleHandleW(NULL), 0); // 全局钩子(threadId=0)
+	DEBUG(L"[MP] KB hook installed, hwnd=%p", g_hGameWnd);
+}
 
-	// 计算位置: 屏幕居中(或游戏窗口居中)
-	int x = 0, y = 0;
-	HWND hOwner = GetForegroundWindow();
-	if (!hOwner) hOwner = GetDesktopWindow();
-	RECT or_;
-	GetWindowRect(hOwner, &or_);
-	x = or_.left + ((or_.right - or_.left) - 360) / 2;
-	y = or_.top + ((or_.bottom - or_.top) - 260) / 2;
-	if (x < 0) x = 0;
-	if (y < 0) y = 0;
-
-	// 创建浮层窗口(无边框、无标题栏、不在任务栏显示 —— 看起来像游戏内面板)
-	g_hOverlay = CreateWindowExW(
-		WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-		L"TenviMPOverlay", L"",
-		WS_POPUP | WS_VISIBLE,
-		x, y, 360, 260,
-		hOwner, NULL, GetModuleHandleW(NULL), NULL);
-
-	if (!g_hOverlay) return false;
-
-	// 创建子控件
-	// --- Account label ---
-	CreateWindowExW(0, L"STATIC", L"Account",
-		WS_CHILD | WS_VISIBLE | SS_LEFT,
-		24, 90, 320, 22, g_hOverlay, (HMENU)200, NULL, NULL);
-
-	// --- Account edit ---
-	g_hEdtAcc = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-		WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-		24, 116, 312, 28, g_hOverlay, (HMENU)101, NULL, NULL);
-	SendMessage(g_hEdtAcc, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
-
-	// --- Password label ---
-	CreateWindowExW(0, L"STATIC", L"Password",
-		WS_CHILD | WS_VISIBLE | SS_LEFT,
-		24, 152, 320, 22, g_hOverlay, (HMENU)201, NULL, NULL);
-
-	// --- Password edit (masked) ---
-	g_hEdtPw = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-		WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_PASSWORD,
-		24, 178, 312, 28, g_hOverlay, (HMENU)102, NULL, NULL);
-	SendMessage(g_hEdtPw, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
-
-	// --- Login button ---
-	HWND hBtn = CreateWindowExW(0, L"BUTTON", L"Login >",
-		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
-		24, 216, 312, 32, g_hOverlay, (HMENU)100, NULL, NULL);
-	SendMessage(hBtn, WM_SETFONT, (WPARAM)g_hFontTitle, TRUE);
-
-	// 聚焦到账号输入框
-	SetFocus(g_hEdtAcc);
-
-	// [关键] 禁用游戏窗口, 防止用户点底部的原生登录按钮
-	EnableWindow(hOwner, FALSE);
-
-	// 模态消息循环
-	InterlockedExchange(&g_ovResult, 0);
-	ShowWindow(g_hOverlay, SW_SHOW);
-	SetForegroundWindow(g_hOverlay);
-
-	MSG msg;
-	while (g_ovResult == 0 && GetMessageW(&msg, NULL, 0, 0)) {
-		if (!IsDialogMessageW(g_hOverlay, &msg)) {
-			TranslateMessage(&msg);
-			DispatchMessageW(&msg);
-		}
+// 卸载低级键盘钩子并清空凭据
+static void UninstallKBHook() {
+	InterlockedExchange(&g_hookActive, 0);
+	if (g_hKbHook) {
+		UnhookWindowsHookEx(g_hKbHook);
+		g_hKbHook = NULL;
 	}
+	DEBUG(L"[MP] KB hook uninstalled");
+}
 
-	// [关键] 恢复游戏窗口(无论成功/取消/关闭都要恢复)
-	EnableWindow(hOwner, TRUE);
-	SetForegroundWindow(hOwner); // 把焦点还给游戏
-
-	bool ok = (g_ovResult == 1);
-	FreeOverlayResources();
+// 获取捕获到的凭据(供 AutoResponse.cpp 的 LoginButton_Hook 调用)
+bool MP_GetNativeCred(std::string &outAcc, std::string &outPw) {
+	EnterCriticalSection(&g_credCs);
+	outAcc = g_natAccount;
+	outPw  = g_natPassword;
+	bool ok = !g_natAccount.empty();
+	LeaveCriticalSection(&g_credCs);
 	return ok;
 }
 
-bool MP_GetNativeCred(std::string &outAcc, std::string &outPw) {
-	outAcc = g_ovAccount;
-	outPw  = g_ovPassword;
-	return !g_ovAccount.empty();
-}
-
+// 清空凭据(认证成功后调用)
 void NatClearCred() {
-	g_ovAccount.clear();
-	g_ovPassword.clear();
+	EnterCriticalSection(&g_credCs);
+	g_natAccount.clear();
+	g_natPassword.clear();
+	g_natField = NAT_ACC;
+	LeaveCriticalSection(&g_credCs);
 }
 
 // ---- [MP] 同步等待服务端 ctrl 结果(从 g_ctrlQueue 轮询) ----
@@ -351,7 +219,7 @@ static void MP_PushPacket(const BYTE *p, DWORD n) {
 	LeaveCriticalSection(&g_cs);
 }
 
-// ---- 收包线程: 连接服务端 + 收包转发 + 弹出登录浮层 ----
+// ---- 收包线程: 连接服务端 + 安装键盘钩子 + 收包转发 + 等待认证 ----
 static DWORD WINAPI MP_Thread(LPVOID) {
 	WSADATA wsa;
 	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -398,44 +266,13 @@ static DWORD WINAPI MP_Thread(LPVOID) {
 	DEBUG(L"MP connected");
 	MP_SendCtrl(MP_CTRL_HELLO);
 
-	// [MP] 弹出深色登录浮层: 用户在此输入账号密码。
-	// 浮层是模态的, 阻塞本线程直到用户确认或取消。
-	DEBUG(L"MP showing login overlay...");
-	bool ok = ShowLoginOverlay();
-	if (!ok) {
-		DEBUG(L"MP login overlay cancelled by user");
-		// 用户取消了, 保持连接不断(可以重新弹? 目前直接放弃)
-	} else {
-		DEBUG(L"MP overlay got: acc=%hs pw=%d chars", g_ovAccount.c_str(), (int)g_ovPassword.length());
-		// 发送登录请求(自动注册+校验合一)
-		MP_SendLogin(g_ovAccount, g_ovPassword);
+	// [MP] 安装低级键盘钩子: 用户在游戏原生登录界面打字, 我们静默捕获。
+	// 不弹任何窗口, 不阻挡任何游戏操作。
+	InstallKBHook();
 
-		// 同步等待结果
-		BYTE res = 0;
-		if (MP_WaitCtrlResult(MP_CTRL_LOGIN_RESULT, 8000, res)) {
-			if (res == 1) {
-				DEBUG(L"MP login SUCCESS");
-				MP_SetAuthed(true);
-				NatClearCred(); // 清内存中的明文密码
-				MP_SendCtrl(MP_CTRL_WORLDLIST);
-			} else {
-				DEBUG(L"MP login FAILED (wrong password?)");
-				// 失败: 可以在这里再弹一次浮层, 目前先标记失败
-				MessageBoxA(NULL,
-					"Login failed: wrong password or server error.\n"
-					"Please restart the game and try again.",
-					"Tenvi MP", MB_OK | MB_ICONWARNING);
-				MP_SetAuthed(false);
-			}
-		} else {
-			DEBUG(L"MP login TIMEOUT");
-			MessageBoxA(NULL,
-				"Login timeout: server not responding.\n"
-				"Check that StandaloneServer.exe is running.",
-				"Tenvi MP", MB_OK | MB_ICONERROR);
-			MP_SetAuthed(false);
-		}
-	}
+	// 注意: 认证不在这里做! 认证推迟到用户点"登录"按钮时,
+	// 由 AutoResponse.cpp 的 LoginButton_Hook 触发(MP_GetNativeCred 取输入 -> 发登录请求)。
+	// 这里只负责: 连接 + 装钩子 + 收包循环。
 
 	// 收包循环: 游戏包入队 g_inQueue, ctrl 包入队 g_ctrlQueue
 	std::vector<BYTE> buf;
@@ -464,6 +301,7 @@ static DWORD WINAPI MP_Thread(LPVOID) {
 	InterlockedExchange(&g_connected, 0);
 	closesocket(g_sock);
 	g_sock = INVALID_SOCKET;
+	UninstallKBHook();
 	DEBUG(L"MP disconnected");
 	return 0;
 }
@@ -485,7 +323,7 @@ bool MP_Start(HINSTANCE hinstDLL) {
 		int p = _wtoi(wPort.c_str());
 		if (p > 0 && p < 65536) g_port = p;
 	}
-	// 不从 ini 读 Account/Password — 改为连接后弹出登录浮层
+	// 不从 ini 读 Account/Password — 改为键盘钩子从原生界面捕获
 
 	HANDLE hThread = CreateThread(NULL, 0, MP_Thread, NULL, 0, NULL);
 	if (hThread) { CloseHandle(hThread); return true; }
