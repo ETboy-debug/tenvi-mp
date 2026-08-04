@@ -121,30 +121,54 @@ void MP_Pump() {
 // Login Button Click
 DWORD (__thiscall *_LoginButton)(void *ecx) = NULL;
 DWORD __fastcall LoginButton_Hook(void *ecx) {
-	// [MP 保底 v24-fix] 冲锋岛原生登录框的输入无法从外部捕获
-	// (DirectX 自绘 + DirectInput 独占键盘, 已实测 5 种方案全部失败:
-	//  枚举控件 / WM_GETMESSAGE / WH_KEYBOARD_LL / 登录包拦截 / DLL 浮层被否决)。
-	// 改用本机名作为联机账号: 点原生"登录"按钮即一键进游戏,
-	// 每台机器角色独立、可联机。账号密码系统后续单独实现。
+	// [MP v27] 用户在原生登录界面直接打字(后台键盘钩子静默捕获),
+	// 点"登录"时取捕获的账号密码 -> 发服务端认证(自动注册/验密合一)。
 	if (MP_IsAuthed()) {
 		DEBUG(L"[MP] LoginButton: already authed");
 		return 0;
 	}
 
-	// 用本机名当账号(每台机器不同 -> 满足"角色不互通 / 能联机")
-	char cn[64] = {};
-	DWORD cnSize = sizeof(cn);
-	std::string acc = "Player";
-	if (GetComputerNameA(cn, &cnSize) && cnSize > 0 && cnSize <= 63) {
-		acc = std::string(cn, cnSize);
+	std::string acc, pw;
+	if (!MP_GetNativeCred(acc, pw)) {
+		// 没有捕获到任何输入 —— 提示用户先在登录界面打字
+		MessageBoxA(NULL,
+			"Please type your account and password in the login form,\n"
+			"then click Login.\n\n"
+			"(After the account, press TAB to switch to the password field.)",
+			"Tenvi MP", MB_OK | MB_ICONINFORMATION);
+		return 0;
+	}
+	if (pw.empty()) {
+		// 只捕获到账号, 没捕获到密码 —— 多半是没按 TAB 切到密码框
+		MessageBoxA(NULL,
+			"Account captured, but no password.\n"
+			"After typing the account, press TAB to move to the\n"
+			"password field, then type the password, then click Login.",
+			"Tenvi MP", MB_OK | MB_ICONWARNING);
+		return 0;
 	}
 
-	DEBUG(L"[MP] LoginButton -> fallback login, account='%hs'", acc.c_str());
-	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
-	  if (f) { fprintf(f, "[LOGINBTN] fallback account=%s\n", acc.c_str()); fflush(f); fclose(f); } }
+	DEBUG(L"[MP] Native login: acc=%hs pw=%d chars", acc.c_str(), pw.length());
+	MP_SendLogin(acc, pw);
 
-	// 发联机登录(机器名当账号, 密码同值, 仅隔离用) + 直接进入选世界流程
-	MP_SendLogin(acc, acc);
+	BYTE res = 0;
+	if (!MP_WaitCtrlResult(MP_CTRL_LOGIN_RESULT, 8000, res)) {
+		MessageBoxA(NULL, "Login timeout (server not responding?).",
+		            "Tenvi MP", MB_OK | MB_ICONERROR);
+		MP_DisableCapture();
+		return 0;
+	}
+	if (res != 1) {
+		MessageBoxA(NULL, "Login failed: wrong password or account error.",
+		            "Tenvi MP", MB_OK | MB_ICONWARNING);
+		MP_DisableCapture();
+		return 0;
+	}
+
+	// 认证成功: 停止捕获、清空凭据(安全)、放行
+	MP_ClearCred();
+	MP_DisableCapture();
+	MP_SetAuthed(true);
 	MP_SendCtrl(MP_CTRL_WORLDLIST);
 	return 0;
 }
@@ -193,17 +217,6 @@ bool __fastcall ConnectCaller_Hook(void *ecx, void *edx, void *v1, void *v2, voi
 
 void(__thiscall *_EnterSendPacket)(OutPacket *) = NULL;
 void __fastcall EnterSendPacket_Hook(OutPacket *op) {
-	// [MP v24] 登录包拦截: 如果用户刚点了"登录"按钮, 检查当前包是否为登录包
-	// 如果是 -> 提取凭据发服务端认证 -> 丢弃此包(不发往真实服务器)
-	int intercepted = MP_InterceptLoginPacket(op->packet, op->encoded);
-	if (intercepted == 1) {
-		// 这是登录包, 已被截获并处理, 丢弃它
-		DEBUG(L"[MP] Login packet intercepted and consumed");
-		{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
-		  if (f) { fprintf(f, "[ENTERSEND] LOGIN PACKET INTERCEPTED, DROPPED\n"); fflush(f); fclose(f); } }
-		return; // 不调用 _EnterSendPacket, 也不转发到 MP 服务器
-	}
-
 	// [MP] Bridge to standalone server always (so server can respond with more packets)
 	MP_SendGame(op->packet, op->encoded);
 	// [DIAG] Log outbound packet
@@ -237,31 +250,6 @@ void __fastcall ProcessPacketCaller_Hook(void *ecx) {
 		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 		if (f) { fprintf(f, "[FRAME %d] ProcessPacketCaller end\n", mp_frame_count); fflush(f); fclose(f); }
 	}
-	// [MP v24] 轮询登录包认证结果(如果正在等待)
-	int authResult = MP_PollAuthResult();
-	if (authResult == 1) {
-		// 认证成功!
-		DEBUG(L"[MP] Auth success from poll -> sending WORLDLIST");
-		MP_SendCtrl(MP_CTRL_WORLDLIST);
-	} else if (authResult == -1) {
-		// 认证失败(错密码等)
-		std::string acc;
-		MP_GetLastCred(acc);
-		char msg[256];
-		sprintf_s(msg, sizeof(msg),
-			"Login failed for account '%s'.\nWrong password or server error.",
-			acc.c_str());
-		MessageBoxA(NULL, msg, "Tenvi MP", MB_OK | MB_ICONWARNING);
-		MP_ResetLoginState();
-	} else if (authResult == -2) {
-		// 认证超时
-		MessageBoxA(NULL,
-			"Login timeout.\nThe server did not respond in time.",
-			"Tenvi MP", MB_OK | MB_ICONERROR);
-		MP_ResetLoginState();
-	}
-	// authResult == 0 表示还在等待或无需处理, 什么都不做
-
 	// [MP] Inject server packets into client
 	MP_Pump();
 	// [DIAG] Post-pump: confirm MP_Pump returned safely
