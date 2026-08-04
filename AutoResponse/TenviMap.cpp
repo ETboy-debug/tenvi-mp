@@ -3,6 +3,12 @@
 #include"TenviMap.h"
 #include"TenviData.h"
 #include"../EmuMainTenvi/ConfigTenvi.h"
+#include<cstdio>
+#ifdef MP_SERVER
+#define TM_MARK(...) do { printf(__VA_ARGS__); fflush(stdout); } while(0)
+#else
+#define TM_MARK(...) do { } while(0)
+#endif
 
 TenviMap::TenviMap(DWORD mapid) {
 	id = mapid;
@@ -23,6 +29,7 @@ bool TenviMap::LoadXML() {
 	std::string mapid_str = (id < 10000) ? ("0" + std::to_string(id)) : std::to_string(id);
 	std::string map_xml = tenvi_data.get_xml_path() + +"\\" + tenvi_data.get_region_str() + "\\map\\" + mapid_str + "_0.xml";
 	OutputDebugStringA(("[Maple] xml = " + map_xml).c_str());
+	TM_MARK("[TenviServer] MARK LoadXML(%s) before parse\n", map_xml.c_str());
 	rapidxml::xml_document<> doc;
 
 	try {
@@ -30,8 +37,10 @@ bool TenviMap::LoadXML() {
 		doc.parse<0>(xmlFile.data());
 	}
 	catch (...) {
+		TM_MARK("[TenviServer] MARK LoadXML parse threw\n");
 		return false;
 	}
+	TM_MARK("[TenviServer] MARK LoadXML after parse\n");
 
 	rapidxml::xml_node<>* root = doc.first_node();
 
@@ -41,6 +50,7 @@ bool TenviMap::LoadXML() {
 
 	// spawn point
 	rapidxml::xml_node<> *map_sp = xml_find_dir(root, "sp");
+	TM_MARK("[TenviServer] MARK LoadXML after find sp=%p\n", (void*)map_sp);
 	if (map_sp) {
 		for (rapidxml::xml_node<>* child = map_sp->first_node(); child; child = child->next_sibling()) {
 			TenviSpawnPoint spawn_point = {};
@@ -50,9 +60,11 @@ bool TenviMap::LoadXML() {
 			AddSpawnPoint(spawn_point);
 		}
 	}
+	TM_MARK("[TenviServer] MARK LoadXML after sp\n");
 
 	// portal
 	rapidxml::xml_node<> *map_portal = xml_find_dir(root, "portal");
+	TM_MARK("[TenviServer] MARK LoadXML after find portal=%p\n", (void*)map_portal);
 	if (map_portal) {
 		for (rapidxml::xml_node<>* child = map_portal->first_node(); child; child = child->next_sibling()) {
 			TenviPortal portal = {};
@@ -64,8 +76,10 @@ bool TenviMap::LoadXML() {
 			AddPortal(portal);
 		}
 	}
+	TM_MARK("[TenviServer] MARK LoadXML after portal, before LoadSubXML\n");
 
 	LoadSubXML();
+	TM_MARK("[TenviServer] MARK LoadXML after LoadSubXML\n");
 	return true;
 }
 
