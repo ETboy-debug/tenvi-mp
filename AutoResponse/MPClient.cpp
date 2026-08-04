@@ -99,7 +99,7 @@ static void InstallKBHook() {
 }
 
 // 卸载低级键盘钩子并清空凭据
-static void UninstallKBHook() {
+void UninstallKBHook() {
 	InterlockedExchange(&g_hookActive, 0);
 	if (g_hKbHook) {
 		UnhookWindowsHookEx(g_hKbHook);
