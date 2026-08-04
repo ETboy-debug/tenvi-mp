@@ -1,4 +1,7 @@
 // MPClient.cpp - 客户端侧明文桥接 socket
+// [v28] 启动器输入账号密码 -> 写 ini -> DLL 读 ini 自动发服务端认证
+//       不再依赖游戏原生登录界面的键盘捕获( DirectInput 独占导致所有
+//       钩子方案均失败: WH_GETMESSAGE / WH_KEYBOARD_LL 主线程 / 独立线程 )
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -21,131 +24,11 @@ static int g_port = 8787;
 static volatile LONG g_connected = 0;
 static volatile LONG g_authed = 0;        // 0=未认证 1=成功 -1=失败
 
-// ---- [MP] 原生登录界面键盘捕获系统(v27) ----
-// 原理: 冲锋岛登录框的输入绕开了 Windows 控件(自定义渲染), 无法直接读控件值。
-//       但 WH_KEYBOARD_LL 低级键盘钩子运行在 OS 最底层, 无论游戏用 DirectInput
-//       还是 RawInput 都能捕获按键 —— 前提是钩子必须挂在【独立消息泵线程】上。
-//       (之前 v25 失败就是这个原因: 钩子挂在了游戏主线程, 主线程不泵消息 ->
-//        回调永不触发。这是教科书级的正确写法, 与游戏不可hook无关。)
-//       本版用专用线程 SetWindowsHookEx + GetMessage 循环, 回调在该线程触发。
-//
-// 流程:
-//   1. MP_Start 启动 KBCaptureThread(安装钩子 + 消息循环)
-//   2. 连上服务端后 MP_EnableCapture() -> 静默记录按键(仅当游戏窗口前台)
-//   3. 用户在原生登录界面正常打字(游戏照常显示字符, 我们后台镜像)
-//      - 账号字段: 直接记录; 输完按 TAB 切到密码字段
-//      - VK_BACK 删除上一字符
-//   4. 点"登录" -> LoginButton_Hook 取 MP_GetNativeCred -> 发服务端认证
-//   5. 认证成功后 MP_DisableCapture() 停止记录
+// ---- [v28] 从 ini 读取的账号密码(启动器写入) ----
+static std::string g_account;   // UTF-8
+static std::string g_password;  // UTF-8
 
-static HINSTANCE g_hInst = NULL;
-static HHOOK g_hKBHook = NULL;
-static volatile LONG g_captureEnabled = 0;   // 1=登录界面期间记录按键
-static int g_field = 0;                        // 0=账号 1=密码
-static std::string g_acc;
-static std::string g_pw;
-static CRITICAL_SECTION g_capCs;
-static bool g_capCsReady = false;
-
-static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-	if (nCode == HC_ACTION && wParam == WM_KEYDOWN) {
-		if (InterlockedCompareExchange(&g_captureEnabled, 0, 0)) {
-			// 仅当游戏窗口处于前台(确保按键是打给游戏的)
-			DWORD fgPid = 0;
-			GetWindowThreadProcessId(GetForegroundWindow(), &fgPid);
-			if (fgPid == GetCurrentProcessId()) {
-				KBDLLHOOKSTRUCT *kh = (KBDLLHOOKSTRUCT *)lParam;
-				DWORD vk = kh->vkCode;
-
-				if (vk == VK_TAB) {
-					g_field = 1; // 切到密码字段
-					return CallNextHookEx(g_hKBHook, nCode, wParam, lParam);
-				}
-				if (vk == VK_BACK) {
-					if (g_field == 0 && !g_acc.empty()) g_acc.pop_back();
-					else if (g_field == 1 && !g_pw.empty()) g_pw.pop_back();
-					return CallNextHookEx(g_hKBHook, nCode, wParam, lParam);
-				}
-				if (vk == VK_RETURN || vk == VK_ESCAPE) {
-					return CallNextHookEx(g_hKBHook, nCode, wParam, lParam);
-				}
-				// 用全局异步按键状态翻译字符(跨线程可靠, 含 Shift/Caps 状态)
-				BYTE kbState[256] = {0};
-				for (int i = 0; i < 256; i++)
-					kbState[i] = (GetAsyncKeyState(i) & 0x8000) ? 0xFF : 0;
-				WORD wch = 0;
-				if (ToAscii(vk, kh->scanCode, kbState, &wch, 0) == 1) {
-					char c = (char)(wch & 0xFF);
-					if (c >= 0x20 && c < 0x7F) { // 可打印 ASCII
-						if (g_field == 0 && g_acc.size() < 64) g_acc += c;
-						else if (g_field == 1 && g_pw.size() < 64) g_pw += c;
-					}
-				}
-			}
-		}
-	}
-	return CallNextHookEx(g_hKBHook, nCode, wParam, lParam);
-}
-
-static DWORD WINAPI KBCaptureThread(LPVOID) {
-	g_hKBHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, g_hInst, 0);
-	if (!g_hKBHook) {
-		DEBUG(L"[MP] KB hook install failed, err=%lu", GetLastError());
-		return 0;
-	}
-	DEBUG(L"[MP] KB hook installed on dedicated thread");
-	MSG msg;
-	while (GetMessage(&msg, NULL, 0, 0)) {
-		TranslateMessage(&msg);
-		DispatchMessage(&msg);
-	}
-	if (g_hKBHook) { UnhookWindowsHookEx(g_hKBHook); g_hKBHook = NULL; }
-	return 0;
-}
-
-// 启动键盘捕获线程(在 MP_Start 调用)
-static void MP_StartKBCapture() {
-	if (!g_capCsReady) { InitializeCriticalSection(&g_capCs); g_capCsReady = true; }
-	HANDLE h = CreateThread(NULL, 0, KBCaptureThread, NULL, 0, NULL);
-	if (h) CloseHandle(h);
-}
-
-// 连上服务端后调用: 清空并开启记录
-void MP_EnableCapture() {
-	EnterCriticalSection(&g_capCs);
-	g_acc.clear(); g_pw.clear(); g_field = 0;
-	LeaveCriticalSection(&g_capCs);
-	InterlockedExchange(&g_captureEnabled, 1);
-	DEBUG(L"[MP] capture ENABLED");
-}
-
-// 认证完成后调用: 停止记录
-void MP_DisableCapture() {
-	InterlockedExchange(&g_captureEnabled, 0);
-	DEBUG(L"[MP] capture DISABLED");
-}
-
-// LoginButton_Hook 调用: 取捕获的账号密码
-bool MP_GetNativeCred(std::string &outAcc, std::string &outPw) {
-	EnterCriticalSection(&g_capCs);
-	outAcc = g_acc; outPw = g_pw;
-	LeaveCriticalSection(&g_capCs);
-	return !outAcc.empty();
-}
-
-// 认证成功后清空(安全)
-void MP_ClearCred() {
-	EnterCriticalSection(&g_capCs);
-	g_acc.clear(); g_pw.clear(); g_field = 0;
-	LeaveCriticalSection(&g_capCs);
-}
-
-void MP_ResetLoginState() {
-	MP_DisableCapture();
-	MP_ClearCred();
-}
-
-// ---- [MP] 同步等待服务端 ctrl 结果(从 g_ctrlQueue 轮询) ----
+// ---- 同步等待服务端 ctrl 结果(从 g_ctrlQueue 轮询) ----
 bool MP_WaitCtrlResult(BYTE expectCmd, int timeoutMs, BYTE &outByte) {
 	DWORD start = GetTickCount();
 	while (true) {
@@ -238,7 +121,7 @@ static void MP_PushPacket(const BYTE *p, DWORD n) {
 	LeaveCriticalSection(&g_cs);
 }
 
-// ---- 收包线程: 连接服务端 + 收包转发(纯网络, 不涉及UI/钩子) ----
+// ---- 收包线程: 连接服务端 + 收包转发 + 自动登录 ----
 static DWORD WINAPI MP_Thread(LPVOID) {
 	WSADATA wsa;
 	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -284,7 +167,14 @@ static DWORD WINAPI MP_Thread(LPVOID) {
 	InterlockedExchange(&g_connected, 1);
 	DEBUG(L"MP connected");
 	MP_SendCtrl(MP_CTRL_HELLO);
-	MP_EnableCapture(); // [v27] 登录界面期间开始静默记录键盘
+
+	// [v28] 连上后立即用 ini 里的账号密码发登录请求(自动注册+验密合一)
+	if (!g_account.empty()) {
+		DEBUG(L"[MP] auto-login with account=%hs", g_account.c_str());
+		MP_SendLogin(g_account, g_password);
+	} else {
+		DEBUG(L"[MP] no account in ini, skipping login");
+	}
 
 	// 收包循环: 游戏包入队 g_inQueue, ctrl 包入队 g_ctrlQueue
 	std::vector<BYTE> buf;
@@ -322,17 +212,20 @@ bool MP_Start(HINSTANCE hinstDLL) {
 		InitializeCriticalSection(&g_cs);
 		g_csReady = true;
 	}
-	if (!g_capCsReady) {
-		InitializeCriticalSection(&g_capCs);
-		g_capCsReady = true;
-	}
-	g_hInst = hinstDLL;
 
-	// [v27] 启动键盘捕获线程(独立消息泵, 低级钩子回调在其上触发)
-	MP_StartKBCapture();
-
+	// [v28] 从 ini 读取启动器写入的账号和密码
 	Config conf(MP_INI_NAME L".ini", hinstDLL);
-	std::wstring wIP, wPort;
+	std::wstring wAcc, wPw, wIP, wPort;
+	if (conf.Read(MP_INI_NAME, L"Account", wAcc) && wAcc.length()) {
+		char abuf[256] = {};
+		WideCharToMultiByte(CP_UTF8, 0, wAcc.c_str(), -1, abuf, sizeof(abuf) - 1, NULL, NULL);
+		g_account = abuf;
+	}
+	if (conf.Read(MP_INI_NAME, L"Password", wPw) && wPw.length()) {
+		char pbuf[256] = {};
+		WideCharToMultiByte(CP_UTF8, 0, wPw.c_str(), -1, pbuf, sizeof(pbuf) - 1, NULL, NULL);
+		g_password = pbuf;
+	}
 	if (conf.Read(MP_INI_NAME, L"ServerIP", wIP) && wIP.length()) {
 		char abuf[64] = {};
 		WideCharToMultiByte(CP_ACP, 0, wIP.c_str(), -1, abuf, sizeof(abuf) - 1, NULL, NULL);
@@ -342,7 +235,8 @@ bool MP_Start(HINSTANCE hinstDLL) {
 		int p = _wtoi(wPort.c_str());
 		if (p > 0 && p < 65536) g_port = p;
 	}
-	// 不从 ini 读 Account/Password — 改为从登录包中拦截提取
+	DEBUG(L"[MP] account=%hs pwd=%dchars server=%s:%d",
+	      g_account.c_str(), (int)g_password.length(), g_ip.c_str(), g_port);
 
 	HANDLE hThread = CreateThread(NULL, 0, MP_Thread, NULL, 0, NULL);
 	if (hThread) { CloseHandle(hThread); return true; }
