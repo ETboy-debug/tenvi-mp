@@ -341,7 +341,113 @@ void MP_ResetLoginState() {
 }
 
 // ============================================================
-// 收包线程: 连接服务端 + 收包转发
+// [v33] 同步重连: 登录前按需连接(解决"开游戏时服务端没启动导致连接线程退出"的问题)
+// ============================================================
+bool MP_Reconnect() {
+	// 如果已经连上了, 不需要重连
+	if (g_sock != INVALID_SOCKET && g_connected) {
+		DEBUG(L"[MP] Reconnect: already connected");
+		return true;
+	}
+
+	// 清理旧 socket
+	if (g_sock != INVALID_SOCKET) {
+		closesocket(g_sock);
+		g_sock = INVALID_SOCKET;
+	}
+	InterlockedExchange(&g_connected, 0);
+
+	WSADATA wsa;
+	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
+
+	char portStr[16] = {};
+	sprintf_s(portStr, sizeof(portStr), "%d", g_port);
+
+	// 尝试30次(每次1秒, 共30秒足够)
+	for (int attempt = 0; attempt < 30; attempt++) {
+		addrinfo hints = {};
+		hints.ai_family = AF_INET;
+		hints.ai_socktype = SOCK_STREAM;
+		hints.ai_protocol = IPPROTO_TCP;
+
+		addrinfo *res = NULL;
+		if (getaddrinfo(g_ip.c_str(), portStr, &hints, &res) != 0 || !res) {
+			Sleep(1000); continue;
+		}
+
+		bool ok = false;
+		for (addrinfo *ai = res; ai; ai = ai->ai_next) {
+			g_sock = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+			if (g_sock == INVALID_SOCKET) continue;
+			if (connect(g_sock, ai->ai_addr, (int)ai->ai_addrlen) == 0) { ok = true; break; }
+			closesocket(g_sock);
+			g_sock = INVALID_SOCKET;
+		}
+		freeaddrinfo(res);
+		if (ok) break;
+		Sleep(1000);
+	}
+
+	if (g_sock == INVALID_SOCKET) {
+		DEBUG(L"[MP] Reconnect: failed after 30 attempts");
+		return false;
+	}
+
+	int flag = 1;
+	setsockopt(g_sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&flag, sizeof(flag));
+	InterlockedExchange(&g_connected, 1);
+	DEBUG(L"[MP] Reconnect: connected to %s:%d", g_ip.c_str(), g_port);
+
+	// 发送 HELLO 握手
+	MP_SendCtrl(MP_CTRL_HELLO);
+
+	// 启动收包线程(复用原来的 MP_Thread 收包逻辑, 但跳过连接部分)
+	// 用一个标志告诉 MP_Thread 跳过连接直接进入收包循环
+	// 简单方案: 直接创建新的收包线程
+	HANDLE hThread = CreateThread(NULL, 0, MP_RecvThread, NULL, 0, NULL);
+	if (hThread) CloseHandle(hThread);
+
+	return true;
+}
+
+// ============================================================
+// 收包线程: 只做收包转发(由 MP_Thread 或 MP_Reconnect 启动)
+// ============================================================
+static DWORD WINAPI MP_RecvThread(LPVOID) {
+	DEBUG(L"[MP] RecvThread started");
+	// 收包循环
+	std::vector<BYTE> buf;
+	char tmp[16384];
+	while (true) {
+		int n = recv(g_sock, tmp, sizeof(tmp), 0);
+		if (n <= 0) break;
+		buf.insert(buf.end(), tmp, tmp + n);
+		while (buf.size() >= 4) {
+			DWORD len = (DWORD)buf[0] | ((DWORD)buf[1] << 8) | ((DWORD)buf[2] << 16) | ((DWORD)buf[3] << 24);
+			if (len == 0 || len > 65536) { buf.clear(); break; }
+			if (buf.size() < 4 + len) break;
+			BYTE type = buf[4];
+			if (type == MP_TYPE_GAME && len > 1) {
+				MP_PushPacket(&buf[5], len - 1);
+			} else if (type == MP_TYPE_CTRL && len >= 2) {
+				std::vector<BYTE> cpkt(buf.begin() + 4, buf.begin() + 4 + len);
+				EnterCriticalSection(&g_cs);
+				g_ctrlQueue.push_back(cpkt);
+				LeaveCriticalSection(&g_cs);
+			}
+			buf.erase(buf.begin(), buf.begin() + 4 + len);
+		}
+	}
+
+	InterlockedExchange(&g_connected, 0);
+	closesocket(g_sock);
+	g_sock = INVALID_SOCKET;
+	DEBUG(L"[MP] disconnected");
+	return 0;
+}
+
+// ============================================================
+// 连接线程: DLL启动时调用(后台重试120次)
 // ============================================================
 static DWORD WINAPI MP_Thread(LPVOID) {
 	WSADATA wsa;
@@ -389,34 +495,10 @@ static DWORD WINAPI MP_Thread(LPVOID) {
 	DEBUG(L"MP connected");
 	MP_SendCtrl(MP_CTRL_HELLO);
 
-	// 收包循环
-	std::vector<BYTE> buf;
-	char tmp[16384];
-	while (true) {
-		int n = recv(g_sock, tmp, sizeof(tmp), 0);
-		if (n <= 0) break;
-		buf.insert(buf.end(), tmp, tmp + n);
-		while (buf.size() >= 4) {
-			DWORD len = (DWORD)buf[0] | ((DWORD)buf[1] << 8) | ((DWORD)buf[2] << 16) | ((DWORD)buf[3] << 24);
-			if (len == 0 || len > 65536) { buf.clear(); break; }
-			if (buf.size() < 4 + len) break;
-			BYTE type = buf[4];
-			if (type == MP_TYPE_GAME && len > 1) {
-				MP_PushPacket(&buf[5], len - 1);
-			} else if (type == MP_TYPE_CTRL && len >= 2) {
-				std::vector<BYTE> cpkt(buf.begin() + 4, buf.begin() + 4 + len);
-				EnterCriticalSection(&g_cs);
-				g_ctrlQueue.push_back(cpkt);
-				LeaveCriticalSection(&g_cs);
-			}
-			buf.erase(buf.begin(), buf.begin() + 4 + len);
-		}
-	}
+	// 启动独立收包线程
+	HANDLE hRecv = CreateThread(NULL, 0, MP_RecvThread, NULL, 0, NULL);
+	if (hRecv) CloseHandle(hRecv);
 
-	InterlockedExchange(&g_connected, 0);
-	closesocket(g_sock);
-	g_sock = INVALID_SOCKET;
-	DEBUG(L"MP disconnected");
 	return 0;
 }
 
@@ -439,7 +521,7 @@ bool MP_Start(HINSTANCE hinstDLL) {
 		int p = _wtoi(wPort.c_str());
 		if (p > 0 && p < 65536) g_port = p;
 	}
-	DEBUG(L"[MP] server=%s:%d (v31 GetAsyncKeyState+mouse click)", g_ip.c_str(), g_port);
+	DEBUG(L"[MP] server=%s:%d (v33 reconnect-on-login)", g_ip.c_str(), g_port);
 
 	HANDLE hThread = CreateThread(NULL, 0, MP_Thread, NULL, 0, NULL);
 	if (hThread) { CloseHandle(hThread); return true; }
