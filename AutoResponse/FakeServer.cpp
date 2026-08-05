@@ -997,8 +997,9 @@ bool FakeServer(ClientPacket &cp) {
 			db().insertChar(TA.GetAccount(), TA.GetCharacters().back());
 		}
 #endif
-		CharacterSelectPacket(); // 跳到选角色界面
-		CharacterListPacket_Test();   // 刷新角色列表
+		WorldSelectPacket();   // 跳到世界选择(跟点"返回"一样)
+		WorldListPacket();      // 列出世界(用户点世界,客户端自动 CP_WORLDLIST,服务端发 CharacterListPacket_Test)
+		CharacterListPacket_Test(); // 也发角色列表(客户端缓存,选完世界直接显示)
 		return true;
 	}
 	// Delete Character
@@ -1018,8 +1019,9 @@ bool FakeServer(ClientPacket &cp) {
 			}
 		}
 		DeleteCharacter();           // 0x07 删除成功通知
-		CharacterSelectPacket();     // 跳到选角色界面
-		CharacterListPacket_Test();  // 刷新角色列表
+		WorldSelectPacket();         // 跳到世界选择
+		WorldListPacket();           // 列出世界
+		CharacterListPacket_Test();  // 缓存角色列表
 		return true;
 	}
 	// Character Select to World Select
