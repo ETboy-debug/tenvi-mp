@@ -1142,13 +1142,15 @@ bool FakeServer(ClientPacket &cp) {
 #endif
 		// Use object_id as fallback when npc_type is 0
 		DWORD talk_id = (npc_type != 0) ? npc_type : object_id;
-			// [GM] 红字广播确认 NPC 点击被收到
+			#ifdef MP_SERVER
+		// [GM] 红字广播确认 NPC 点击被收到
 		{
 			ServerPacket gm(SP_GM_MSG);
 			gm.Encode1(5); // megaphone type
 			gm.EncodeWStr2(L"[GM] NPC clicked obj=" + std::to_wstring(object_id));
 			SendPacket(gm);
 		}
+#endif
 		// Also show BoardPacket
 		BoardPacket(Board_Spawn, L"NPC", L">>> obj=" + std::to_wstring(object_id) + L" <<<");
 		return true;
