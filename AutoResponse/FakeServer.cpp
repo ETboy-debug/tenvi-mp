@@ -810,6 +810,11 @@ void SpawnObjects(TenviCharacter &chr, WORD map_id) {
 	for (auto &regen : regens) {
 		CreateObjectPacket(regen);
 		ShowObjectPacket(regen);
+		// Mark NPC as interactable (required for CP_NPC_TALK to trigger)
+		ServerPacket sp_sc(SP_NPC_SCRIPTABLE);
+		sp_sc.Encode4(regen.id);
+		sp_sc.Encode1(1); // scriptable flag
+		SendPacket(sp_sc);
 		ActivateObjectPacket(regen);
 	}
 	MP_MARK("SpawnObjects loop done");
