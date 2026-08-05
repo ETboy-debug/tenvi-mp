@@ -29,7 +29,7 @@ void SetClientPacketHeader_CN_v126() {
 	header[CP_CHANGE_CHANNEL] = 0x50;
 	header[CP_NPC_MOVEMENT] = 0x52;
 	header[CP_NPC_TALK] = 0x53;
-	header[CP_PLAYER_CHAT] = 0x55;
+	header[CP_PLAYER_CHAT] = 0x52;
 	header[CP_FRIEND_REQUEST] = 0x74;
 	header[CP_ITEM_SHOP_OPERATION] = 0xAE;
 	header[CP_PARK] = 0xBE;
