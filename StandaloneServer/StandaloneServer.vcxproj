@@ -84,8 +84,8 @@
     <ClCompile Include="..\AutoResponse\FakeServer.cpp" />
     <ClCompile Include="..\AutoResponse\ClientPacket.cpp" />
     <ClCompile Include="..\AutoResponse\ServerPacket.cpp" />
-    <ClCompile Include="..\AutoResponse\JP_v127_CP.cpp" />
-    <ClCompile Include="..\AutoResponse\JP_v127_SP.cpp" />
+    <ClCompile Include="..\AutoResponse\CN_v126_CP.cpp" />
+    <ClCompile Include="..\AutoResponse\CN_v126_SP.cpp" />
     <ClCompile Include="..\AutoResponse\TemporaryData.cpp" />
     <ClCompile Include="..\AutoResponse\TenviData.cpp" />
     <ClCompile Include="..\AutoResponse\TenviMap.cpp" />
