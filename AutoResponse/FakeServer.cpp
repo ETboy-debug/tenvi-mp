@@ -997,7 +997,7 @@ bool FakeServer(ClientPacket &cp) {
 			db().insertChar(TA.GetAccount(), TA.GetCharacters().back());
 		}
 #endif
-		WorldSelectPacket(); // [FIX] 切回角色选择界面
+		// [REVERT] 不加额外跳转包, 客户端"返回"按钮回到选角色界面
 		CharacterListPacket_Test();
 		return true;
 	}
