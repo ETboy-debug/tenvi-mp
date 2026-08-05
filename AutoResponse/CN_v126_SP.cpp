@@ -34,6 +34,7 @@ void SetServerPacketHeader_CN_v126() {
 	header[SP_EMOTION] = 0x4B;
 	header[SP_WORLD_MAP_UPDATE] = 0x54;
 	header[SP_ITEM_SHOP_ERROR] = 0x5C;
+	header[SP_ITEM_SHOP] = 0x5D;
 	header[SP_UPDATE_SKILL] = 0x65;
 	header[SP_GM_MSG] = 0xD0;
 	header[SP_BOARD] = 0xE0;
