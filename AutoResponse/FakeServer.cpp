@@ -1140,11 +1140,12 @@ bool FakeServer(ClientPacket &cp) {
 			(unsigned)object_id, (unsigned)unk2, (unsigned)npc_type, (unsigned)unk3);
 		fflush(stdout);
 #endif
-		// Use object_id as fallback when npc_type is 0
-		DWORD talk_id = (npc_type != 0) ? npc_type : object_id;
-		// Send NPC talk packet with CORRECT MapleStory structure
-		// Structure: [opcode][npc_template_id 4B][msg_type 1B][text WStr2]
-		NPCTalkPacket(object_id, L"Hello from NPC! obj=" + std::to_wstring(object_id));
+		// [WORKAROUND] No NPC dialogue on CN v126. Teleport based on NPC clicked.
+		TenviCharacter &chr = TA.GetOnline();
+		switch (object_id) {
+			case 19: SetMap(chr, 2002); break; // 萨丽 -> 回麦基
+			default: SetMap(chr, 2051); break; // 其他 -> 同图重载
+		}
 		return true;
 	}
 	case CP_PLAYER_CHAT: {
