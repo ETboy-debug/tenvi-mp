@@ -1142,21 +1142,15 @@ bool FakeServer(ClientPacket &cp) {
 #endif
 		// Use object_id as fallback when npc_type is 0
 		DWORD talk_id = (npc_type != 0) ? npc_type : object_id;
-		// Sweep many candidate opcodes for NPC dialogue response
-		static const BYTE cand[] = {0x0D, 0x0E, 0x14, 0x2A, 0x30, 0x33, 0x38, 0x50, 0x51, 0x52, 0x54};
-		BYTE *hdr = ServerPacket::GetOpcode();
-		BYTE saved = hdr[SP_NPC_TALK];
-		for (BYTE op : cand) {
-			hdr[SP_NPC_TALK] = op;
-			ServerPacket sp(SP_NPC_TALK);
-			sp.Encode4(object_id);
-			sp.Encode1(0);
-			sp.EncodeWStr2(L"obj=" + std::to_wstring(object_id) + L" op=0x" + std::to_wstring(op));
-			SendPacket(sp);
+			// [GM] 红字广播确认 NPC 点击被收到
+		{
+			ServerPacket gm(SP_GM_MSG);
+			gm.Encode1(5); // megaphone type
+			gm.EncodeWStr2(L"[GM] NPC clicked obj=" + std::to_wstring(object_id));
+			SendPacket(gm);
 		}
-		hdr[SP_NPC_TALK] = saved;
-		// Also show BoardPacket as visual confirmation
-		BoardPacket(Board_Spawn, L"NPC", L">>> NPC TALKED obj=" + std::to_wstring(object_id) + L" <<<");
+		// Also show BoardPacket
+		BoardPacket(Board_Spawn, L"NPC", L">>> obj=" + std::to_wstring(object_id) + L" <<<");
 		return true;
 	}
 	case CP_PLAYER_CHAT: {
