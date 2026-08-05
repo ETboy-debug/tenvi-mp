@@ -1180,6 +1180,7 @@ bool FakeServer(ClientPacket &cp) {
 			PlayerStatPacket(chr);
 		}
 		// /map <id> - 传送
+		if (_wcsnicmp(message.c_str(), L"/map ", 5) == 0) {
 			int map_id = _wtoi(&message.c_str()[5]);
 			SetMap(TA.GetOnline(), map_id);
 		}
