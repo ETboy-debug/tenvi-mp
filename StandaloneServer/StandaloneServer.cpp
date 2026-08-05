@@ -443,11 +443,12 @@ static void HandlePayload(const BYTE *p, DWORD n) {
 		// [DEBUG] 记录未识别的游戏包 opcode
 		BYTE unk_op = (n >= 2) ? p[1] : 0;
 		printf("[UNK-RECV] opcode=0x%02X len=%d\n", (unsigned)unk_op, (int)(n - 1));
-		// Show payload for short packets (chat messages are <30 bytes)
-		if ((int)(n - 1) < 30) {
-			for (int i = 1; i < n; i++) printf("%02X ", (unsigned)(BYTE)p[i]);
+		// Dump all unknown packets where opcode is 0x52 (likely chat) or len < 200
+		if (unk_op == 0x52 || (int)(n - 1) < 200) {
+			int dumpLen = (n - 1 < 120) ? (n - 1) : 120;
+			for (int i = 1; i <= dumpLen; i++) printf("%02X ", (unsigned)(BYTE)p[i]);
 			printf("|");
-			for (int i = 1; i < n; i++) { char ch = p[i]; printf("%c", (ch>=32&&ch<127)?ch:'.'); }
+			for (int i = 1; i <= dumpLen; i++) { char ch = p[i]; printf("%c", (ch>=32&&ch<127)?ch:'.'); }
 			printf("\n");
 		}
 		fflush(stdout);
