@@ -1142,7 +1142,21 @@ bool FakeServer(ClientPacket &cp) {
 #endif
 		// Use object_id as fallback when npc_type is 0
 		DWORD talk_id = (npc_type != 0) ? npc_type : object_id;
-		NPCTalkPacket(talk_id, L"NPC obj=" + std::to_wstring(object_id) + L" type=" + std::to_wstring(npc_type));
+		// Try three candidate opcodes for NPC dialogue response
+		static const BYTE cand[] = {0x50, 0x51, 0x52};
+		BYTE *hdr = ServerPacket::GetOpcode();
+		BYTE saved = hdr[SP_NPC_TALK];
+		for (BYTE op : cand) {
+			hdr[SP_NPC_TALK] = op;
+			ServerPacket sp(SP_NPC_TALK);
+			sp.Encode4(object_id);
+			sp.Encode1(0);
+			sp.EncodeWStr2(L"NPC obj=" + std::to_wstring(object_id) + L" op=0x" + std::to_wstring(op));
+			SendPacket(sp);
+		}
+		hdr[SP_NPC_TALK] = saved;
+		// Also show BoardPacket as visual confirmation
+		BoardPacket(Board_Spawn, L"NPC", L"Clicked obj=" + std::to_wstring(object_id));
 		return true;
 	}
 	case CP_PLAYER_CHAT: {
