@@ -779,6 +779,15 @@ void BoardPacket(BoardAction action, std::wstring owner = L"", std::wstring msg 
 	SendPacket(sp);
 }
 
+// [FIX] NPC dialogue response: when player clicks NPC, show basic text
+void NPCTalkPacket(DWORD npc_id, std::wstring text) {
+	ServerPacket sp(SP_NPC_TALK);
+	sp.Encode4(npc_id);
+	sp.Encode1(0); // msg_type 0 = normal talk
+	sp.EncodeWStr2(text);
+	SendPacket(sp);
+}
+
 // ========== Functions ==================
 
 void SpawnObjects(TenviCharacter &chr, WORD map_id) {
@@ -1124,6 +1133,7 @@ bool FakeServer(ClientPacket &cp) {
 		DWORD unk2 = cp.Decode4();
 		DWORD npc_type = cp.Decode4();
 		DWORD unk3 = cp.Decode4();
+		NPCTalkPacket(npc_type, L"[Tenvi MP] NPC ID=" + std::to_wstring(npc_type) + L" - no script yet.");
 		return true;
 	}
 	case CP_PLAYER_CHAT: {
