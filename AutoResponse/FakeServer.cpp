@@ -1154,10 +1154,23 @@ bool FakeServer(ClientPacket &cp) {
 		cp.Decode1(); // 0
 		std::wstring message = cp.DecodeWStr1();
 
-		// [TEST] 触发 NPC 对话: 普通聊天 /npc <id> (绕过 @ 被客户端拦的问题)
+		// 聊天命令
+		// /npc <id> - 对话测试
 		if (_wcsnicmp(message.c_str(), L"/npc ", 5) == 0) {
 			DWORD npc_id = (DWORD)_wtoi(&message.c_str()[5]);
 			NPCTalkPacket(npc_id, L"[Tenvi MP] NPC ID=" + std::to_wstring(npc_id) + L" - chat command test");
+		}
+		// /heal - 满血满蓝
+		if (message == L"/heal") {
+			TenviCharacter &chr = TA.GetOnline();
+			chr.stat_hp = 9999;
+			chr.stat_mp = 9999;
+			PlayerStatPacket(chr);
+		}
+		// /map <id> - 传送
+		if (_wcsnicmp(message.c_str(), L"/map ", 5) == 0) {
+			int map_id = _wtoi(&message.c_str()[5]);
+			SetMap(TA.GetOnline(), map_id);
 		}
 
 		// @ 命令 (含 @map/@npc)
