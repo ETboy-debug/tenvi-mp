@@ -1018,7 +1018,6 @@ bool FakeServer(ClientPacket &cp) {
 			}
 		}
 		DeleteCharacter();        // 0x07 删除成功通知
-		WorldSelectPacket();  // 切回选角界面
 		CharacterListPacket_Test(); // 刷新角色列表
 		return true;
 	}
