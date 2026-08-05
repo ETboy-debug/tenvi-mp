@@ -1142,17 +1142,9 @@ bool FakeServer(ClientPacket &cp) {
 #endif
 		// Use object_id as fallback when npc_type is 0
 		DWORD talk_id = (npc_type != 0) ? npc_type : object_id;
-			#ifdef MP_SERVER
-		// [GM] 红字广播确认 NPC 点击被收到
-		{
-			ServerPacket gm(SP_GM_MSG);
-			gm.Encode1(5); // megaphone type
-			gm.EncodeWStr2(L"[GM] NPC clicked obj=" + std::to_wstring(object_id));
-			SendPacket(gm);
-		}
-#endif
-		// Also show BoardPacket
-		BoardPacket(Board_Spawn, L"NPC", L">>> obj=" + std::to_wstring(object_id) + L" <<<");
+		// Send NPC talk packet with CORRECT MapleStory structure
+		// Structure: [opcode][npc_template_id 4B][msg_type 1B][text WStr2]
+		NPCTalkPacket(object_id, L"萨丽说：欢迎来到麦基！");
 		return true;
 	}
 	case CP_PLAYER_CHAT: {
