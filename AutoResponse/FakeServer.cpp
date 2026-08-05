@@ -1140,7 +1140,9 @@ bool FakeServer(ClientPacket &cp) {
 			(unsigned)object_id, (unsigned)unk2, (unsigned)npc_type, (unsigned)unk3);
 		fflush(stdout);
 #endif
-		NPCTalkPacket(npc_type, L"[Tenvi MP] NPC ID=" + std::to_wstring(npc_type) + L" - no script yet.");
+		// Use object_id as fallback when npc_type is 0
+		DWORD talk_id = (npc_type != 0) ? npc_type : object_id;
+		NPCTalkPacket(talk_id, L"NPC obj=" + std::to_wstring(object_id) + L" type=" + std::to_wstring(npc_type));
 		return true;
 	}
 	case CP_PLAYER_CHAT: {
