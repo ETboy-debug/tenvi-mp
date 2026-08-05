@@ -997,7 +997,7 @@ bool FakeServer(ClientPacket &cp) {
 			db().insertChar(TA.GetAccount(), TA.GetCharacters().back());
 		}
 #endif
-		CharacterSelectPacket(); // [FIX] 切回角色选择界面
+		WorldSelectPacket(); // [FIX] 切回角色选择界面
 		CharacterListPacket_Test();
 		return true;
 	}
@@ -1018,7 +1018,7 @@ bool FakeServer(ClientPacket &cp) {
 			}
 		}
 		DeleteCharacter();        // 0x07 删除成功通知
-		CharacterSelectPacket();  // 切回选角界面
+		WorldSelectPacket();  // 切回选角界面
 		CharacterListPacket_Test(); // 刷新角色列表
 		return true;
 	}
