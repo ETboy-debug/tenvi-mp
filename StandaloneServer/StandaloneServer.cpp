@@ -56,7 +56,7 @@ using namespace std;
 void VersionPacket();
 
 // ---- 区域配置：原本由注入 DLL 读 ini 决定，独立服务端固定国服 CN v126 ----
-static Region g_region = TENVI_JP;
+static Region g_region = TENVI_CN;
 static wstring g_regionStr = L"CN";
 static wstring g_xmlPath = L"tv_xml";
 
@@ -564,8 +564,8 @@ int main(int argc, char **argv) {
 	Log("xml data loaded.");
 
 	// 初始化国服 v126 的 opcode 编解码表
-	SetClientPacketHeader_JP_v127();
-	SetServerPacketHeader_JP_v127();
+	SetClientPacketHeader_CN_v126();
+	SetServerPacketHeader_CN_v126();
 
 	WSADATA wsa;
 	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
