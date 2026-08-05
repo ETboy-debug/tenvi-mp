@@ -1140,12 +1140,9 @@ bool FakeServer(ClientPacket &cp) {
 			(unsigned)object_id, (unsigned)unk2, (unsigned)npc_type, (unsigned)unk3);
 		fflush(stdout);
 #endif
-		// [WORKAROUND] No NPC dialogue on CN v126. Teleport based on NPC clicked.
-		TenviCharacter &chr = TA.GetOnline();
-		switch (object_id) {
-			case 19: SetMap(chr, 2002); break; // 萨丽 -> 回麦基
-			default: SetMap(chr, 2051); break; // 其他 -> 同图重载
-		}
+		// Send NPC dialogue response (CN v126 has full .tv data now)
+		DWORD talk_id = (npc_type != 0) ? npc_type : object_id;
+		NPCTalkPacket(talk_id, L"Hello! NPC obj=" + std::to_wstring(object_id));
 		return true;
 	}
 	case CP_PLAYER_CHAT: {
