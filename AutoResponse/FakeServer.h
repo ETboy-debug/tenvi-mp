@@ -27,5 +27,6 @@ void WorldListPacket();
 void CharacterSelectPacket();
 void CharacterListPacket();
 void CharacterListPacket_Test();
+void NPCTalkPacket(DWORD npc_id, std::wstring text);
 
 #endif
