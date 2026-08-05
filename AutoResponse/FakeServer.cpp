@@ -1155,10 +1155,22 @@ bool FakeServer(ClientPacket &cp) {
 		std::wstring message = cp.DecodeWStr1();
 
 		// 聊天命令
-		// /npc <id> - 对话测试
-		if (_wcsnicmp(message.c_str(), L"/npc ", 5) == 0) {
-			DWORD npc_id = (DWORD)_wtoi(&message.c_str()[5]);
-			NPCTalkPacket(npc_id, L"[Tenvi MP] NPC ID=" + std::to_wstring(npc_id) + L" - chat command test");
+		// /mall - 打开商城(测试)
+		if (message == L"/mall") {
+			TenviCharacter &chr = TA.GetOnline();
+			// 发送商城物品列表
+			ServerPacket mall(SP_ITEM_SHOP);
+			mall.Encode4(chr.id); // character id
+			mall.Encode4(0);      // shop type = normal
+			// 3个物品: 红药水 蓝药水 新手剑
+			mall.Encode2(3); // item count
+			// Item 1: 红药水 (id=2000, price=10 gold)
+			mall.Encode4(2000); mall.Encode4(10); mall.Encode4(100); mall.Encode2(0);
+			// Item 2: 蓝药水 (id=2001, price=10 gold)
+			mall.Encode4(2001); mall.Encode4(10); mall.Encode4(100); mall.Encode2(0);
+			// Item 3: 新手剑 (id=1302000, price=50 gold)
+			mall.Encode4(1302000); mall.Encode4(50); mall.Encode4(1); mall.Encode2(0);
+			SendPacket(mall);
 		}
 		// /heal - 满血满蓝
 		if (message == L"/heal") {
@@ -1168,7 +1180,6 @@ bool FakeServer(ClientPacket &cp) {
 			PlayerStatPacket(chr);
 		}
 		// /map <id> - 传送
-		if (_wcsnicmp(message.c_str(), L"/map ", 5) == 0) {
 			int map_id = _wtoi(&message.c_str()[5]);
 			SetMap(TA.GetOnline(), map_id);
 		}
