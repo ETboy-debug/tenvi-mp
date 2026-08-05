@@ -278,6 +278,38 @@ static DWORD WINAPI AdminThread(LPVOID) {
 				for (size_t i = 1; i < tok.size(); i++) { if (i > 1) m += " "; m += tok[i]; }
 				resp = AdminBroadcast(Utf8ToW(m)) ? "BCAST OK\n" : "BCAST UNSUPPORTED\n";
 			}
+			else if (cmd == "NPCTEST" && tok.size() >= 2) {
+				// NPCTEST <opcode_hex> [object_id] - 向第一个在线玩家发NPC对话测试包
+				BYTE testOp = (BYTE)strtoul(tok[1].c_str(), NULL, 16);
+				DWORD objId = tok.size() >= 3 ? (DWORD)atoi(tok[2].c_str()) : 19;
+				SOCKET s = INVALID_SOCKET;
+				{
+					std::lock_guard<std::mutex> lk(g_adminMutex);
+					if (!g_onlineSock.empty()) s = g_onlineSock.begin()->second;
+				}
+				if (s != INVALID_SOCKET) {
+					// 构造 NPC talk 包: [opcode][npc_obj 4B][msg_type 0][text WStr2]
+					std::vector<BYTE> raw;
+					raw.push_back(testOp);
+					raw.push_back(objId & 0xFF); raw.push_back((objId>>8)&0xFF);
+					raw.push_back((objId>>16)&0xFF); raw.push_back((objId>>24)&0xFF);
+					raw.push_back(0); // msg_type=0
+					std::wstring msg = L"NPC TEST op=0x" + std::to_wstring(testOp);
+					raw.push_back((msg.length()>>0)&0xFF); raw.push_back((msg.length()>>8)&0xFF);
+					for (wchar_t ch : msg) { raw.push_back(ch&0xFF); raw.push_back((ch>>8)&0xFF); }
+					// 包 MP 头
+					DWORD packLen = (DWORD)raw.size() + 1;
+					std::vector<BYTE> frame;
+					frame.push_back(packLen & 0xFF); frame.push_back((packLen>>8)&0xFF);
+					frame.push_back((packLen>>16)&0xFF); frame.push_back((packLen>>24)&0xFF);
+					frame.push_back(MP_TYPE_GAME);
+					frame.insert(frame.end(), raw.begin(), raw.end());
+					int r = send(s, (const char*)&frame[0], (int)frame.size(), 0);
+					resp = "NPCTEST op=0x" + std::to_string(testOp) + " obj=" + std::to_string(objId) + " sent=" + std::to_string(r) + "B\n";
+				} else {
+					resp = "NO PLAYER ONLINE\n";
+				}
+			}
 			else if (cmd == "SETLV" && tok.size() >= 3) {
 				std::wstring acc = Utf8ToW(tok[1]);
 				BYTE lv = (BYTE)atoi(tok[2].c_str());
