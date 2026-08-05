@@ -21,7 +21,6 @@ void SetServerPacketHeader_CN_v126() {
 	header[SP_CHARACTER_SPAWN] = 0x11;
 	header[SP_REMOVE_OBJECT] = 0x12;
 	header[SP_CREATE_OBJECT] = 0x14;
-	header[SP_NPC_SCRIPTABLE] = 0x1D;
 	header[SP_ACTIVATE_OBJECT] = 0x20;
 	header[SP_NPC_TALK] = 0x2E;
 	header[SP_SHOW_OBJECT] = 0x23;
