@@ -407,7 +407,12 @@ static void HandlePayload(const BYTE *p, DWORD n) {
 		t_recvCount++;
 	}
 	ClientPacket cp((BYTE *)(p + 1), n - 1);
-	FakeServer(cp); // 分发处理，内部通过 SendPacket 回包
+	if (!FakeServer(cp)) {
+		// [DEBUG] 记录未识别的游戏包 opcode
+		BYTE unk_op = (n >= 2) ? p[1] : 0;
+		printf("[UNK-RECV] opcode=0x%02X len=%d\n", (unsigned)unk_op, (int)(n - 1));
+		fflush(stdout);
+	}
 }
 
 static void ServeClient() {
