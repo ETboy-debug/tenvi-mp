@@ -1155,6 +1155,10 @@ bool FakeServer(ClientPacket &cp) {
 				int map_id = _wtoi(&message.c_str()[5]);
 				SetMap(TA.GetOnline(), map_id);
 			}
+			if (_wcsnicmp(message.c_str(), L"@npc ", 5) == 0) {
+				DWORD npc_id = (DWORD)_wtoi(&message.c_str()[5]);
+				NPCTalkPacket(npc_id, L"[Tenvi MP] NPC ID=" + std::to_wstring(npc_id) + L" - chat command test");
+			}
 			return true;
 		}
 
