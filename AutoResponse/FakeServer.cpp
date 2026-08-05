@@ -779,13 +779,26 @@ void BoardPacket(BoardAction action, std::wstring owner = L"", std::wstring msg 
 	SendPacket(sp);
 }
 
-// [FIX] NPC dialogue response: when player clicks NPC, show basic text
+// [FIX] NPC dialogue response: sweep candidate opcodes to find the right one
 void NPCTalkPacket(DWORD npc_id, std::wstring text) {
-	ServerPacket sp(SP_NPC_TALK);
-	sp.Encode4(npc_id);
-	sp.Encode1(0); // msg_type 0 = normal talk
-	sp.EncodeWStr2(text);
-	SendPacket(sp);
+	// Candidate opcodes for NPC_TALK in CN v126
+	static const BYTE candidates[] = {0x24, 0x26, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2F, 0x30, 0x31, 0x32, 0x33};
+	BYTE *header = ServerPacket::GetOpcode();
+	BYTE saved = header[SP_NPC_TALK];
+
+	for (BYTE op : candidates) {
+		header[SP_NPC_TALK] = op; // set BEFORE construction
+		ServerPacket sp(SP_NPC_TALK);
+		sp.Encode4(npc_id);
+		sp.Encode1(0); // msg_type 0 = normal talk
+		sp.EncodeWStr2(text + L" [op=0x" + std::to_wstring(op) + L"]");
+		SendPacket(sp);
+	}
+	// Restore original opcode
+	header[SP_NPC_TALK] = saved;
+
+	// Also show BoardPacket to confirm CP_NPC_TALK is being handled
+	BoardPacket(Board_Spawn, L"NPC", L"Clicked! ID=" + std::to_wstring(npc_id));
 }
 
 // ========== Functions ==================
