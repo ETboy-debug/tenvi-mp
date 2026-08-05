@@ -22,7 +22,7 @@ void SetServerPacketHeader_CN_v126() {
 	header[SP_REMOVE_OBJECT] = 0x12;
 	header[SP_CREATE_OBJECT] = 0x14;
 	header[SP_ACTIVATE_OBJECT] = 0x20;
-	header[SP_NPC_TALK] = 0x2E;
+	header[SP_NPC_TALK] = 0x54;
 	header[SP_SHOW_OBJECT] = 0x23;
 	header[SP_IN_MAP_TELEPORT] = 0x3C;
 	header[SP_ACCOUNT_DATA] = 0x3D;
@@ -35,5 +35,5 @@ void SetServerPacketHeader_CN_v126() {
 	header[SP_WORLD_MAP_UPDATE] = 0x54;
 	header[SP_ITEM_SHOP_ERROR] = 0x5C;
 	header[SP_UPDATE_SKILL] = 0x65;
-	//header[SP_BOARD] = 0xE0;
+	header[SP_BOARD] = 0xE0;
 }
