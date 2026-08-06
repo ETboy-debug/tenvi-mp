@@ -903,7 +903,17 @@ void SetMap(TenviCharacter &chr, WORD map_id) {
 	MP_MARK("SetMap before get_map/FindSpawnPoint");
 	TenviSpawnPoint spawn_point = tenvi_data.get_map(map_id)->FindSpawnPoint(0);
 	MP_MARK("SetMap after FindSpawnPoint");
-	ChangeMap(chr, map_id, spawn_point.x, spawn_point.y);
+	float sx = (float)spawn_point.x;
+	float sy = (float)spawn_point.y;
+#ifdef MP_SERVER
+	// [MP] Every player enters via spawn point 0, so two characters would land on
+	// EXACTLY the same pixel and visually stack into what looks like one character.
+	// Spread them horizontally by session id so both are clearly distinguishable.
+	sx += (float)(((t_sid % 7) - 3) * 65);
+	printf("[TenviServer] MARK SetMap sid=%d map=%d pos=(%.0f,%.0f)\n",
+		t_sid, (int)map_id, sx, sy);
+#endif
+	ChangeMap(chr, map_id, sx, sy);
 	MP_MARK("SetMap after ChangeMap");
 }
 
