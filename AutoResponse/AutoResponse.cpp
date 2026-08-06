@@ -84,53 +84,41 @@ void DelayExecution() {
 static bool g_mp_in_batch = false;
 
 void MP_Pump() {
-	std::vector<std::vector<BYTE>> batch;
+	// [v50] Each entry carries the dispatch context supplied by the server
+	// (frame type 0 = CWvsContext, type 2 = CField). No more guessing.
+	std::vector<std::pair<std::vector<BYTE>, bool>> batch;
 	std::vector<BYTE> packet;
-	while (MP_PopPacket(packet)) {
-		batch.push_back(packet);
+	bool srv_ctx = true;
+	while (MP_PopPacketEx(packet, srv_ctx)) {
+		batch.push_back(std::make_pair(packet, srv_ctx));
 	}
 	if (batch.empty()) return;
 
 	g_mp_in_batch = true;  // <-- START guard: block all EnterSendPacket during batch
-	// [v46] context routing for 0x11 character spawn packets:
-	// CWvsContext handles the local player's own spawn; CField handles remote
-	// players, monsters and map objects. The local player's object id is carried
-	// inside the 0x11 spawn packet (bytes 1-4), NOT inside the 0x10 map-change
-	// packet (0x10 carries the map id). Therefore we learn localObjectId from the
-	// first 0x11 that follows a 0x10. After that, every 0x11 whose oid differs is
-	// a remote player and must go to CField. This also works when a new player
-	// joins a map that already contains other players: the existing client never
-	// receives a 0x10, but its localObjectId was already set during its own login.
+	// [v50] Dispatch context now comes straight from the server frame type.
+	// The server is the only side that actually knows whether a 0x11 spawn
+	// belongs to this client's own character or to a remote player, so it
+	// tags every packet: SendPacket -> type 0 (CWvsContext), SendPacket2 ->
+	// type 2 (CField). The old v46 heuristic ("first 0x11 after a 0x10 is
+	// me") broke as soon as the server sent remote spawns first: the second
+	// player to log in adopted the FIRST player's object id as its own, so
+	// it could not even see itself.
+	//
+	// g_localObjectId is kept for diagnostics only - it no longer drives any
+	// routing decision.
 	static DWORD g_localObjectId = 0;
-	static bool g_expectingSelfSpawn = false;
 	for (size_t i = 0; i < batch.size(); i++) {
-		bool mp_ctx = true;
-		BYTE mp_op = (batch[i].size() > 0) ? batch[i][0] : 0;
+		std::vector<BYTE> &bp = batch[i].first;   // non-const: ProcessPacketExec takes a mutable ref
+		bool mp_ctx = batch[i].second;
+		BYTE mp_op = (bp.size() > 0) ? bp[0] : 0;
 		DWORD oid = 0;
-		if (batch[i].size() >= 5) oid = *(DWORD*)&batch[i][1];
-		if (mp_op == 0x10) {
-			// A map change is coming. The next 0x11 in this batch is our own spawn.
-			g_expectingSelfSpawn = true;
-			mp_ctx = true;
-		} else if (mp_op == 0x11) {
-			if (g_expectingSelfSpawn) {
-				g_localObjectId = oid;
-				g_expectingSelfSpawn = false;
-				mp_ctx = true; // own spawn -> CWvsContext
-			} else if (g_localObjectId == 0) {
-				// Defensive: no 0x10 seen yet and no id known -> treat as own spawn.
-				g_localObjectId = oid;
-				mp_ctx = true;
-			} else {
-				mp_ctx = (oid == g_localObjectId); // true = own, false = remote
-			}
-		} else if (mp_op == 0x12) {
-			mp_ctx = false; // remove object -> CField
-		}
+		if (bp.size() >= 5) oid = *(DWORD*)&bp[1];
+		// Diagnostics: remember the first self-tagged spawn we ever see.
+		if (mp_op == 0x11 && mp_ctx && g_localObjectId == 0) g_localObjectId = oid;
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
-				fprintf(f, "[MP-CTX] op=%02X oid=%08X local=%08X ctx=%d\n",
+				fprintf(f, "[MP-CTX] op=%02X oid=%08X local=%08X ctx=%d src=srv\n",
 					mp_op, oid, g_localObjectId, mp_ctx ? 1 : 0);
 				fflush(f); fclose(f);
 			}
@@ -138,17 +126,15 @@ void MP_Pump() {
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
-				const std::vector<BYTE> &bp = batch[i];
 				fprintf(f, ">> inject op=%02X len=%d\n", mp_op, (int)bp.size());
 				fflush(f); fclose(f);
 			}
 		}
-		ProcessPacketExec(batch[i], mp_ctx);
+		ProcessPacketExec(bp, mp_ctx);
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
-				const std::vector<BYTE> &bp = batch[i];
-				fprintf(f, "<< done op=%02X\n", bp.size()>0?bp[0]:0);
+				fprintf(f, "<< done op=%02X\n", mp_op);
 				fflush(f); fclose(f);
 			}
 		}
