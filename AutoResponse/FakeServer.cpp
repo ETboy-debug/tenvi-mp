@@ -881,11 +881,14 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 	MP_MARK("ChangeMap after players-table insert");
 	{
 		std::lock_guard<std::mutex> lk(g_playersMtx);
+		Log("[MP] ChangeMap broadcast: me=%d map=%d total_players=%d", t_sid, (int)chr.map, (int)g_players.size());
 		for (auto &kv : g_players) {
 			int other_sid = kv.first;
 			RemotePlayer &other = kv.second;
+			Log("[MP]   player sid=%d map=%d name=%S", other_sid, (int)other.map, other.chr.name.c_str());
 			if (other_sid == t_sid) continue;
 			if (other.map != chr.map) continue;
+			Log("[MP]   -> spawn each other between sid=%d and sid=%d", t_sid, other_sid);
 			CharacterSpawnPacket(other.chr, other.x, other.y);   // 自己看到别人
 			CharacterSpawnPacket(chr, x, y, other_sid);          // 别人看到自己
 		}
