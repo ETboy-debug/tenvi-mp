@@ -1,7 +1,7 @@
 // MPClient.cpp - 客户端侧明文桥接 socket
-// [v31] GetAsyncKeyState 轮询 + 鼠标点击字段切换
+// [v36] GetAsyncKeyState 轮询 + Ctrl+1/2字段切换 + Tab(鼠标不再猜)
 //       键盘: 内核级查询, 绕过 DirectInput
-//       鼠标: 检测左键点击Y坐标, 自动判断账号框/密码框(无需Tab)
+//       鼠标: 只记日志, 不切换字段(避免窗口大小/分辨率误判)
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -106,7 +106,7 @@ static void MP_PushPacket(const BYTE *p, DWORD n) {
 }
 
 // ============================================================
-// [v29] GetAsyncKeyState 轮询键盘捕获
+// [v36] GetAsyncKeyState 轮询键盘捕获
 // ============================================================
 // 原理: GetAsyncKeyState 直接查内核键盘状态表，不经过 Windows
 //       消息循环。即使游戏用 DirectInput 独占键盘，这个 API 仍然
@@ -127,9 +127,9 @@ static int      g_capField = 0;             // 当前输入字段: 0=账号 1=�
 static CRITICAL_SECTION g_capCs;            // 保护捕获缓冲区
 static bool     g_capCsReady = false;
 
-// [v31] 鼠标点击字段切换: 记录上次点击的Y坐标, 用Y差值自动判断点的哪个框
-static LONG     g_lastClickY = -1;          // 上次鼠标点击的Y坐标(客户区), -1=未初始化
-static const int CLICK_Y_THRESHOLD = 30;    // Y变化超过此值认为切换了字段
+// [v36] 字段切换: Ctrl+1(账号含)/Ctrl+2(密码)/Tab, 不再用鼠标Y坐标猜
+static LONG     g_lastClickY = -1;          // (保留占位, 避免改结构布局)
+static const int CLICK_Y_THRESHOLD = 30;    // (保留占位, 避免改结构布局)
 
 // 上一次的按键状态(用于检测边沿: 新按下)
 static BYTE g_prevKeys[256];
@@ -205,24 +205,36 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 							DEBUG(L"[MP-CAP] Tab -> field=%d", g_capField);
 							LeaveCriticalSection(&g_capCs);
 						}
-					// --- [v34] 鼠标左键: 按绝对Y位置判断点的哪个输入框 ---
-					// 旧版用"相邻两次点击Y差>30就切换", 点歪一点就来回乱跳, 导致账号/密码输错框。
-					// 改为: 登录框账号框在上、密码框在下, 以客户区高度58%为界, 上=账号(0) 下=密码(1), 确定性不乱跳。
+					// --- [v36] 字段切换: Ctrl+1=账号(0) Ctrl+2=密码(1), Tab=轮流 ---
+					// 旧版(v34/v35)鼠标Y坐标猜框, 不同窗口大小/分辨率阈值全错,
+					// 导致账号输到密码/密码输到账号。v36 去掉鼠标猜测,
+					// 改为快捷键 + Tab, 100% 确定。
+					// --- Ctrl+1: 强制切到账号框 ---
+					else if (vk == '1' && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
+						EnterCriticalSection(&g_capCs);
+						g_capField = 0;
+						LeaveCriticalSection(&g_capCs);
+						{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+						  if (df) { fprintf(df, "[MP-CAP] Ctrl+1 -> field=0 (account)\n"); fflush(df); fclose(df); } }
+					}
+					// --- Ctrl+2: 强制切到密码框 ---
+					else if (vk == '2' && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
+						EnterCriticalSection(&g_capCs);
+						g_capField = 1;
+						LeaveCriticalSection(&g_capCs);
+						{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+						  if (df) { fprintf(df, "[MP-CAP] Ctrl+2 -> field=1 (password)\n"); fflush(df); fclose(df); } }
+					}
+					// --- 鼠标左键: 只记诊断, 不切换字段 ---
 					else if (vk == VK_LBUTTON) {
 						POINT pt = {};
 						GetCursorPos(&pt);
-						ScreenToClient(fg, &pt);  // 转为客户区坐标
+						ScreenToClient(fg, &pt);
 						RECT rc = {};
 						GetClientRect(fg, &rc);
 						LONG h = rc.bottom - rc.top;
-						// [v35] 改为: 只有点页面最下方(>75%)才算密码框, 其他全算账号框。避免弹窗拦截时误判。
-						int field = (h > 0 && pt.y < (LONG)(h * 0.75)) ? 0 : 1;
-						EnterCriticalSection(&g_capCs);
-						g_capField = field;
-						LeaveCriticalSection(&g_capCs);
-
-						FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-						if (df) { fprintf(df, "[MP-CAP] mouse click at (%ld,%ld) h=%ld ratio=%d%% -> field=%d\n", pt.x, pt.y, h, h > 0 ? (int)(pt.y * 100 / h) : -1, g_capField); fflush(df); fclose(df); }
+						{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+						  if (df) { fprintf(df, "[MP-CAP] mouse click at (%ld,%ld) h=%ld ratio=%d%% (field=%d unchanged)\n", pt.x, pt.y, h, h > 0 ? (int)(pt.y * 100 / h) : -1, g_capField); fflush(df); fclose(df); } }
 					}
 						// --- Backspace: 删除末尾字符 ---
 						else if (vk == VK_BACK) {
