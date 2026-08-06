@@ -385,6 +385,27 @@ static void HandleCtrl(BYTE cmd, const BYTE *p, DWORD n) {
 			break; // 不 SetAccount, 客户端停留在登录界面
 		}
 
+		// [MP] 禁止同账号重复登录：同一个账号只能有一个在线连接，
+		// 否则两个客户端会加载同一个角色 id，互见广播时对象 id 冲突导致客户端崩溃。
+		{
+			std::lock_guard<std::mutex> lock(g_adminMutex);
+			for (auto it = g_onlineAcc.begin(); it != g_onlineAcc.end(); ) {
+				if (it->second == wacc && it->first != t_sid) {
+					int oldSid = it->first;
+					auto sockIt = g_onlineSock.find(oldSid);
+					if (sockIt != g_onlineSock.end()) {
+						closesocket(sockIt->second);
+						g_onlineSock.erase(sockIt);
+					}
+					it = g_onlineAcc.erase(it);
+					MP_RemovePlayer(oldSid);
+					Log("ctrl: kick duplicate account=%s old_sid=%d", acc8.c_str(), oldSid);
+				} else {
+					++it;
+				}
+			}
+		}
+
 		TA.SetAccount(wacc);
 		TA.ReloadFromDB();
 		{
