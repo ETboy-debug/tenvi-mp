@@ -136,17 +136,16 @@ DWORD __fastcall LoginButton_Hook(void *ecx) {
 		MessageBoxA(NULL,
 			"No account or password entered.\n"
 			"\n"
-			"Operation: click the login form -> press Ctrl+1 for account mode\n"
-			"    -> type account -> press Ctrl+2 for password mode\n"
-			"    -> type password -> click Login.\n"
-			"    (Tab also toggles between fields)",
+			"Click the account field -> type account\n"
+			"Click the password field (or press TAB) -> type password\n"
+			"Then click Login.",
 			"Tenvi MP", MB_OK | MB_ICONINFORMATION);
 		return 0;
 	}
 	if (pw.empty()) {
 		MessageBoxA(NULL,
 			"Account captured, but password is empty.\n"
-			"Press Ctrl+2 (or Tab) to switch to password mode, type it, then click Login.",
+			"Click the password field (or press TAB), type password, then click Login.",
 			"Tenvi MP", MB_OK | MB_ICONWARNING);
 		return 0;
 	}
