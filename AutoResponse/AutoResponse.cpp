@@ -92,35 +92,40 @@ void MP_Pump() {
 	if (batch.empty()) return;
 
 	g_mp_in_batch = true;  // <-- START guard: block all EnterSendPacket during batch
-	// [v45] context routing for 0x11 character spawn packets:
-	// The client's CWvsContext handles the local player's own spawn, while CField
-	// handles every remote player spawn. Routing MUST be based on the object id
-	// embedded in the packet (bytes 1-4, little-endian), not on packet order.
-	// Order-based routing fails when a player is already in a map and a new player
-	// joins: the existing client receives the new player's 0x11 without a prior
-	// 0x10 map-change packet, so it would be mis-routed to CWvsContext and silently
-	// dropped -> "the other player is invisible". The local object id is learned
-	// from the 0x10 map-change packet (which also encodes chr.id at bytes 1-4).
+	// [v46] context routing for 0x11 character spawn packets:
+	// CWvsContext handles the local player's own spawn; CField handles remote
+	// players, monsters and map objects. The local player's object id is carried
+	// inside the 0x11 spawn packet (bytes 1-4), NOT inside the 0x10 map-change
+	// packet (0x10 carries the map id). Therefore we learn localObjectId from the
+	// first 0x11 that follows a 0x10. After that, every 0x11 whose oid differs is
+	// a remote player and must go to CField. This also works when a new player
+	// joins a map that already contains other players: the existing client never
+	// receives a 0x10, but its localObjectId was already set during its own login.
 	static DWORD g_localObjectId = 0;
+	static bool g_expectingSelfSpawn = false;
 	for (size_t i = 0; i < batch.size(); i++) {
 		bool mp_ctx = true;
 		BYTE mp_op = (batch[i].size() > 0) ? batch[i][0] : 0;
 		DWORD oid = 0;
 		if (batch[i].size() >= 5) oid = *(DWORD*)&batch[i][1];
 		if (mp_op == 0x10) {
-			g_localObjectId = oid;
+			// A map change is coming. The next 0x11 in this batch is our own spawn.
+			g_expectingSelfSpawn = true;
 			mp_ctx = true;
 		} else if (mp_op == 0x11) {
-			if (g_localObjectId == 0) {
-				// First spawn before any map-change seen: treat as local self-spawn
-				// (this is defensive; on a single TCP stream 0x10 always arrives first).
+			if (g_expectingSelfSpawn) {
+				g_localObjectId = oid;
+				g_expectingSelfSpawn = false;
+				mp_ctx = true; // own spawn -> CWvsContext
+			} else if (g_localObjectId == 0) {
+				// Defensive: no 0x10 seen yet and no id known -> treat as own spawn.
 				g_localObjectId = oid;
 				mp_ctx = true;
 			} else {
-				mp_ctx = (oid == g_localObjectId);
+				mp_ctx = (oid == g_localObjectId); // true = own, false = remote
 			}
 		} else if (mp_op == 0x12) {
-			mp_ctx = false;
+			mp_ctx = false; // remove object -> CField
 		}
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
