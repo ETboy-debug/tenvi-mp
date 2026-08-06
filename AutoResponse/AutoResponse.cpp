@@ -92,21 +92,44 @@ void MP_Pump() {
 	if (batch.empty()) return;
 
 	g_mp_in_batch = true;  // <-- START guard: block all EnterSendPacket during batch
-	// [v43] context routing: 0x10(map change)+the 0x11 right after it = local self-spawn
-	// (CWvsContext). Every other 0x11(remote player) and all 0x12(remove object) are
-	// field-layer packets that MUST hit CField(context=false); otherwise the client
-	// silently drops them and other players stay invisible. This was the互见 root cause.
-	static bool s_expectSelfSpawn = false;
+	// [v45] context routing for 0x11 character spawn packets:
+	// The client's CWvsContext handles the local player's own spawn, while CField
+	// handles every remote player spawn. Routing MUST be based on the object id
+	// embedded in the packet (bytes 1-4, little-endian), not on packet order.
+	// Order-based routing fails when a player is already in a map and a new player
+	// joins: the existing client receives the new player's 0x11 without a prior
+	// 0x10 map-change packet, so it would be mis-routed to CWvsContext and silently
+	// dropped -> "the other player is invisible". The local object id is learned
+	// from the 0x10 map-change packet (which also encodes chr.id at bytes 1-4).
+	static DWORD g_localObjectId = 0;
 	for (size_t i = 0; i < batch.size(); i++) {
 		bool mp_ctx = true;
 		BYTE mp_op = (batch[i].size() > 0) ? batch[i][0] : 0;
-		if (mp_op == 0x10) { s_expectSelfSpawn = true; mp_ctx = true; }
-		else if (mp_op == 0x11) {
-			if (s_expectSelfSpawn) { mp_ctx = true; s_expectSelfSpawn = false; }
-			else { mp_ctx = false; }
+		DWORD oid = 0;
+		if (batch[i].size() >= 5) oid = *(DWORD*)&batch[i][1];
+		if (mp_op == 0x10) {
+			g_localObjectId = oid;
+			mp_ctx = true;
+		} else if (mp_op == 0x11) {
+			if (g_localObjectId == 0) {
+				// First spawn before any map-change seen: treat as local self-spawn
+				// (this is defensive; on a single TCP stream 0x10 always arrives first).
+				g_localObjectId = oid;
+				mp_ctx = true;
+			} else {
+				mp_ctx = (oid == g_localObjectId);
+			}
+		} else if (mp_op == 0x12) {
+			mp_ctx = false;
 		}
-		else if (mp_op == 0x12) { mp_ctx = false; }
-		{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[MP-CTX] op=%02X ctx=%d\n", mp_op, mp_ctx?1:0); fflush(f); fclose(f); } }
+		{
+			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+			if (f) {
+				fprintf(f, "[MP-CTX] op=%02X oid=%08X local=%08X ctx=%d\n",
+					mp_op, oid, g_localObjectId, mp_ctx ? 1 : 0);
+				fflush(f); fclose(f);
+			}
+		}
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
