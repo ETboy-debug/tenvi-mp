@@ -866,11 +866,11 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 	MP_MARK("ChangeMap before SpawnObjects");
 	SpawnObjects(chr, map_id);
 	MP_MARK("ChangeMap after SpawnObjects");
-	CharacterSpawnPacket(chr, x, y);
-	MP_MARK("ChangeMap after self CharacterSpawnPacket");
 
 #ifdef MP_SERVER
 	// [MP] 静态互见: 刷新自己进在线表, 并与同图其他人互刷
+	// 注意: 必须在自我出生包之前把同图其他人的出生包发下去,
+	// 否则客户端收到自我出生包后可能认为场地初始化完毕, 从而忽略后来的远程玩家。
 	{
 		std::lock_guard<std::mutex> lk(g_playersMtx);
 		RemotePlayer &me = g_players[t_sid];
@@ -895,6 +895,8 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 	}
 	MP_MARK("ChangeMap after broadcast loop");
 #endif
+	CharacterSpawnPacket(chr, x, y);
+	MP_MARK("ChangeMap after self CharacterSpawnPacket");
 	MP_MARK("ChangeMap exit");
 }
 
