@@ -20,8 +20,11 @@ static SOCKET g_sock = INVALID_SOCKET;
 static CRITICAL_SECTION g_cs;
 static bool g_csReady = false;
 static std::vector<std::vector<BYTE>> g_inQueue;
+// [v50] Parallel queue holding the dispatch context of each entry in
+// g_inQueue. 1 = CWvsContext (local player), 0 = CField (remote/objects).
+static std::vector<BYTE> g_inCtxQueue;
 static std::vector<std::vector<BYTE>> g_ctrlQueue;
-static void MP_PushPacket(const BYTE *p, DWORD n);
+static void MP_PushPacket(const BYTE *p, DWORD n, bool ctx);
 static std::string g_ip = "127.0.0.1";
 static int g_port = 8787;
 static volatile LONG g_connected = 0;
@@ -89,19 +92,37 @@ bool MP_IsAuthed() { return g_authed == 1; }
 void MP_SetAuthed(bool v) { InterlockedExchange(&g_authed, v ? 1 : -1); }
 
 bool MP_PopPacket(std::vector<BYTE> &out) {
+	bool ctx = true;
+	return MP_PopPacketEx(out, ctx);
+}
+
+// [v50] Pop a packet together with the dispatch context the server tagged it
+// with. Both queues are always pushed/popped in lockstep under g_cs.
+bool MP_PopPacketEx(std::vector<BYTE> &out, bool &ctx) {
 	if (!g_csReady) return false;
 	bool got = false;
 	EnterCriticalSection(&g_cs);
-	if (!g_inQueue.empty()) { out = g_inQueue.front(); g_inQueue.erase(g_inQueue.begin()); got = true; }
+	if (!g_inQueue.empty()) {
+		out = g_inQueue.front();
+		g_inQueue.erase(g_inQueue.begin());
+		if (!g_inCtxQueue.empty()) {
+			ctx = (g_inCtxQueue.front() != 0);
+			g_inCtxQueue.erase(g_inCtxQueue.begin());
+		} else {
+			ctx = true; // defensive: should never happen
+		}
+		got = true;
+	}
 	LeaveCriticalSection(&g_cs);
 	return got;
 }
 
-static void MP_PushPacket(const BYTE *p, DWORD n) {
+static void MP_PushPacket(const BYTE *p, DWORD n, bool ctx) {
 	if (!g_csReady || !n) return;
 	std::vector<BYTE> pkt(p, p + n);
 	EnterCriticalSection(&g_cs);
 	g_inQueue.push_back(pkt);
+	g_inCtxQueue.push_back(ctx ? 1 : 0);
 	LeaveCriticalSection(&g_cs);
 }
 
@@ -423,7 +444,9 @@ static DWORD WINAPI MP_RecvThread(LPVOID) {
 			if (buf.size() < 4 + len) break;
 			BYTE type = buf[4];
 			if (type == MP_TYPE_GAME && len > 1) {
-				MP_PushPacket(&buf[5], len - 1);
+				MP_PushPacket(&buf[5], len - 1, true);   // -> CWvsContext
+			} else if (type == MP_TYPE_GAME_FIELD && len > 1) {
+				MP_PushPacket(&buf[5], len - 1, false);  // [v50] -> CField
 			} else if (type == MP_TYPE_CTRL && len >= 2) {
 				std::vector<BYTE> cpkt(buf.begin() + 4, buf.begin() + 4 + len);
 				EnterCriticalSection(&g_cs);
