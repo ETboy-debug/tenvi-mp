@@ -85,6 +85,7 @@ void DelayExecution() {
 static bool g_mp_in_batch = false;
 
 void MP_Pump() {
+	static bool s_firstSpawn = false; // [v43] 追踪本地玩家出生包(0x11): 第一个给 CWvsContext, 后续给 CField
 	std::vector<std::vector<BYTE>> batch;
 	std::vector<BYTE> packet;
 	while (MP_PopPacket(packet)) {
@@ -102,7 +103,28 @@ void MP_Pump() {
 				fflush(f); fclose(f);
 			}
 		}
-		ProcessPacketExec(batch[i]);
+		bool use_context = true;
+		if (batch[i].size() > 0) {
+			BYTE op = batch[i][0];
+			if (op == 0x10) {
+				// 换地图包: 重置出生包计数,下一张图的第一个 0x11 仍是本地玩家
+				s_firstSpawn = false;
+			} else if (op == 0x11) {
+				if (s_firstSpawn) {
+					use_context = false; // 别人的出生包走 CField 场地渲染
+				} else {
+					s_firstSpawn = true; // 本地玩家出生包走 CWvsContext
+				}
+			}
+		}
+		{
+			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+			if (f) {
+				fprintf(f, "[MP-CTX] op=%02X context=%s\n", batch[i].size()>0?batch[i][0]:0, use_context?"ctx":"field");
+				fflush(f); fclose(f);
+			}
+		}
+		ProcessPacketExec(batch[i], use_context);
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
