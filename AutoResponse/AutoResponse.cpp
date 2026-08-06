@@ -1,3 +1,4 @@
+#include<cstdio>
 #include"AutoResponse.h"
 #include"MPClient.h"
 
@@ -133,20 +134,28 @@ DWORD __fastcall LoginButton_Hook(void *ecx) {
 	// 从 GetAsyncKeyState 捕获缓冲区取用户在登录界面输入的账号密码
 	std::string acc, pw;
 	if (!MP_GetNativeCred(acc, pw)) {
-		MessageBoxA(NULL,
+		char msg[256];
+		_snprintf_s(msg, sizeof(msg), _TRUNCATE,
 			"No account or password entered.\n"
+			"(captured: account=%d chars, password=%d chars)\n"
 			"\n"
-			"Click the account field -> type account\n"
-			"Click the password field (or press TAB) -> type password\n"
+			"Click the upper half of login window -> type account\n"
+			"Click the lower half of login window -> type password\n"
 			"Then click Login.",
-			"Tenvi MP", MB_OK | MB_ICONINFORMATION);
+			(int)acc.length(), (int)pw.length());
+		MessageBoxA(NULL, msg, "Tenvi MP", MB_OK | MB_ICONINFORMATION);
 		return 0;
 	}
 	if (pw.empty()) {
-		MessageBoxA(NULL,
+		char msg[256];
+		_snprintf_s(msg, sizeof(msg), _TRUNCATE,
 			"Account captured, but password is empty.\n"
-			"Click the password field (or press TAB), type password, then click Login.",
-			"Tenvi MP", MB_OK | MB_ICONWARNING);
+			"(captured: account=%d chars, password=%d chars)\n"
+			"\n"
+			"Click the password field (lower half of login window),\n"
+			"type password, then click Login.",
+			(int)acc.length(), (int)pw.length());
+		MessageBoxA(NULL, msg, "Tenvi MP", MB_OK | MB_ICONWARNING);
 		return 0;
 	}
 
