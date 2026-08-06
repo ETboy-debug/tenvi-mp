@@ -220,16 +220,19 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 
 					// 只处理"新按下"的边沿(避免重复触发)
 					if (nowDown && !wasDown) {
-						// --- [v38] Tab: first press locks to password, 2nd press unlocks back to account ---
+						// --- [v51] Tab: one-way lock to password (same as mouse click).
+						// v38 toggled back to account on 2nd Tab, but the game's native
+						// login UI also cycles focus on Tab -> desync -> password landed
+						// in the account buffer -> "password is empty" on login. Now Tab
+						// only ever moves account->password once, then stays locked.
 						if (vk == VK_TAB) {
 							EnterCriticalSection(&g_capCs);
-							if (g_capLocked) { g_capField = 0; g_capLocked = false; }
-							else if (g_capField == 0) { g_capField = 1; g_capLocked = true; }
+							if (!g_capLocked && g_capField == 0) { g_capField = 1; g_capLocked = true; }
 							LeaveCriticalSection(&g_capCs);
 							{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
 							  if (df) { fprintf(df, "[MP-CAP] Tab -> field=%d locked=%d\n", g_capField, (int)g_capLocked); fflush(df); fclose(df); } }
 						}
-					// [v38] Mouse click: first click locks to password. Subsequent clicks ignored while locked.
+					// [v51] Mouse click: first click locks to password. Subsequent clicks ignored while locked.
 					else if (vk == VK_LBUTTON) {
 						EnterCriticalSection(&g_capCs);
 						if (!g_capLocked && g_capField == 0) { g_capField = 1; g_capLocked = true; }
