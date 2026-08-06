@@ -348,15 +348,20 @@ void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, int tar
 		if (context) SendPacket(sp);
 		else SendPacket2(sp);
 	}
-	else MP_BroadcastToSid(target_sid, sp);
+	// [v50] A character spawn delivered to ANOTHER client is, from that
+	// client's point of view, always a remote player -> force CField.
+	else MP_BroadcastToSid(target_sid, sp, false);
 }
 
 // 0x12
 void RemoveObjectPacket(DWORD object_id, int target_sid = -1) {
 	ServerPacket sp(SP_REMOVE_OBJECT);
 	sp.Encode4(object_id); // not only for character
-	if (target_sid < 0) SendPacket(sp);
-	else MP_BroadcastToSid(target_sid, sp);
+	// [v50] Object removal always targets CField (remote players, monsters,
+	// map objects). Until v49 the DLL hardcoded ctx=false for opcode 0x12;
+	// now that routing is server-driven, the server must say so explicitly.
+	if (target_sid < 0) SendPacket2(sp);
+	else MP_BroadcastToSid(target_sid, sp, false);
 }
 
 // 0x14
@@ -830,7 +835,7 @@ void MP_RemovePlayer(int) {}
 
 #ifndef MP_SERVER
 // [MP] dll 侧无其它连接, 跨连接广播为空操作(符号需存在供链接)
-void MP_BroadcastToSid(int sid, ServerPacket &sp) {}
+void MP_BroadcastToSid(int sid, ServerPacket &sp, bool context) {}
 #endif
 
 // go to map
