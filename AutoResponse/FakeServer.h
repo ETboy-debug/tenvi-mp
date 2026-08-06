@@ -19,7 +19,9 @@ bool FakeServer(ClientPacket &cp);
 
 // [MP] 跨连接/会话管理(实现分处 FakeServer.cpp / StandaloneServer.cpp)
 extern thread_local int t_sid;
-void MP_BroadcastToSid(int sid, ServerPacket &sp);
+// [v50] context selects the receiving client's dispatch layer:
+// true -> CWvsContext, false -> CField (remote players / objects).
+void MP_BroadcastToSid(int sid, ServerPacket &sp, bool context = true);
 void MP_RemovePlayer(int sid);
 
 // test
