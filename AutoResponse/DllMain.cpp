@@ -29,8 +29,8 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 	if (fdwReason == DLL_PROCESS_ATTACH) {
 		// [DIAG] Install crash handler BEFORE anything else
 		SetUnhandledExceptionFilter(CrashHandler);
-		// [DIAG] Clear diagnostic log  (V19 marker)
-			{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "w"); if (f) { fprintf(f, "=== DLL attach V19 ===\n"); fclose(f); } }
+		// [DIAG] Clear diagnostic log  (V46 marker)
+			{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "w"); if (f) { fprintf(f, "=== DLL attach V46 ===\n"); fclose(f); } }
 		{ FILE *f = NULL; fopen_s(&f, "D:/mp_crash.log", "w"); if (f) { fprintf(f, "=== crash log ===\n"); fclose(f); } }
 		DisableThreadLibraryCalls(hinstDLL);
 		LoadRegionConfig(hinstDLL);
