@@ -1,10 +1,7 @@
 // MPClient.cpp - 客户端侧明文桥接 socket
-// [v41] Mouse click switches field by vertical screen position.
-//       Click upper half of window -> account field.
-//       Click lower half of window -> password field (login button stays here).
-//       Tab toggles both ways.
-//       键盘: 内核级查询, 绕过 DirectInput
-//       鼠标: 按窗口上下半部分切字段, 不再数点击次数
+// [v43] Other-player spawn packets (0x11 after the first) are injected into CField
+//       instead of CWvsContext, so the client actually renders other players.
+//       Mouse/Tab field switching remains v41.
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
