@@ -39,6 +39,9 @@ using namespace std;
 
 #define MP_TYPE_GAME 0
 #define MP_TYPE_CTRL 1
+// [v50] Game packet the client must dispatch through CField (remote players,
+// monsters, map objects) instead of CWvsContext. Must match MPClient.h.
+#define MP_TYPE_GAME_FIELD 2
 
 #define MP_CTRL_HELLO     1
 #define MP_CTRL_WORLDLIST 2
@@ -121,7 +124,10 @@ static void HexDump(const char *tag, const BYTE *p, size_t n) {
 }
 
 // 替代 AutoResponse 的注入式发送：编码后经本线程的 socket 发回对应客户端
-void SendPacket(ServerPacket &sp) {
+// [v50] frameType selects the client-side dispatch layer:
+//   MP_TYPE_GAME       -> CWvsContext (this client's own character)
+//   MP_TYPE_GAME_FIELD -> CField      (remote players / monsters / objects)
+static void SendPacketTyped(ServerPacket &sp, BYTE frameType) {
 	if (t_client == INVALID_SOCKET) {
 		return;
 	}
@@ -132,7 +138,7 @@ void SendPacket(ServerPacket &sp) {
 	frame.push_back((BYTE)((len >> 8) & 0xFF));
 	frame.push_back((BYTE)((len >> 16) & 0xFF));
 	frame.push_back((BYTE)((len >> 24) & 0xFF));
-	frame.push_back(MP_TYPE_GAME);
+	frame.push_back(frameType);
 	frame.insert(frame.end(), data.begin(), data.end());
 
 	if (t_sendCount < g_dump && !data.empty()) {
@@ -146,9 +152,12 @@ void SendPacket(ServerPacket &sp) {
 	}
 }
 
-// 兼容 FakeServer.cpp 中调用的另外两个发送符号
-void SendPacket2(ServerPacket &sp) { SendPacket(sp); }
-void DelaySendPacket(ServerPacket &sp) { SendPacket(sp); }
+void SendPacket(ServerPacket &sp) { SendPacketTyped(sp, MP_TYPE_GAME); }
+
+// [v50] SendPacket2 used to be a plain alias of SendPacket, which silently
+// discarded the CField routing intent. It now emits its own frame type.
+void SendPacket2(ServerPacket &sp) { SendPacketTyped(sp, MP_TYPE_GAME_FIELD); }
+void DelaySendPacket(ServerPacket &sp) { SendPacketTyped(sp, MP_TYPE_GAME); }
 
 // [MP] 向本线程客户端回一条控制结果(登录成功/失败、注册结果等)
 static void SendCtrlResult(BYTE cmd, const BYTE *data, DWORD dn) {
@@ -167,7 +176,8 @@ static void SendCtrlResult(BYTE cmd, const BYTE *data, DWORD dn) {
 }
 
 // [MP] 向指定 socket 发游戏包(供 GM 广播用)
-static void SendPacketTo(SOCKET s, ServerPacket &sp) {
+// [v50] frameType carries the client-side dispatch layer, see SendPacketTyped.
+static void SendPacketTo(SOCKET s, ServerPacket &sp, BYTE frameType = MP_TYPE_GAME) {
 	if (s == INVALID_SOCKET) return;
 	vector<BYTE> data = sp.get();
 	DWORD len = (DWORD)data.size() + 1;
@@ -176,20 +186,25 @@ static void SendPacketTo(SOCKET s, ServerPacket &sp) {
 	frame.push_back((BYTE)((len >> 8) & 0xFF));
 	frame.push_back((BYTE)((len >> 16) & 0xFF));
 	frame.push_back((BYTE)((len >> 24) & 0xFF));
-	frame.push_back(MP_TYPE_GAME);
+	frame.push_back(frameType);
 	frame.insert(frame.end(), data.begin(), data.end());
 	send(s, (const char *)&frame[0], (int)frame.size(), 0);
 }
 
 // [MP] 把包发给指定 sid 的连接(供 FakeServer 做跨玩家广播)
-void MP_BroadcastToSid(int sid, ServerPacket &sp) {
+// [v50] context=false means the receiving client must route this through
+// CField. Cross-player packets are, by definition, remote to the receiver -
+// this is exactly the information that used to be dropped here.
+void MP_BroadcastToSid(int sid, ServerPacket &sp, bool context) {
 	SOCKET s = INVALID_SOCKET;
 	{
 		std::lock_guard<std::mutex> lk(g_adminMutex);
 		auto it = g_onlineSock.find(sid);
 		if (it != g_onlineSock.end()) s = it->second;
 	}
-	if (s != INVALID_SOCKET) SendPacketTo(s, sp);
+	if (s != INVALID_SOCKET) {
+		SendPacketTo(s, sp, context ? MP_TYPE_GAME : MP_TYPE_GAME_FIELD);
+	}
 }
 
 // [MP] GM 广播: 给所有在线客户端发一条 Board 公告
