@@ -1,4 +1,3 @@
-#include<cstdio>
 #include"AutoResponse.h"
 #include"MPClient.h"
 
@@ -85,7 +84,6 @@ void DelayExecution() {
 static bool g_mp_in_batch = false;
 
 void MP_Pump() {
-	static bool s_firstSpawn = false; // [v43] 追踪本地玩家出生包(0x11): 第一个给 CWvsContext, 后续给 CField
 	std::vector<std::vector<BYTE>> batch;
 	std::vector<BYTE> packet;
 	while (MP_PopPacket(packet)) {
@@ -94,37 +92,30 @@ void MP_Pump() {
 	if (batch.empty()) return;
 
 	g_mp_in_batch = true;  // <-- START guard: block all EnterSendPacket during batch
+	// [v43] context routing: 0x10(map change)+the 0x11 right after it = local self-spawn
+	// (CWvsContext). Every other 0x11(remote player) and all 0x12(remove object) are
+	// field-layer packets that MUST hit CField(context=false); otherwise the client
+	// silently drops them and other players stay invisible. This was the互见 root cause.
+	static bool s_expectSelfSpawn = false;
 	for (size_t i = 0; i < batch.size(); i++) {
+		bool mp_ctx = true;
+		BYTE mp_op = (batch[i].size() > 0) ? batch[i][0] : 0;
+		if (mp_op == 0x10) { s_expectSelfSpawn = true; mp_ctx = true; }
+		else if (mp_op == 0x11) {
+			if (s_expectSelfSpawn) { mp_ctx = true; s_expectSelfSpawn = false; }
+			else { mp_ctx = false; }
+		}
+		else if (mp_op == 0x12) { mp_ctx = false; }
+		{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[MP-CTX] op=%02X ctx=%d\n", mp_op, mp_ctx?1:0); fflush(f); fclose(f); } }
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
 				const std::vector<BYTE> &bp = batch[i];
-				fprintf(f, ">> inject op=%02X len=%d\n", bp.size()>0?bp[0]:0, (int)bp.size());
+				fprintf(f, ">> inject op=%02X len=%d\n", mp_op, (int)bp.size());
 				fflush(f); fclose(f);
 			}
 		}
-		bool use_context = true;
-		if (batch[i].size() > 0) {
-			BYTE op = batch[i][0];
-			if (op == 0x10) {
-				// 换地图包: 重置出生包计数,下一张图的第一个 0x11 仍是本地玩家
-				s_firstSpawn = false;
-			} else if (op == 0x11) {
-				if (s_firstSpawn) {
-					use_context = false; // 别人的出生包走 CField 场地渲染
-				} else {
-					s_firstSpawn = true; // 本地玩家出生包走 CWvsContext
-				}
-			}
-		}
-		{
-			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
-			if (f) {
-				fprintf(f, "[MP-CTX] op=%02X context=%s\n", batch[i].size()>0?batch[i][0]:0, use_context?"ctx":"field");
-				fflush(f); fclose(f);
-			}
-		}
-		ProcessPacketExec(batch[i], use_context);
+		ProcessPacketExec(batch[i], mp_ctx);
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
@@ -156,28 +147,20 @@ DWORD __fastcall LoginButton_Hook(void *ecx) {
 	// 从 GetAsyncKeyState 捕获缓冲区取用户在登录界面输入的账号密码
 	std::string acc, pw;
 	if (!MP_GetNativeCred(acc, pw)) {
-		char msg[256];
-		_snprintf_s(msg, sizeof(msg), _TRUNCATE,
+		MessageBoxA(NULL,
 			"No account or password entered.\n"
-			"(captured: account=%d chars, password=%d chars)\n"
 			"\n"
-			"Click the upper half of login window -> type account\n"
-			"Click the lower half of login window -> type password\n"
+			"Click the account field -> type account\n"
+			"Click the password field (or press TAB) -> type password\n"
 			"Then click Login.",
-			(int)acc.length(), (int)pw.length());
-		MessageBoxA(NULL, msg, "Tenvi MP", MB_OK | MB_ICONINFORMATION);
+			"Tenvi MP", MB_OK | MB_ICONINFORMATION);
 		return 0;
 	}
 	if (pw.empty()) {
-		char msg[256];
-		_snprintf_s(msg, sizeof(msg), _TRUNCATE,
+		MessageBoxA(NULL,
 			"Account captured, but password is empty.\n"
-			"(captured: account=%d chars, password=%d chars)\n"
-			"\n"
-			"Click the password field (lower half of login window),\n"
-			"type password, then click Login.",
-			(int)acc.length(), (int)pw.length());
-		MessageBoxA(NULL, msg, "Tenvi MP", MB_OK | MB_ICONWARNING);
+			"Click the password field (or press TAB), type password, then click Login.",
+			"Tenvi MP", MB_OK | MB_ICONWARNING);
 		return 0;
 	}
 
