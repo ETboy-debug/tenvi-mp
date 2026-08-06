@@ -1,5 +1,5 @@
 // MPClient.cpp - 客户端侧明文桥接 socket
-// [v36] GetAsyncKeyState 轮询 + Ctrl+1/2字段切换 + Tab(鼠标不再猜)
+// [v37] Mouse click + Tab toggle field. No Ctrl hotkeys, no Y-guessing.
 //       键盘: 内核级查询, 绕过 DirectInput
 //       鼠标: 只记日志, 不切换字段(避免窗口大小/分辨率误判)
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
@@ -205,35 +205,14 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 							DEBUG(L"[MP-CAP] Tab -> field=%d", g_capField);
 							LeaveCriticalSection(&g_capCs);
 						}
-					// [v36] field switch: Ctrl+1=account, Ctrl+2=password, Tab=toggle
-					// v34/v35 mouse Y-guess failed at different resolutions/window sizes.
-					// Now uses deterministic hotkeys instead of mouse coordinate guessing.
-					// --- Ctrl+1: force account field ---
-					else if (vk == '1' && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
-						EnterCriticalSection(&g_capCs);
-						g_capField = 0;
-						LeaveCriticalSection(&g_capCs);
-						{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-						  if (df) { fprintf(df, "[MP-CAP] Ctrl+1 -> field=0 (account)\n"); fflush(df); fclose(df); } }
-					}
-					// --- Ctrl+2: force password field ---
-					else if (vk == '2' && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
-						EnterCriticalSection(&g_capCs);
-						g_capField = 1;
-						LeaveCriticalSection(&g_capCs);
-						{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-						  if (df) { fprintf(df, "[MP-CAP] Ctrl+2 -> field=1 (password)\n"); fflush(df); fclose(df); } }
-					}
-					// --- mouse LButton: log only, no field switch ---
+					// [v37] Mouse click toggles field (same as Tab). No Y-guessing.
+					// User clicks account box -> types account -> clicks password box -> types password.
 					else if (vk == VK_LBUTTON) {
-						POINT pt = {};
-						GetCursorPos(&pt);
-						ScreenToClient(fg, &pt);
-						RECT rc = {};
-						GetClientRect(fg, &rc);
-						LONG h = rc.bottom - rc.top;
+						EnterCriticalSection(&g_capCs);
+						g_capField = 1 - g_capField;
+						LeaveCriticalSection(&g_capCs);
 						{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-						  if (df) { fprintf(df, "[MP-CAP] mouse click at (%ld,%ld) h=%ld ratio=%d%% (field=%d unchanged)\n", pt.x, pt.y, h, h > 0 ? (int)(pt.y * 100 / h) : -1, g_capField); fflush(df); fclose(df); } }
+						  if (df) { fprintf(df, "[MP-CAP] mouse click -> field=%d (0=acc 1=pw)\n", g_capField); fflush(df); fclose(df); } }
 					}
 						// --- Backspace: 删除末尾字符 ---
 						else if (vk == VK_BACK) {
