@@ -156,16 +156,12 @@ static bool     g_capLocked = false;        // true = field locked after 1st swi
 // 上一次的按键状态(用于检测边沿: 新按下)
 static BYTE g_prevKeys[256];
 
-// [v52 MARK] version-time-pause-switch (deployment sentinel string)
-// Tab/click field switch was desyncing with game's native focus cycle.
-// Now DLL detects account->password boundary by typing pause (>300ms).
+// [v54 MARK] version-explicit-field-switch (deployment sentinel string)
+// v52/v53 time-pause heuristic misfired on normal typing pauses inside the
+// account name. Now: TAB / mouse click switch to password field one-way,
+// but only after the account buffer is non-empty.
 
-// [v52] 时间启发式字段切换: 监测输入节奏。账号密码之间用户会自然停顿(~300ms)，
-// 一旦检测到这样的停顿，DLL 把字段从账号切到密码（单向锁定）。
-// 不再依赖 TAB / 鼠标点击来猜字段 —— 那个机制会和游戏原生 UI 的 TAB 焦点循环打架。
-static DWORD g_lastKeyTick = 0;          // 上一次键盘事件时间戳 (ms)
-static bool  g_pauseSwitched = false;    // 是否已自动切到密码（一次性）
-static const DWORD PAUSE_THRESHOLD_MS = 300;
+// [v54] 字段切换由 TAB / 鼠标点击显式触发(账号非空时), 不再用时间启发式。
 
 // 可打印字符范围判断
 static bool IsPrintableChar(WCHAR ch) {
@@ -231,15 +227,30 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 
 					// 只处理"新按下"的边沿(避免重复触发)
 					if (nowDown && !wasDown) {
-						// --- [v53] Tab: no longer switches field (game UI handles focus) ---
+						// [v54] 字段切换: TAB / 鼠标点击都切换到密码字段(单向锁定),
+						// 但**账号必须已有内容**才切换 —— 防止用户一进登录界面点鼠标/
+						// 按TAB(还没输账号)就把字段锁到密码。账号非空说明用户已经开始
+						// 输入账号, 此时点密码框/按TAB = 明确表示"账号输完, 开始输密码"。
+						// v52/v53 的时间启发式(>300ms停顿自动切)被用户正常打字停顿误判,
+						// 已废弃。
 						if (vk == VK_TAB) {
+							EnterCriticalSection(&g_capCs);
+							if (!g_capLocked && g_capField == 0 && !g_capAccount.empty()) {
+								g_capField = 1; g_capLocked = true;
+							}
+							LeaveCriticalSection(&g_capCs);
 							{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-							  if (df) { fprintf(df, "[MP-CAP] Tab pressed (no field switch)\n"); fflush(df); fclose(df); } }
+							  if (df) { fprintf(df, "[MP-CAP] Tab -> field=%d locked=%d\n", g_capField, (int)g_capLocked); fflush(df); fclose(df); } }
 						}
-					// [v53] Mouse click: no longer switches field (rely on time heuristic) ---
+					// [v54] Mouse click: same one-way switch, only if account has content.
 					else if (vk == VK_LBUTTON) {
+							EnterCriticalSection(&g_capCs);
+							if (!g_capLocked && g_capField == 0 && !g_capAccount.empty()) {
+								g_capField = 1; g_capLocked = true;
+							}
+							LeaveCriticalSection(&g_capCs);
 							{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-							  if (df) { fprintf(df, "[MP-CAP] mouse click (no field switch)\n"); fflush(df); fclose(df); } }
+							  if (df) { fprintf(df, "[MP-CAP] mouse click -> field=%d locked=%d\n", g_capField, (int)g_capLocked); fflush(df); fclose(df); } }
 					}
 						// --- Backspace: 删除末尾字符 ---
 						else if (vk == VK_BACK) {
@@ -268,21 +279,6 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 						else {
 							WCHAR ch = 0;
 							if (VkToChar(vk, ch)) {
-								// [v53] 时间启发式: 只对真正的字符输入生效。鼠标点击/TAB
-								// 不参与计时，否则游戏启动→点击账号框→看图10秒→第一个字符
-								// 会被 DLL 误判为"账号输完停顿半秒"，提前切到密码。
-								DWORD nowTick = GetTickCount();
-								if (!g_pauseSwitched && g_lastKeyTick != 0 && (nowTick - g_lastKeyTick) > PAUSE_THRESHOLD_MS) {
-									EnterCriticalSection(&g_capCs);
-									g_capField = 1;
-									g_capLocked = true;
-									g_pauseSwitched = true;
-									LeaveCriticalSection(&g_capCs);
-									{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-									  if (df) { fprintf(df, "[MP-CAP] auto-switch to pw after %lu ms pause\n", (unsigned long)(nowTick - g_lastKeyTick)); fflush(df); fclose(df); } }
-								}
-								g_lastKeyTick = nowTick;
-
 								EnterCriticalSection(&g_capCs);
 								std::string &target = (g_capField == 0) ? g_capAccount : g_capPassword;
 								AppendChar(target, ch);
@@ -363,8 +359,6 @@ void MP_ClearCred() {
 	g_capPassword.clear();
 	g_capField = 0;
 	g_capLocked = false;
-	g_lastKeyTick = 0;        // [v52] reset time heuristic
-	g_pauseSwitched = false;  // [v52] reset time heuristic
 	LeaveCriticalSection(&g_capCs);
 }
 
