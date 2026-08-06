@@ -134,19 +134,18 @@ DWORD __fastcall LoginButton_Hook(void *ecx) {
 	std::string acc, pw;
 	if (!MP_GetNativeCred(acc, pw)) {
 		MessageBoxA(NULL,
-			"No account entered.\n"
+			"请输入账号和密码后点击登录。\n"
 			"\n"
-			"Please type your account in the login form,\n"
-			"press TAB to switch to password field,\n"
-			"type your password, then click Login.",
+			"操作：点击游戏里的账号框 → 按 Ctrl+1 切到账号模式 → 输账号\n"
+			"     → 按 Ctrl+2 切到密码模式 → 输密码 → 点登录\n"
+			"     (也可用 Tab 键轮流切换)",
 			"Tenvi MP", MB_OK | MB_ICONINFORMATION);
 		return 0;
 	}
 	if (pw.empty()) {
 		MessageBoxA(NULL,
-			"Account captured but no password.\n"
-			"After typing the account, press TAB to move to\n"
-			"the password field, type it, then click Login.",
+			"已捕到账号，但密码为空。\n"
+			"请按 Ctrl+2（或 Tab）切到密码模式，输完密码再点登录。",
 			"Tenvi MP", MB_OK | MB_ICONWARNING);
 		return 0;
 	}
@@ -158,10 +157,9 @@ DWORD __fastcall LoginButton_Hook(void *ecx) {
 		DEBUG(L"[MP] Not connected, reconnecting before login...");
 		if (!MP_Reconnect()) {
 			MessageBoxA(NULL,
-				"Cannot connect to server.\n"
+				"无法连接到服务端。\n"
 				"\n"
-				"Please make sure the server is running\n"
-				"(double-click StartServer.bat), then try again.",
+				"请先双击 StartServer.bat 启动服务端，确认端口 8787 已监听后重试。",
 				"Tenvi MP", MB_OK | MB_ICONERROR);
 			return 0;
 		}
@@ -173,13 +171,13 @@ DWORD __fastcall LoginButton_Hook(void *ecx) {
 
 	BYTE res = 0;
 	if (!MP_WaitCtrlResult(MP_CTRL_LOGIN_RESULT, 8000, res)) {
-		MessageBoxA(NULL, "Login timeout (server not responding?).",
+		MessageBoxA(NULL, "登录超时（服务端无响应）。",
 		            "Tenvi MP", MB_OK | MB_ICONERROR);
 		MP_ResetLoginState();
 		return 0;
 	}
 	if (res != 1) {
-		MessageBoxA(NULL, "Login failed: wrong password or account error.",
+		MessageBoxA(NULL, "登录失败：密码错误或账号不存在。",
 		            "Tenvi MP", MB_OK | MB_ICONWARNING);
 		MP_ResetLoginState();
 		return 0;
