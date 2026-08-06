@@ -8,8 +8,15 @@
 #include <vector>
 
 // ---- 协议常量 ----
-#define MP_TYPE_GAME  0   // 游戏明文包
+#define MP_TYPE_GAME  0   // 游戏明文包 -> CWvsContext (local player)
 #define MP_TYPE_CTRL  1   // 控制命令
+// [v50] Game packet that MUST be dispatched through CField instead of
+// CWvsContext: remote players, monsters, map objects. Before v50 this
+// distinction existed only inside the server process (SendPacket vs
+// SendPacket2) and was lost on the wire, forcing the DLL to guess which
+// 0x11 spawn packet was the local player. The guess broke whenever a
+// remote spawn arrived before the local one.
+#define MP_TYPE_GAME_FIELD 2
 
 // 控制命令类型(必须与服务端 StandaloneServer.cpp 完全一致!)
 #define MP_CTRL_HELLO           1  // 客户端握手
@@ -45,6 +52,10 @@ void MP_SetAuthed(bool v);
 
 /// 取出一个收到的游戏包(从队列)。返回 false 表示队列为空。
 bool MP_PopPacket(std::vector<BYTE> &out);
+
+/// [v50] Same as MP_PopPacket but also reports the dispatch context the
+/// server tagged the packet with. ctx=true -> CWvsContext, false -> CField.
+bool MP_PopPacketEx(std::vector<BYTE> &out, bool &ctx);
 
 /// 阻塞等待指定类型的 ctrl 包结果。timeoutMs=0 为非阻塞。
 bool MP_WaitCtrlResult(BYTE expectCmd, int timeoutMs, BYTE &outByte);
