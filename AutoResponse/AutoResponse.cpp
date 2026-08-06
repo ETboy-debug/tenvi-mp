@@ -164,16 +164,22 @@ DWORD __fastcall LoginButton_Hook(void *ecx) {
 		MessageBoxA(NULL,
 			"No account or password entered.\n"
 			"\n"
-			"Click the account field -> type account\n"
-			"Click the password field (or press TAB) -> type password\n"
-			"Then click Login.",
+			"1) Click the account field\n"
+			"2) Type your account (e.g. ww1111)\n"
+			"3) PAUSE half a second\n"
+			"4) Type your password (e.g. 1111)\n"
+			"5) Click Login.\n"
+			"\n"
+			"Note: DLL detects account->password boundary by your typing pause.",
 			"Tenvi MP", MB_OK | MB_ICONINFORMATION);
 		return 0;
 	}
 	if (pw.empty()) {
 		MessageBoxA(NULL,
 			"Account captured, but password is empty.\n"
-			"Click the password field (or press TAB), type password, then click Login.",
+			"\n"
+			"You probably typed account + password without a clear pause between them.\n"
+			"Try again: type account -> PAUSE 0.5s -> type password -> Login.",
 			"Tenvi MP", MB_OK | MB_ICONWARNING);
 		return 0;
 	}
