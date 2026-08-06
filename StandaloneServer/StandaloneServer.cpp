@@ -189,7 +189,9 @@ void MP_BroadcastToSid(int sid, ServerPacket &sp) {
 		auto it = g_onlineSock.find(sid);
 		if (it != g_onlineSock.end()) s = it->second;
 	}
+	Log("[MP_BroadcastToSid] sid=%d sock=%p", sid, (void*)s);
 	if (s != INVALID_SOCKET) SendPacketTo(s, sp);
+	else Log("[MP_BroadcastToSid] sid=%d not found in g_onlineSock", sid);
 }
 
 // [MP] GM 广播: 给所有在线客户端发一条 Board 公告
