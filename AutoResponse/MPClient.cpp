@@ -1,7 +1,7 @@
 // MPClient.cpp - 客户端侧明文桥接 socket
-// [v43] Other-player spawn packets (0x11 after the first) are injected into CField
-//       instead of CWvsContext, so the client actually renders other players.
-//       Mouse/Tab field switching remains v41.
+// [v37] Mouse click + Tab toggle field. No Ctrl hotkeys, no Y-guessing.
+//       键盘: 内核级查询, 绕过 DirectInput
+//       鼠标: 只记日志, 不切换字段(避免窗口大小/分辨率误判)
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -127,8 +127,10 @@ static int      g_capField = 0;             // 当前输入字段: 0=账号 1=�
 static CRITICAL_SECTION g_capCs;            // 保护捕获缓冲区
 static bool     g_capCsReady = false;
 
-// [v41] Field switch by mouse click vertical position (upper/lower half of window).
-static const float CLICK_Y_RATIO_THRESHOLD = 0.50f; // Y < 50% = account, >= 50% = password
+// [v38] One-way field switch: first Tab/click -> lock to password. 2nd Tab -> unlock back.
+static LONG     g_lastClickY = -1;          // (reserved)
+static const int CLICK_Y_THRESHOLD = 30;    // (reserved)
+static bool     g_capLocked = false;        // true = field locked after 1st switch
 
 // 上一次的按键状态(用于检测边沿: 新按下)
 static BYTE g_prevKeys[256];
@@ -197,44 +199,22 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 
 					// 只处理"新按下"的边沿(避免重复触发)
 					if (nowDown && !wasDown) {
-					// --- [v39] Tab: simple toggle between account and password ---
-					if (vk == VK_TAB) {
-						EnterCriticalSection(&g_capCs);
-						g_capField = (g_capField == 0) ? 1 : 0;
-						int newField = g_capField;
-						LeaveCriticalSection(&g_capCs);
-						{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-						  if (df) { fprintf(df, "[MP-CAP] Tab -> field=%d\n", newField); fflush(df); fclose(df); } }
-					}
-					// [v41] Mouse click: upper half -> account, lower half -> password.
+						// --- [v38] Tab: first press locks to password, 2nd press unlocks back to account ---
+						if (vk == VK_TAB) {
+							EnterCriticalSection(&g_capCs);
+							if (g_capLocked) { g_capField = 0; g_capLocked = false; }
+							else if (g_capField == 0) { g_capField = 1; g_capLocked = true; }
+							LeaveCriticalSection(&g_capCs);
+							{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+							  if (df) { fprintf(df, "[MP-CAP] Tab -> field=%d locked=%d\n", g_capField, (int)g_capLocked); fflush(df); fclose(df); } }
+						}
+					// [v38] Mouse click: first click locks to password. Subsequent clicks ignored while locked.
 					else if (vk == VK_LBUTTON) {
-						HWND hwnd = GetForegroundWindow();
-						int clickY = -1;
-						int clientH = 0;
-						if (hwnd) {
-							POINT pt;
-							GetCursorPos(&pt);
-							ScreenToClient(hwnd, &pt);
-							RECT rc;
-							GetClientRect(hwnd, &rc);
-							clickY = pt.y;
-							clientH = rc.bottom - rc.top;
-						}
 						EnterCriticalSection(&g_capCs);
-						int newField = g_capField;
-						if (clientH > 0 && clickY >= 0) {
-							float ratio = (float)clickY / (float)clientH;
-							if (ratio < CLICK_Y_RATIO_THRESHOLD) {
-								g_capField = 0;
-								newField = 0;
-							} else {
-								g_capField = 1;
-								newField = 1;
-							}
-						}
+						if (!g_capLocked && g_capField == 0) { g_capField = 1; g_capLocked = true; }
 						LeaveCriticalSection(&g_capCs);
 						{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-						  if (df) { fprintf(df, "[MP-CAP] mouse click y=%d h=%d ratio=%.3f -> field=%d\n", clickY, clientH, (clientH > 0 && clickY >= 0) ? (float)clickY / (float)clientH : -1.0f, newField); fflush(df); fclose(df); } }
+						  if (df) { fprintf(df, "[MP-CAP] mouse click -> field=%d locked=%d\n", g_capField, (int)g_capLocked); fflush(df); fclose(df); } }
 					}
 						// --- Backspace: 删除末尾字符 ---
 						else if (vk == VK_BACK) {
@@ -301,6 +281,8 @@ void MP_StartCapture() {
 	g_capAccount.clear();
 	g_capPassword.clear();
 	g_capField = 0;
+	g_capLocked = false;
+	g_lastClickY = -1;  // (reserved)
 	memset(g_prevKeys, 0, sizeof(g_prevKeys));
 
 	if (InterlockedCompareExchange(&g_captureRunning, 0, 0) == 0) {
@@ -340,6 +322,7 @@ void MP_ClearCred() {
 	g_capAccount.clear();
 	g_capPassword.clear();
 	g_capField = 0;
+	g_capLocked = false;
 	LeaveCriticalSection(&g_capCs);
 }
 
