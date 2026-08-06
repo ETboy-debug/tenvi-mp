@@ -1,7 +1,8 @@
 // MPClient.cpp - 客户端侧明文桥接 socket
-// [v39] Mouse click switches field by Y-delta; Tab toggles.
+// [v40] Mouse click: 1st click -> account, 2nd click -> password, 3rd+ ignored.
+//       Tab toggles both ways.
 //       键盘: 内核级查询, 绕过 DirectInput
-//       鼠标: 比较连续两次点击的 Y 坐标差, 判断点在账号框还是密码框
+//       鼠标: 按点击次数切字段, 不再依赖 Y 坐标差
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -127,9 +128,9 @@ static int      g_capField = 0;             // 当前输入字段: 0=账号 1=�
 static CRITICAL_SECTION g_capCs;            // 保护捕获缓冲区
 static bool     g_capCsReady = false;
 
-// [v39] Track previous click Y to detect account->password or password->account switch.
-static LONG     g_lastClickY = -1;          // 上一次鼠标点击的 Y 坐标(客户端坐标)
-static const int CLICK_Y_THRESHOLD = 30;    // 最小 Y 差阈值(px), 低于此值视为同字段点击
+// [v40] Track click count to switch fields. 1st click = account, 2nd click = password,
+//        3rd+ ignored (login button). Tab still toggles both ways.
+static int      g_clickCount = 0;           // 当前捕获周期内鼠标左键点击次数
 
 // 上一次的按键状态(用于检测边沿: 新按下)
 static BYTE g_prevKeys[256];
@@ -207,39 +208,21 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 						{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
 						  if (df) { fprintf(df, "[MP-CAP] Tab -> field=%d\n", newField); fflush(df); fclose(df); } }
 					}
-					// [v39] Mouse click: switch field by Y-delta from previous click.
+					// [v40] Mouse click: 1st click -> account, 2nd click -> password, 3rd+ ignored.
 					else if (vk == VK_LBUTTON) {
-						HWND hwnd = GetForegroundWindow();
-						int clickY = -1;
-						int clientH = 0;
-						if (hwnd) {
-							POINT pt;
-							GetCursorPos(&pt);
-							ScreenToClient(hwnd, &pt);
-							RECT rc;
-							GetClientRect(hwnd, &rc);
-							clickY = pt.y;
-							clientH = rc.bottom - rc.top;
-						}
 						EnterCriticalSection(&g_capCs);
+						g_clickCount++;
 						int newField = g_capField;
-						int loggedDy = 0;
-						if (clientH > 0 && clickY >= 0 && g_lastClickY >= 0) {
-							int threshold = (clientH / 20 > CLICK_Y_THRESHOLD) ? (clientH / 20) : CLICK_Y_THRESHOLD;
-							int dy = clickY - g_lastClickY;
-							loggedDy = dy;
-							if (dy > threshold && g_capField == 0) {
-								g_capField = 1;
-								newField = 1;
-							} else if (dy < -threshold && g_capField == 1) {
-								g_capField = 0;
-								newField = 0;
-							}
+						if (g_clickCount == 1) {
+							g_capField = 0;
+							newField = 0;
+						} else if (g_clickCount == 2) {
+							g_capField = 1;
+							newField = 1;
 						}
-						if (clickY >= 0) g_lastClickY = clickY;
 						LeaveCriticalSection(&g_capCs);
 						{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-						  if (df) { fprintf(df, "[MP-CAP] mouse click y=%d h=%d dy=%d -> field=%d\n", clickY, clientH, loggedDy, newField); fflush(df); fclose(df); } }
+						  if (df) { fprintf(df, "[MP-CAP] mouse click count=%d -> field=%d\n", g_clickCount, newField); fflush(df); fclose(df); } }
 					}
 						// --- Backspace: 删除末尾字符 ---
 						else if (vk == VK_BACK) {
@@ -306,7 +289,7 @@ void MP_StartCapture() {
 	g_capAccount.clear();
 	g_capPassword.clear();
 	g_capField = 0;
-	g_lastClickY = -1;
+	g_clickCount = 0;
 	memset(g_prevKeys, 0, sizeof(g_prevKeys));
 
 	if (InterlockedCompareExchange(&g_captureRunning, 0, 0) == 0) {
@@ -346,7 +329,7 @@ void MP_ClearCred() {
 	g_capAccount.clear();
 	g_capPassword.clear();
 	g_capField = 0;
-	g_lastClickY = -1;
+	g_clickCount = 0;
 	LeaveCriticalSection(&g_capCs);
 }
 
