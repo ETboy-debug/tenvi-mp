@@ -127,9 +127,10 @@ static int      g_capField = 0;             // 当前输入字段: 0=账号 1=�
 static CRITICAL_SECTION g_capCs;            // 保护捕获缓冲区
 static bool     g_capCsReady = false;
 
-// [v36] 字段切换: Ctrl+1(账号含)/Ctrl+2(密码)/Tab, 不再用鼠标Y坐标猜
-static LONG     g_lastClickY = -1;          // (保留占位, 避免改结构布局)
-static const int CLICK_Y_THRESHOLD = 30;    // (保留占位, 避免改结构布局)
+// [v38] One-way field switch: first Tab/click -> lock to password. 2nd Tab -> unlock back.
+static LONG     g_lastClickY = -1;          // (reserved)
+static const int CLICK_Y_THRESHOLD = 30;    // (reserved)
+static bool     g_capLocked = false;        // true = field locked after 1st switch
 
 // 上一次的按键状态(用于检测边沿: 新按下)
 static BYTE g_prevKeys[256];
@@ -198,21 +199,22 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 
 					// 只处理"新按下"的边沿(避免重复触发)
 					if (nowDown && !wasDown) {
-						// --- Tab: 切换账号/密码字段 ---
+						// --- [v38] Tab: first press locks to password, 2nd press unlocks back to account ---
 						if (vk == VK_TAB) {
 							EnterCriticalSection(&g_capCs);
-							g_capField = 1 - g_capField;
-							DEBUG(L"[MP-CAP] Tab -> field=%d", g_capField);
+							if (g_capLocked) { g_capField = 0; g_capLocked = false; }
+							else if (g_capField == 0) { g_capField = 1; g_capLocked = true; }
 							LeaveCriticalSection(&g_capCs);
+							{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+							  if (df) { fprintf(df, "[MP-CAP] Tab -> field=%d locked=%d\n", g_capField, (int)g_capLocked); fflush(df); fclose(df); } }
 						}
-					// [v37] Mouse click toggles field (same as Tab). No Y-guessing.
-					// User clicks account box -> types account -> clicks password box -> types password.
+					// [v38] Mouse click: first click locks to password. Subsequent clicks ignored while locked.
 					else if (vk == VK_LBUTTON) {
 						EnterCriticalSection(&g_capCs);
-						g_capField = 1 - g_capField;
+						if (!g_capLocked && g_capField == 0) { g_capField = 1; g_capLocked = true; }
 						LeaveCriticalSection(&g_capCs);
 						{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
-						  if (df) { fprintf(df, "[MP-CAP] mouse click -> field=%d (0=acc 1=pw)\n", g_capField); fflush(df); fclose(df); } }
+						  if (df) { fprintf(df, "[MP-CAP] mouse click -> field=%d locked=%d\n", g_capField, (int)g_capLocked); fflush(df); fclose(df); } }
 					}
 						// --- Backspace: 删除末尾字符 ---
 						else if (vk == VK_BACK) {
@@ -279,7 +281,8 @@ void MP_StartCapture() {
 	g_capAccount.clear();
 	g_capPassword.clear();
 	g_capField = 0;
-	g_lastClickY = -1;  // [v31] 重置鼠标点击基线
+	g_capLocked = false;
+	g_lastClickY = -1;  // (reserved)
 	memset(g_prevKeys, 0, sizeof(g_prevKeys));
 
 	if (InterlockedCompareExchange(&g_captureRunning, 0, 0) == 0) {
@@ -319,6 +322,7 @@ void MP_ClearCred() {
 	g_capAccount.clear();
 	g_capPassword.clear();
 	g_capField = 0;
+	g_capLocked = false;
 	LeaveCriticalSection(&g_capCs);
 }
 
