@@ -205,11 +205,10 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 							DEBUG(L"[MP-CAP] Tab -> field=%d", g_capField);
 							LeaveCriticalSection(&g_capCs);
 						}
-					// --- [v36] 字段切换: Ctrl+1=账号(0) Ctrl+2=密码(1), Tab=轮流 ---
-					// 旧版(v34/v35)鼠标Y坐标猜框, 不同窗口大小/分辨率阈值全错,
-					// 导致账号输到密码/密码输到账号。v36 去掉鼠标猜测,
-					// 改为快捷键 + Tab, 100% 确定。
-					// --- Ctrl+1: 强制切到账号框 ---
+					// [v36] field switch: Ctrl+1=account, Ctrl+2=password, Tab=toggle
+					// v34/v35 mouse Y-guess failed at different resolutions/window sizes.
+					// Now uses deterministic hotkeys instead of mouse coordinate guessing.
+					// --- Ctrl+1: force account field ---
 					else if (vk == '1' && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
 						EnterCriticalSection(&g_capCs);
 						g_capField = 0;
@@ -217,7 +216,7 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 						{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
 						  if (df) { fprintf(df, "[MP-CAP] Ctrl+1 -> field=0 (account)\n"); fflush(df); fclose(df); } }
 					}
-					// --- Ctrl+2: 强制切到密码框 ---
+					// --- Ctrl+2: force password field ---
 					else if (vk == '2' && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
 						EnterCriticalSection(&g_capCs);
 						g_capField = 1;
@@ -225,7 +224,7 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 						{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
 						  if (df) { fprintf(df, "[MP-CAP] Ctrl+2 -> field=1 (password)\n"); fflush(df); fclose(df); } }
 					}
-					// --- 鼠标左键: 只记诊断, 不切换字段 ---
+					// --- mouse LButton: log only, no field switch ---
 					else if (vk == VK_LBUTTON) {
 						POINT pt = {};
 						GetCursorPos(&pt);
