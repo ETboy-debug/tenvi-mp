@@ -248,7 +248,7 @@ void ChangeMapPacket(WORD mapid, float x = 0, float y = 0) {
 }
 
 // 0x11
-void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, int target_sid = -1) {
+void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, int target_sid = -1, bool context = true) {
 	ServerPacket sp(SP_CHARACTER_SPAWN);
 	sp.Encode4(chr.id); // 0048DB9B id, where checks id?
 	sp.EncodeFloat(x); // 0048DBA5, coordinate x
@@ -344,7 +344,10 @@ void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, int tar
 		sp.Encode1(0);
 	}
 
-	if (target_sid < 0) SendPacket(sp);
+	if (target_sid < 0) {
+		if (context) SendPacket(sp);
+		else SendPacket2(sp);
+	}
 	else MP_BroadcastToSid(target_sid, sp);
 }
 
@@ -881,15 +884,12 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 	MP_MARK("ChangeMap after players-table insert");
 	{
 		std::lock_guard<std::mutex> lk(g_playersMtx);
-		printf("[TenviServer] [MP] ChangeMap broadcast: me=%d map=%d total_players=%d\n", t_sid, (int)chr.map, (int)g_players.size());
 		for (auto &kv : g_players) {
 			int other_sid = kv.first;
 			RemotePlayer &other = kv.second;
-			printf("[TenviServer] [MP]   player sid=%d map=%d\n", other_sid, (int)other.map);
 			if (other_sid == t_sid) continue;
 			if (other.map != chr.map) continue;
-			printf("[TenviServer] [MP]   -> spawn each other between sid=%d and sid=%d\n", t_sid, other_sid);
-			CharacterSpawnPacket(other.chr, other.x, other.y);   // 自己看到别人
+			CharacterSpawnPacket(other.chr, other.x, other.y, -1, false);   // 自己看到别人 (CField)
 			CharacterSpawnPacket(chr, x, y, other_sid);          // 别人看到自己
 		}
 	}
