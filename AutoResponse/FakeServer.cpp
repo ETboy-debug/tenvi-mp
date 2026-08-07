@@ -348,9 +348,11 @@ void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, int tar
 		if (context) SendPacket(sp);
 		else SendPacket2(sp);
 	}
-	// [v50] A character spawn delivered to ANOTHER client is, from that
-	// client's point of view, always a remote player -> force CField.
-	else MP_BroadcastToSid(target_sid, sp, false);
+	// [v54] v50 forced remote spawns to CField (ctx=0), but the CN client
+	// only renders op=0x11 via CWvsContext (ctx=1) - same as monsters/NPCs.
+	// Self spawn renders fine with ctx=1; remote spawns were invisible with
+	// ctx=0. So route remote 0x11 through CWvsContext too.
+	else MP_BroadcastToSid(target_sid, sp, true);
 }
 
 // 0x12
@@ -894,7 +896,7 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			RemotePlayer &other = kv.second;
 			if (other_sid == t_sid) continue;
 			if (other.map != chr.map) continue;
-			CharacterSpawnPacket(other.chr, other.x, other.y, -1, false);   // 自己看到别人 (CField)
+			CharacterSpawnPacket(other.chr, other.x, other.y, -1, true);   // 自己看到别人 (ctx=1 CWvsContext)
 			CharacterSpawnPacket(chr, x, y, other_sid);          // 别人看到自己
 		}
 	}
