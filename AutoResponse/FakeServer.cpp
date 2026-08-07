@@ -3,8 +3,6 @@
 #include"TemporaryData.h"
 #include <mutex>
 #include <map>
-#include <thread>
-#include <chrono>
 
 #ifdef MP_SERVER
 #include "../StandaloneServer/db.h"
@@ -938,44 +936,9 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 #endif
 	CharacterSpawnPacket(chr, x, y);
 	MP_MARK("ChangeMap after self CharacterSpawnPacket");
-#ifdef MP_SERVER
-	// [v54l] 延迟重发场景给"后进图者"(t_client): v54h 证明双向可行, 但立即重发
-	// (ChangeMap 流程内) 崩溃, self-spawn 后立即重发 卡死. 现在改为: ChangeMap
-	// 完全结束并 self spawn 之后, 启动延迟线程 800ms 再重发完整场景, 让 t_client
-	// 的"接收新玩家窗口"重新打开, 从而渲染同图其他人. 800ms 足够客户端消化
-	// 自己的 ChangeMap, 又不会打断它的状态.
-	{
-		std::vector<RemotePlayer> others;
-		{
-			std::lock_guard<std::mutex> lk(g_playersMtx);
-			for (auto &kv : g_players) {
-				int other_sid = kv.first;
-				RemotePlayer &other = kv.second;
-				if (other_sid == t_sid) continue;
-				if (other.map != chr.map) continue;
-				others.push_back(other);
-			}
-		}
-		if (!others.empty()) {
-			int my_sid = t_sid;   // [v54l] thread_local 不能跨线程, 先拷贝
-			TenviCharacter *p_my = new TenviCharacter(chr);  // [v54l] 堆拷贝, 指针捕获避免 const 问题
-			std::thread([others, p_my, x, y, my_sid]() {
-				std::this_thread::sleep_for(std::chrono::milliseconds(3000));   // [v54m] 从 800ms 改 3s, 等 t_client 完全消化完所有包
-				for (auto &other : others) {
-					TenviCharacter *p_other = new TenviCharacter(other.chr);  // 非 const 堆拷贝
-					ChangeMapPacket(other.map, x, y, my_sid);   // 重开 t_client 换图窗口
-					SpawnObjects(*p_other, other.map, my_sid);  // 重发怪物/NPC
-					AccountDataPacket(*p_other, my_sid);        // 对方自己的账户(重建)
-					CharacterSpawnPacket(*p_other, other.x, other.y, my_sid);  // 对方自己出生
-					AccountDataPacket(*p_my, my_sid);           // 自己的账户
-					CharacterSpawnPacket(*p_my, x, y, my_sid);  // 自己出生
-					delete p_other;
-				}
-				delete p_my;
-			}).detach();
-		}
-	}
-#endif
+	// [v54n] 撤销 v54l 延迟重发场景 -- 客户端 ChangeMap 流程只在登录/进图时执行,
+	// 稳定后再次 ChangeMap 必然崩(缺 Board/InitSkill 等配套包), 无论延迟多久.
+	// 接受"后进者看不到先进者"这个历史坑(里程碑 2 单边互见 = 先进看后进).
 	MP_MARK("ChangeMap exit");
 }
 
