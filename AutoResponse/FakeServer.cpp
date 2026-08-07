@@ -231,7 +231,11 @@ void MapResetPacket() {
 }
 
 // 0x10
-void ChangeMapPacket(WORD mapid, float x = 0, float y = 0) {
+// [v54c] target_sid >= 0: re-broadcast this map-change to a SPECIFIC client
+// (re-opens its "accepting new players" window). The CN client only creates
+// remote character objects while its own ChangeMap flow is running; once it
+// finishes, later 0x11 spawns are silently dropped (0x48DCEF/0x48DD03).
+void ChangeMapPacket(WORD mapid, float x = 0, float y = 0, int target_sid = -1) {
 	ServerPacket sp(SP_MAP_CHANGE);
 	sp.Encode1(0); // error code = 37
 	sp.Encode2(mapid); // mapid
@@ -244,7 +248,8 @@ void ChangeMapPacket(WORD mapid, float x = 0, float y = 0) {
 	sp.Encode1(0); // disable item shop and park
 	sp.Encode1(0);
 	sp.Encode4(0);
-	SendPacket(sp);
+	if (target_sid < 0) SendPacket(sp);
+	else MP_BroadcastToSid(target_sid, sp, true);
 }
 
 // 0x11
@@ -367,7 +372,9 @@ void RemoveObjectPacket(DWORD object_id, int target_sid = -1) {
 }
 
 // 0x14
-void CreateObjectPacket(TenviRegen &regen) {
+// [v54c] target_sid >= 0: send to a SPECIFIC client (used when re-broadcasting
+// the full scene to re-open a player's ChangeMap window).
+void CreateObjectPacket(TenviRegen &regen, int target_sid = -1) {
 	ServerPacket sp(SP_CREATE_OBJECT);
 	sp.Encode4(regen.id);
 	sp.Encode2(regen.object.id); // npc, mob id
@@ -406,15 +413,17 @@ void CreateObjectPacket(TenviRegen &regen) {
 	if (GetRegion() != TENVI_JP) {
 		sp.Encode1(0);
 	}
-	SendPacket(sp);
+	if (target_sid < 0) SendPacket(sp);
+	else MP_BroadcastToSid(target_sid, sp, true);
 }
 
 // 0x20
-void ActivateObjectPacket(TenviRegen &regen) {
+void ActivateObjectPacket(TenviRegen &regen, int target_sid = -1) {
 	ServerPacket sp(SP_ACTIVATE_OBJECT);
 	sp.Encode4(regen.id);
 	sp.Encode1(3); // 1 = fade in, 2 = !, 3 = walk, 4 = dash
-	SendPacket(sp);
+	if (target_sid < 0) SendPacket(sp);
+	else MP_BroadcastToSid(target_sid, sp, true);
 }
 
 // 0x21
@@ -436,7 +445,7 @@ void HitPacket(DWORD hit_from, DWORD hit_to) {
 }
 
 // 0x23
-void ShowObjectPacket(TenviRegen &regen) {
+void ShowObjectPacket(TenviRegen &regen, int target_sid = -1) {
 	ServerPacket sp(SP_SHOW_OBJECT);
 	sp.Encode4(regen.id);
 	sp.Encode1(1);
@@ -444,7 +453,8 @@ void ShowObjectPacket(TenviRegen &regen) {
 	sp.Encode2(0);
 	sp.EncodeFloat(regen.area.left);
 	sp.EncodeFloat(regen.area.bottom);
-	SendPacket(sp);
+	if (target_sid < 0) SendPacket(sp);
+	else MP_BroadcastToSid(target_sid, sp, true);
 }
 
 // 0x3C
@@ -812,14 +822,14 @@ void NPCTalkPacket(DWORD npc_id, std::wstring text) {
 
 // ========== Functions ==================
 
-void SpawnObjects(TenviCharacter &chr, WORD map_id) {
+void SpawnObjects(TenviCharacter &chr, WORD map_id, int target_sid = -1) {
 	MP_MARK("SpawnObjects before get_map");
 	std::vector<TenviRegen> &regens = tenvi_data.get_map(map_id)->GetRegen();
 	MP_MARK("SpawnObjects after get_map");
 	for (auto &regen : regens) {
-		CreateObjectPacket(regen);
-		ShowObjectPacket(regen);
-		ActivateObjectPacket(regen);
+		CreateObjectPacket(regen, target_sid);
+		ShowObjectPacket(regen, target_sid);
+		ActivateObjectPacket(regen, target_sid);
 	}
 	MP_MARK("SpawnObjects loop done");
 }
@@ -912,6 +922,14 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			// spawn -> remote players were silently dropped.
 			AccountDataPacket(other.chr);                        // 自己看到别人: 先给对方建角色对象
 			CharacterSpawnPacket(other.chr, other.x, other.y, -1, true);   // 自己看到别人 (ctx=1 CWvsContext)
+			// [v54c] 别人看到自己: 先进图者的 ChangeMap 流程早已结束, 客户端
+			// 0x11 handler(0x48DCEF/0x48DD03) 只接受"窗口期内"的新角色对象,
+			// 直接发 0x3D+0x11 会被静默丢弃. 解决: 给对方重发一次完整场景
+			// (换图+怪物+自己出生), 让它的"接收新玩家窗口"重新打开, 再发自己.
+			ChangeMapPacket(chr.map, other.x, other.y, other_sid);   // 重开对方换图窗口
+			SpawnObjects(chr, chr.map, other_sid);                  // 重发怪物/NPC
+			AccountDataPacket(other.chr, other_sid);                // 对方自己的账户数据(重建)
+			CharacterSpawnPacket(other.chr, other.x, other.y, other_sid);  // 对方自己出生
 			AccountDataPacket(chr, other_sid);                   // 别人看到自己: 先给自己建角色对象
 			CharacterSpawnPacket(chr, x, y, other_sid);          // 别人看到自己
 		}
