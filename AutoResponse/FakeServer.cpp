@@ -958,15 +958,17 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 		}
 		if (!others.empty()) {
 			int my_sid = t_sid;   // [v54l] thread_local 不能跨线程, 先拷贝
-			std::thread([others, chr, x, y, my_sid]() {
+			TenviCharacter my_chr = chr;   // [v54l] 拷贝非 const 副本供 lambda 使用
+			std::thread([others, my_chr, x, y, my_sid]() {
 				std::this_thread::sleep_for(std::chrono::milliseconds(800));
 				for (auto &other : others) {
+					TenviCharacter o_chr = other.chr;  // [v54l] 非 const 副本
 					ChangeMapPacket(other.map, x, y, my_sid);   // 重开 t_client 换图窗口
-					SpawnObjects(other.chr, other.map, my_sid);  // 重发怪物/NPC
-					AccountDataPacket(other.chr, my_sid);        // 对方自己的账户(重建)
-					CharacterSpawnPacket(other.chr, other.x, other.y, my_sid);  // 对方自己出生
-					AccountDataPacket(chr, my_sid);             // 自己的账户
-					CharacterSpawnPacket(chr, x, y, my_sid);    // 自己出生
+					SpawnObjects(o_chr, other.map, my_sid);  // 重发怪物/NPC
+					AccountDataPacket(o_chr, my_sid);        // 对方自己的账户(重建)
+					CharacterSpawnPacket(o_chr, other.x, other.y, my_sid);  // 对方自己出生
+					AccountDataPacket(my_chr, my_sid);       // 自己的账户
+					CharacterSpawnPacket(my_chr, x, y, my_sid);  // 自己出生
 				}
 			}).detach();
 		}
