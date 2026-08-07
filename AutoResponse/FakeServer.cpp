@@ -3,6 +3,8 @@
 #include"TemporaryData.h"
 #include <mutex>
 #include <map>
+#include <thread>
+#include <chrono>
 
 #ifdef MP_SERVER
 #include "../StandaloneServer/db.h"
@@ -936,9 +938,40 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 #endif
 	CharacterSpawnPacket(chr, x, y);
 	MP_MARK("ChangeMap after self CharacterSpawnPacket");
-	// [v54k] 回滚 v54i 的双向重发场景 -- 它导致后进图者 self spawn 完成后
-	// 又被重发的 0x10 清空场景,角色卡死. 改为 v54c 单边(只对 other_sid 重发),
-	// 接受"后进者看不到先进者"这个历史坑,做里程碑 2.2 移动同步,互见完整留作里程碑 3.
+#ifdef MP_SERVER
+	// [v54l] 延迟重发场景给"后进图者"(t_client): v54h 证明双向可行, 但立即重发
+	// (ChangeMap 流程内) 崩溃, self-spawn 后立即重发 卡死. 现在改为: ChangeMap
+	// 完全结束并 self spawn 之后, 启动延迟线程 800ms 再重发完整场景, 让 t_client
+	// 的"接收新玩家窗口"重新打开, 从而渲染同图其他人. 800ms 足够客户端消化
+	// 自己的 ChangeMap, 又不会打断它的状态.
+	{
+		std::vector<RemotePlayer> others;
+		{
+			std::lock_guard<std::mutex> lk(g_playersMtx);
+			for (auto &kv : g_players) {
+				int other_sid = kv.first;
+				RemotePlayer &other = kv.second;
+				if (other_sid == t_sid) continue;
+				if (other.map != chr.map) continue;
+				others.push_back(other);
+			}
+		}
+		if (!others.empty()) {
+			int my_sid = t_sid;   // [v54l] thread_local 不能跨线程, 先拷贝
+			std::thread([others, chr, x, y, my_sid]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(800));
+				for (auto &other : others) {
+					ChangeMapPacket(other.map, x, y, my_sid);   // 重开 t_client 换图窗口
+					SpawnObjects(other.chr, other.map, my_sid);  // 重发怪物/NPC
+					AccountDataPacket(other.chr, my_sid);        // 对方自己的账户(重建)
+					CharacterSpawnPacket(other.chr, other.x, other.y, my_sid);  // 对方自己出生
+					AccountDataPacket(chr, my_sid);             // 自己的账户
+					CharacterSpawnPacket(chr, x, y, my_sid);    // 自己出生
+				}
+			}).detach();
+		}
+	}
+#endif
 	MP_MARK("ChangeMap exit");
 }
 
