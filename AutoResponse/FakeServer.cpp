@@ -1027,7 +1027,7 @@ bool FakeServer(ClientPacket &cp) {
 				InitSkillPacket(chr);
 				MP_MARK("GAME_START before SetMap");
 
-				SetMap(chr, chr.map);
+				SetMap(chr, 8003);   // [v54d] 强制出生在魔法密林, 避免 db 残留地图导致双开不同图
 				MP_MARK("GAME_START after SetMap");
 				BoardPacket(Board_Spawn, L"Riremito", L"Tenvi JP v127");
 				BoardPacket(Board_AddInfo, L"Riremito", L"Tenvi JP v127");
