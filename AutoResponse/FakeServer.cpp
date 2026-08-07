@@ -857,6 +857,37 @@ void MP_RemovePlayer(int sid) {
 void MP_RemovePlayer(int) {}
 #endif
 
+#ifdef MP_SERVER
+// [v55] 移动同步: 把客户端发出的移动包(0x0C)原样广播给同图其他玩家.
+// 接收方(先进图者)客户端里对方对象已存在(v54c 重发场景创建), 移动包走
+// ctx=1(CWvsContext) 注入后能让对方角色动起来. 包体原样转发(含 opcode).
+void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
+	WORD my_map = 0;
+	{
+		std::lock_guard<std::mutex> lk(g_playersMtx);
+		auto it = g_players.find(t_sid);
+		if (it == g_players.end()) return;
+		my_map = it->second.map;
+	}
+	std::vector<int> targets;
+	{
+		std::lock_guard<std::mutex> lk(g_playersMtx);
+		for (auto &kv : g_players) {
+			if (kv.first == t_sid) continue;
+			if (kv.second.map == my_map) targets.push_back(kv.first);
+		}
+	}
+	if (targets.empty()) return;
+	ServerPacket sp;
+	sp.Raw(pkt, len);
+	for (int sid : targets) {
+		MP_BroadcastToSid(sid, sp, true);
+	}
+}
+#else
+void MP_ForwardToSameMap(const BYTE *, DWORD) {}
+#endif
+
 #ifndef MP_SERVER
 // [MP] dll 侧无其它连接, 跨连接广播为空操作(符号需存在供链接)
 void MP_BroadcastToSid(int sid, ServerPacket &sp, bool context) {}
