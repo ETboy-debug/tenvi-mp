@@ -384,18 +384,13 @@ bool AutoResponseHook() {
 		r.Patch(0x00494898, L"33 C0 90 90 90");
 		r.Patch(0x00494901, L"33 C0 90 90 90");
 
-		// [v54d] 互见修复: 客户端 0x3D/0x11 handler 拒绝"非本地角色"的远程玩家出生.
-		// 逆向确认(0x48DCBC 0x11 handler / 0x498E21 0x3D handler):
-		//   0x48DD03: je 0x48dd4c  -- 0x11 spawn 里"非本地角色"直接跳过渲染
-		//   0x498EA1: je 0x498ecb  -- 0x3D account-data 里"非本地角色"跳过加入场景
-		// 两个 je 都改成 NOP, 让远程角色也走渲染路径.
+		// [v54d→v54g] 互见修复演进:
+		//   0x48DD03: je 0x48dd4c -- 0x11 spawn 里"非本地角色"跳过渲染 → NOP
+		//   [v54g] 撤销 v54d/v54f 对 0x498EA1 和 0x498ECE 的 patch!
+		//   实测(v54b, 无任何patch)证明: 后进图者用原始代码就能渲染先进图者,
+		//   0x45adeb 不是销毁对象而是设置归属字段. 我之前的 patch 反而破坏了
+		//   "后进图者→先进图者"方向. 只保留 0x48DD03 的 NOP.
 		r.Patch(0x0048DD03, L"90 90");   // 0x11 handler: 非本地角色也渲染
-		r.Patch(0x00498EA1, L"90 90");   // 0x3D handler: 非本地角色也加入场景
-		// [v54f] 0x3D handler 尾段 0x498ECE call 0x45adeb 会把刚加入场景的
-		// 角色对象"地图归属"清掉(0x45adeb 设置 [obj+0x2bc/0x2b8]=0), 导致 0x11
-		// 到达时 0x42ac5c 查不到对象 → 0x48DCEF 拒绝. 把该 call NOP 掉,
-		// 让对象保留在场景容器中.
-		r.Patch(0x00498ECE, L"90 90 90 90 90");   // call 0x45adeb -> NOP
 
 		Addr_OnPacketClass2 = 0x006FAF70;
 		Addr_OnPacket2 = 0x004CBE34;
