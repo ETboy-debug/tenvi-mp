@@ -920,16 +920,9 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			// the CN client creates the character object from 0x3D and ignores
 			// any spawn whose oid is not a known object. v50-v54 sent only the
 			// spawn -> remote players were silently dropped.
-			// [v54h] "自己看到别人"也对称重发场景: 后进图者的客户端 ChangeMap
-			// 流程内虽然能接收,但 0x3D handler(0x42acdd)是纯查找不创建,对方对象
-			// 始终不存在;通过重发完整场景让 t_client 也重新走 ChangeMap 窗口
-			// (后进图者会闪屏一下但能正常渲染对方).
-			ChangeMapPacket(other.map, chr.x, chr.y, -1);              // 重开 t_client 窗口
-			SpawnObjects(other.chr, other.map, -1);                    // 重发怪物
-			AccountDataPacket(other.chr);                              // other 自己的账户(重建)
-			CharacterSpawnPacket(other.chr, other.x, other.y, -1, true); // other 自己出生
-			AccountDataPacket(chr);                                    // chr 自己的账户
-			CharacterSpawnPacket(chr, x, y, -1, true);                 // chr 出生(对方视角)
+			// [v54i] "自己看到别人"重发场景**移到 self spawn 之后**(原 v54h 放在
+			// 这里时,与 t_client 自己的 ChangeMap 流程冲突→崩溃). 改为在 ChangeMap
+			// 函数末尾 self spawn 之后发,此时 t_client 自己的 ChangeMap 已完成.
 			// [v54c] "别人看到自己": 给 other_sid 重发场景
 			ChangeMapPacket(chr.map, other.x, other.y, other_sid);   // 重开对方换图窗口
 			SpawnObjects(chr, chr.map, other_sid);                  // 重发怪物/NPC
@@ -943,6 +936,22 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 #endif
 	CharacterSpawnPacket(chr, x, y);
 	MP_MARK("ChangeMap after self CharacterSpawnPacket");
+#ifdef MP_SERVER
+	// [v54i] t_client 自己的 ChangeMap 已完成,现在发"重发场景"让它重新走流程
+	// 渲染 other 玩家(窗口重开). 这样 both 方向都能看到对方,且不冲突不崩.
+	for (auto &kv : g_players) {
+		int other_sid = kv.first;
+		RemotePlayer &other = kv.second;
+		if (other_sid == t_sid) continue;
+		if (other.map != chr.map) continue;
+		ChangeMapPacket(other.map, chr.x, chr.y, -1);
+		SpawnObjects(other.chr, other.map, -1);
+		AccountDataPacket(other.chr);
+		CharacterSpawnPacket(other.chr, other.x, other.y, -1, true);
+		AccountDataPacket(chr);
+		CharacterSpawnPacket(chr, x, y, -1, true);
+	}
+#endif
 	MP_MARK("ChangeMap exit");
 }
 
