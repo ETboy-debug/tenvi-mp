@@ -361,14 +361,14 @@ void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, int tar
 }
 
 // 0x12
+// [v54j] 0x12 移除改走 ctx=1(CWvsContext), 与 0x11 出生同层!
+// v50 起 0x12 走 CField(ctx=0), 但互见修复后 0x11 走 CWvsContext 渲染,
+// 移除层与渲染层不一致 → 客户端不认 0x12 → 下线后对方还显示.
 void RemoveObjectPacket(DWORD object_id, int target_sid = -1) {
 	ServerPacket sp(SP_REMOVE_OBJECT);
 	sp.Encode4(object_id); // not only for character
-	// [v50] Object removal always targets CField (remote players, monsters,
-	// map objects). Until v49 the DLL hardcoded ctx=false for opcode 0x12;
-	// now that routing is server-driven, the server must say so explicitly.
-	if (target_sid < 0) SendPacket2(sp);
-	else MP_BroadcastToSid(target_sid, sp, false);
+	if (target_sid < 0) SendPacket(sp);
+	else MP_BroadcastToSid(target_sid, sp, true);
 }
 
 // 0x14
@@ -1026,6 +1026,20 @@ bool FakeServer(ClientPacket &cp) {
 
 		TA.Login(character_id);
 		MP_MARK("GAME_START after Login");
+
+#ifdef MP_SERVER
+		// [v54j] 防重复登录: 同一角色 id 已在 g_players 在线表里 → 拒绝
+		{
+			std::lock_guard<std::mutex> lk(g_playersMtx);
+			for (auto &kv : g_players) {
+				if (kv.second.char_id == character_id) {
+					printf("[TenviServer] DUP-LOGIN char_id=%u already online (sid=%d), reject\n",
+						character_id, kv.first);
+					return false;
+				}
+			}
+		}
+#endif
 
 		for (auto &chr : TA.GetCharacters()) {
 			if (chr.id == character_id) {
