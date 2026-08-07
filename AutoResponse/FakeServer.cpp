@@ -920,12 +920,17 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			// the CN client creates the character object from 0x3D and ignores
 			// any spawn whose oid is not a known object. v50-v54 sent only the
 			// spawn -> remote players were silently dropped.
-			AccountDataPacket(other.chr);                        // 自己看到别人: 先给对方建角色对象
-			CharacterSpawnPacket(other.chr, other.x, other.y, -1, true);   // 自己看到别人 (ctx=1 CWvsContext)
-			// [v54c] 别人看到自己: 先进图者的 ChangeMap 流程早已结束, 客户端
-			// 0x11 handler(0x48DCEF/0x48DD03) 只接受"窗口期内"的新角色对象,
-			// 直接发 0x3D+0x11 会被静默丢弃. 解决: 给对方重发一次完整场景
-			// (换图+怪物+自己出生), 让它的"接收新玩家窗口"重新打开, 再发自己.
+			// [v54h] "自己看到别人"也对称重发场景: 后进图者的客户端 ChangeMap
+			// 流程内虽然能接收,但 0x3D handler(0x42acdd)是纯查找不创建,对方对象
+			// 始终不存在;通过重发完整场景让 t_client 也重新走 ChangeMap 窗口
+			// (后进图者会闪屏一下但能正常渲染对方).
+			ChangeMapPacket(other.map, chr.x, chr.y, -1);              // 重开 t_client 窗口
+			SpawnObjects(other.chr, other.map, -1);                    // 重发怪物
+			AccountDataPacket(other.chr);                              // other 自己的账户(重建)
+			CharacterSpawnPacket(other.chr, other.x, other.y, -1, true); // other 自己出生
+			AccountDataPacket(chr);                                    // chr 自己的账户
+			CharacterSpawnPacket(chr, x, y, -1, true);                 // chr 出生(对方视角)
+			// [v54c] "别人看到自己": 给 other_sid 重发场景
 			ChangeMapPacket(chr.map, other.x, other.y, other_sid);   // 重开对方换图窗口
 			SpawnObjects(chr, chr.map, other_sid);                  // 重发怪物/NPC
 			AccountDataPacket(other.chr, other_sid);                // 对方自己的账户数据(重建)
