@@ -667,8 +667,7 @@ void PlayerStatPacket(TenviCharacter &chr) {
 	}
 
 
-	if (target_sid < 0) SendPacket(sp);
-	else MP_BroadcastToSid(target_sid, sp, true);
+	SendPacket(sp);
 }
 
 // 0x4A
