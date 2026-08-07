@@ -70,7 +70,8 @@ public:
 	ServerPacket() {}   // [v55] 空构造, 配合 Raw() 转发原始包
 
 	std::vector<BYTE>& get();
-	void Raw(const BYTE *data, DWORD len);   // [v55] 直接塞原始包体(不解析)
+	// [v55] 直接塞原始包体(不解析). 内联实现避免增量构建缓存旧 obj 导致链接失败
+	inline void Raw(const BYTE *data, DWORD len) { packet.assign(data, data + len); }
 	void Encode1(BYTE val);
 	void Encode2(WORD val);
 	void Encode4(DWORD val);
