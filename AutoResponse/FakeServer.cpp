@@ -462,7 +462,12 @@ void InMapTeleportPacket(TenviCharacter &chr) {
 }
 
 // 0x3D
-void AccountDataPacket(TenviCharacter &chr) {
+// [v54b] target_sid >= 0: send this account data to a SPECIFIC remote client
+// (via MP_BroadcastToSid) instead of the current one. The CN client only
+// renders a 0x11 spawn if it can find the character object; that object is
+// created by 0x3D. Broadcasting only the spawn (v50-v54) left the remote
+// character unknown -> silently dropped. Now we send 0x3D + 0x11 together.
+void AccountDataPacket(TenviCharacter &chr, int target_sid = -1) {
 	ServerPacket sp(SP_ACCOUNT_DATA);
 	sp.Encode4(0); // 00498E4F, ???
 	sp.Encode4(chr.id); // 00498E5C, character id
@@ -541,7 +546,12 @@ void AccountDataPacket(TenviCharacter &chr) {
 		sp.Encode1(0);
 	}
 
-	SendPacket(sp);
+	// [v54b] 0x3D creates the character object client-side. When we broadcast
+	// a REMOTE player's spawn we must deliver its 0x3D first (targeted at the
+	// receiving client), otherwise the client has no object for the spawn oid
+	// and silently ignores it.
+	if (target_sid < 0) SendPacket(sp);
+	else MP_BroadcastToSid(target_sid, sp, true);
 }
 
 // 0x41
@@ -896,7 +906,13 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			RemotePlayer &other = kv.second;
 			if (other_sid == t_sid) continue;
 			if (other.map != chr.map) continue;
+			// [v54b] 0x3D must reach the receiving client BEFORE the 0x11 spawn:
+			// the CN client creates the character object from 0x3D and ignores
+			// any spawn whose oid is not a known object. v50-v54 sent only the
+			// spawn -> remote players were silently dropped.
+			AccountDataPacket(other.chr);                        // 自己看到别人: 先给对方建角色对象
 			CharacterSpawnPacket(other.chr, other.x, other.y, -1, true);   // 自己看到别人 (ctx=1 CWvsContext)
+			AccountDataPacket(chr, other_sid);                   // 别人看到自己: 先给自己建角色对象
 			CharacterSpawnPacket(chr, x, y, other_sid);          // 别人看到自己
 		}
 	}
