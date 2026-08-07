@@ -384,6 +384,14 @@ bool AutoResponseHook() {
 		r.Patch(0x00494898, L"33 C0 90 90 90");
 		r.Patch(0x00494901, L"33 C0 90 90 90");
 
+		// [v54d] 互见修复: 客户端 0x3D/0x11 handler 拒绝"非本地角色"的远程玩家出生.
+		// 逆向确认(0x48DCBC 0x11 handler / 0x498E21 0x3D handler):
+		//   0x48DD03: je 0x48dd4c  -- 0x11 spawn 里"非本地角色"直接跳过渲染
+		//   0x498EA1: je 0x498ecb  -- 0x3D account-data 里"非本地角色"跳过加入场景
+		// 两个 je 都改成 NOP, 让远程角色也走渲染路径.
+		r.Patch(0x0048DD03, L"90 90");   // 0x11 handler: 非本地角色也渲染
+		r.Patch(0x00498EA1, L"90 90");   // 0x3D handler: 非本地角色也加入场景
+
 		Addr_OnPacketClass2 = 0x006FAF70;
 		Addr_OnPacket2 = 0x004CBE34;
 
