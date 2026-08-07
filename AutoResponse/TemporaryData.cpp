@@ -21,7 +21,9 @@ TenviCharacter::TenviCharacter(std::wstring nName, BYTE nJob_Mask, WORD nJob, WO
 	equipped.resize(15);
 	gequipped = nGEquipped;
 	gequipped.resize(15);
-	map = 2002;
+	// [v54] 新角色默认出生在魔法密林(8003), 之前是 2002(要塞外围地带),
+	// 用户实测新角色不在预期地图, 故改回 8003.
+	map = 8003;
 	map_return = 0;
 	// [FIX] 新角色默认 1 级、0 技能点 0 属性点, 一级小号起步(原值是测试模式 30级满点)
 	level = 1;
