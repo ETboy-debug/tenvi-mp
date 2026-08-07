@@ -23,6 +23,8 @@ extern thread_local int t_sid;
 // true -> CWvsContext, false -> CField (remote players / objects).
 void MP_BroadcastToSid(int sid, ServerPacket &sp, bool context = true);
 void MP_RemovePlayer(int sid);
+// [v55] 把客户端发出的游戏包(移动 0x0C 等)原样转发给同图其他玩家
+void MP_ForwardToSameMap(const BYTE *pkt, DWORD len);
 
 // test
 void WorldListPacket();
