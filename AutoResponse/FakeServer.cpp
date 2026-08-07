@@ -960,7 +960,7 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			int my_sid = t_sid;   // [v54l] thread_local 不能跨线程, 先拷贝
 			TenviCharacter *p_my = new TenviCharacter(chr);  // [v54l] 堆拷贝, 指针捕获避免 const 问题
 			std::thread([others, p_my, x, y, my_sid]() {
-				std::this_thread::sleep_for(std::chrono::milliseconds(800));
+				std::this_thread::sleep_for(std::chrono::milliseconds(3000));   // [v54m] 从 800ms 改 3s, 等 t_client 完全消化完所有包
 				for (auto &other : others) {
 					TenviCharacter *p_other = new TenviCharacter(other.chr);  // 非 const 堆拷贝
 					ChangeMapPacket(other.map, x, y, my_sid);   // 重开 t_client 换图窗口
