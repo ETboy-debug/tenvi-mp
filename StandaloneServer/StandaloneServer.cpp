@@ -451,6 +451,8 @@ static void HandlePayload(const BYTE *p, DWORD n) {
 	}
 	// [v55] 移动同步: 客户端发出的 0x0C 移动包原样转发给同图其他人
 	if (p[1] == 0x0C) {
+		DWORD oid = (n >= 6) ? *(DWORD *)(p + 2) : 0;
+		printf("[MP-HDL] 0x0C from sid=%d len=%d oid=%08X\n", (int)t_sid, (int)(n - 1), (unsigned)oid);
 		MP_ForwardToSameMap(p + 1, n - 1);
 	}
 	if (t_recvCount < g_dump) {
