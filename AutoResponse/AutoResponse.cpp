@@ -391,6 +391,11 @@ bool AutoResponseHook() {
 		// 两个 je 都改成 NOP, 让远程角色也走渲染路径.
 		r.Patch(0x0048DD03, L"90 90");   // 0x11 handler: 非本地角色也渲染
 		r.Patch(0x00498EA1, L"90 90");   // 0x3D handler: 非本地角色也加入场景
+		// [v54f] 0x3D handler 尾段 0x498ECE call 0x45adeb 会把刚加入场景的
+		// 角色对象"地图归属"清掉(0x45adeb 设置 [obj+0x2bc/0x2b8]=0), 导致 0x11
+		// 到达时 0x42ac5c 查不到对象 → 0x48DCEF 拒绝. 把该 call NOP 掉,
+		// 让对象保留在场景容器中.
+		r.Patch(0x00498ECE, L"90 90 90 90 90");   // call 0x45adeb -> NOP
 
 		Addr_OnPacketClass2 = 0x006FAF70;
 		Addr_OnPacket2 = 0x004CBE34;
