@@ -449,6 +449,10 @@ static void HandlePayload(const BYTE *p, DWORD n) {
 	if (type != MP_TYPE_GAME || n < 2) {
 		return;
 	}
+	// [v55] 移动同步: 客户端发出的 0x0C 移动包原样转发给同图其他人
+	if (p[1] == 0x0C) {
+		MP_ForwardToSameMap(p + 1, n - 1);
+	}
 	if (t_recvCount < g_dump) {
 		HexDump("RECV", p + 1, n - 1);
 		t_recvCount++;
