@@ -958,18 +958,20 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 		}
 		if (!others.empty()) {
 			int my_sid = t_sid;   // [v54l] thread_local 不能跨线程, 先拷贝
-			TenviCharacter my_chr = chr;   // [v54l] 拷贝非 const 副本供 lambda 使用
-			std::thread([others, my_chr, x, y, my_sid]() {
+			TenviCharacter *p_my = new TenviCharacter(chr);  // [v54l] 堆拷贝, 指针捕获避免 const 问题
+			std::thread([others, p_my, x, y, my_sid]() {
 				std::this_thread::sleep_for(std::chrono::milliseconds(800));
 				for (auto &other : others) {
-					TenviCharacter o_chr = other.chr;  // [v54l] 非 const 副本
+					TenviCharacter *p_other = new TenviCharacter(other.chr);  // 非 const 堆拷贝
 					ChangeMapPacket(other.map, x, y, my_sid);   // 重开 t_client 换图窗口
-					SpawnObjects(o_chr, other.map, my_sid);  // 重发怪物/NPC
-					AccountDataPacket(o_chr, my_sid);        // 对方自己的账户(重建)
-					CharacterSpawnPacket(o_chr, other.x, other.y, my_sid);  // 对方自己出生
-					AccountDataPacket(my_chr, my_sid);       // 自己的账户
-					CharacterSpawnPacket(my_chr, x, y, my_sid);  // 自己出生
+					SpawnObjects(*p_other, other.map, my_sid);  // 重发怪物/NPC
+					AccountDataPacket(*p_other, my_sid);        // 对方自己的账户(重建)
+					CharacterSpawnPacket(*p_other, other.x, other.y, my_sid);  // 对方自己出生
+					AccountDataPacket(*p_my, my_sid);           // 自己的账户
+					CharacterSpawnPacket(*p_my, x, y, my_sid);  // 自己出生
+					delete p_other;
 				}
+				delete p_my;
 			}).detach();
 		}
 	}
