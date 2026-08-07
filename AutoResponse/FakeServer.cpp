@@ -3,6 +3,8 @@
 #include"TemporaryData.h"
 #include <mutex>
 #include <map>
+#include <thread>
+#include <chrono>
 
 #ifdef MP_SERVER
 #include "../StandaloneServer/db.h"
@@ -590,20 +592,23 @@ void PlayerLevelUpPacket(TenviCharacter &chr) {
 }
 
 // 0x45
-void PlayerSPPacket(TenviCharacter &chr) {
+// [v54o] 给配套包加 target_sid 定向参数(延迟重发完整进图序列用)
+void PlayerSPPacket(TenviCharacter &chr, int target_sid = -1) {
 	ServerPacket sp(SP_PLAYER_STAT_SP);
 	sp.Encode2(chr.sp);
-	SendPacket(sp);
+	if (target_sid < 0) SendPacket(sp);
+	else MP_BroadcastToSid(target_sid, sp, true);
 }
 // 0x46
-void PlayerAPPacket(TenviCharacter &chr) {
+void PlayerAPPacket(TenviCharacter &chr, int target_sid = -1) {
 	ServerPacket sp(SP_PLAYER_STAT_AP);
 	sp.Encode2(chr.ap);
-	SendPacket(sp);
+	if (target_sid < 0) SendPacket(sp);
+	else MP_BroadcastToSid(target_sid, sp, true);
 }
 
 // 0x47
-void PlayerStatPacket(TenviCharacter &chr) {
+void PlayerStatPacket(TenviCharacter &chr, int target_sid = -1) {
 	ServerPacket sp(SP_PLAYER_STAT_ALL);
 	sp.Encode2(3000); // 004956F5, HP
 	sp.Encode2(4000); // 00495713, MAXHP
@@ -666,7 +671,8 @@ void PlayerStatPacket(TenviCharacter &chr) {
 	}
 
 
-	SendPacket(sp);
+	if (target_sid < 0) SendPacket(sp);
+	else MP_BroadcastToSid(target_sid, sp, true);
 }
 
 // 0x4A
@@ -755,7 +761,8 @@ void UpdateSkillPacket(TenviCharacter &chr, WORD skill_id) {
 }
 
 // 0x6D
-void InitSkillPacket(TenviCharacter &chr) {
+// [v54o] target_sid 定向参数(延迟重发完整进图序列用)
+void InitSkillPacket(TenviCharacter &chr, int target_sid = -1) {
 	ServerPacket sp(SP_PLAYER_SKILL_ALL);
 	sp.Encode1((BYTE)chr.skill.size()); // 0049977E, number of skills
 
@@ -765,7 +772,8 @@ void InitSkillPacket(TenviCharacter &chr) {
 		sp.Encode1(v.level); // 004997AA, skill point
 	}
 
-	SendPacket(sp);
+	if (target_sid < 0) SendPacket(sp);
+	else MP_BroadcastToSid(target_sid, sp, true);
 }
 
 // 0xE0
@@ -936,9 +944,48 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 #endif
 	CharacterSpawnPacket(chr, x, y);
 	MP_MARK("ChangeMap after self CharacterSpawnPacket");
-	// [v54n] 撤销 v54l 延迟重发场景 -- 客户端 ChangeMap 流程只在登录/进图时执行,
-	// 稳定后再次 ChangeMap 必然崩(缺 Board/InitSkill 等配套包), 无论延迟多久.
-	// 接受"后进者看不到先进者"这个历史坑(里程碑 2 单边互见 = 先进看后进).
+#ifdef MP_SERVER
+	// [v54o] 延迟重发"完整进图序列"给后进图者(t_client):
+	// v54c 给先进图者重发场景成功(它已稳定), 但 v54l 给后进图者重发崩溃 --
+	// 因为后进图者刚进图, 客户端状态未就绪 + 精简序列缺配套包.
+	// 解决: 延迟 5 秒(等完全就绪) + 发完整序列(0x10+怪物+双方3D/11+
+	// PlayerStat+SP+AP+InitSkill), 让客户端把重发当作一次正规进图处理.
+	{
+		std::vector<RemotePlayer> others;
+		{
+			std::lock_guard<std::mutex> lk(g_playersMtx);
+			for (auto &kv : g_players) {
+				int other_sid = kv.first;
+				RemotePlayer &other = kv.second;
+				if (other_sid == t_sid) continue;
+				if (other.map != chr.map) continue;
+				others.push_back(other);
+			}
+		}
+		if (!others.empty()) {
+			int my_sid = t_sid;   // thread_local 不能跨线程, 先拷贝
+			TenviCharacter *p_my = new TenviCharacter(chr);
+			std::thread([others, p_my, x, y, my_sid]() {
+				std::this_thread::sleep_for(std::chrono::milliseconds(5000));   // [v54o] 5s 等完全就绪
+				for (auto &other : others) {
+					TenviCharacter *p_other = new TenviCharacter(other.chr);
+					ChangeMapPacket(other.map, x, y, my_sid);      // 0x10 重开窗口
+					SpawnObjects(*p_other, other.map, my_sid);     // 怪物
+					AccountDataPacket(*p_other, my_sid);           // 对方3D
+					CharacterSpawnPacket(*p_other, other.x, other.y, my_sid);  // 对方11
+					PlayerStatPacket(*p_my, my_sid);               // 配套: 属性
+					PlayerSPPacket(*p_my, my_sid);                 // 配套: 技能点
+					PlayerAPPacket(*p_my, my_sid);                 // 配套: 属性点
+					InitSkillPacket(*p_my, my_sid);                // 配套: 技能
+					AccountDataPacket(*p_my, my_sid);              // 自己3D
+					CharacterSpawnPacket(*p_my, x, y, my_sid);     // 自己11
+					delete p_other;
+				}
+				delete p_my;
+			}).detach();
+		}
+	}
+#endif
 	MP_MARK("ChangeMap exit");
 }
 
