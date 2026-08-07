@@ -865,7 +865,10 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	{
 		std::lock_guard<std::mutex> lk(g_playersMtx);
 		auto it = g_players.find(t_sid);
-		if (it == g_players.end()) return;
+		if (it == g_players.end()) {
+			printf("[MP-FWD] sid=%d not in players table, skip\n", t_sid);
+			return;
+		}
 		my_map = it->second.map;
 	}
 	std::vector<int> targets;
@@ -876,10 +879,16 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			if (kv.second.map == my_map) targets.push_back(kv.first);
 		}
 	}
+	BYTE op = (len > 0) ? pkt[0] : 0;
+	DWORD oid = 0;
+	if (len >= 5) oid = *(DWORD *)(pkt + 1);
+	printf("[MP-FWD] sid=%d map=%d targets=%zu op=%02X oid=%08X\n",
+		(int)t_sid, (int)my_map, targets.size(), (unsigned)op, (unsigned)oid);
 	if (targets.empty()) return;
 	ServerPacket sp;
 	sp.Raw(pkt, len);
 	for (int sid : targets) {
+		printf("[MP-FWD]   -> sid=%d\n", sid);
 		MP_BroadcastToSid(sid, sp, true);
 	}
 }
@@ -962,6 +971,10 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			CharacterSpawnPacket(other.chr, other.x, other.y, other_sid);  // 对方自己出生
 			AccountDataPacket(chr, other_sid);                   // 别人看到自己: 先给自己建角色对象
 			CharacterSpawnPacket(chr, x, y, other_sid);          // 别人看到自己
+			// [v56] 后进看先进尝试: 给当前玩家也发对方的 0x3D + 0x11,
+			// 让后进者在自己的 ChangeMap 窗口里创建先进者对象.
+			AccountDataPacket(other.chr, t_sid);
+			CharacterSpawnPacket(other.chr, other.x, other.y, t_sid);
 		}
 	}
 	MP_MARK("ChangeMap after broadcast loop");
