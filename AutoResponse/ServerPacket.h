@@ -67,8 +67,10 @@ private:
 
 public:
 	ServerPacket(SERVER_PACKET header);
+	ServerPacket() {}   // [v55] 空构造, 配合 Raw() 转发原始包
 
 	std::vector<BYTE>& get();
+	void Raw(const BYTE *data, DWORD len);   // [v55] 直接塞原始包体(不解析)
 	void Encode1(BYTE val);
 	void Encode2(WORD val);
 	void Encode4(DWORD val);
