@@ -936,22 +936,9 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 #endif
 	CharacterSpawnPacket(chr, x, y);
 	MP_MARK("ChangeMap after self CharacterSpawnPacket");
-#ifdef MP_SERVER
-	// [v54i] t_client 自己的 ChangeMap 已完成,现在发"重发场景"让它重新走流程
-	// 渲染 other 玩家(窗口重开). 这样 both 方向都能看到对方,且不冲突不崩.
-	for (auto &kv : g_players) {
-		int other_sid = kv.first;
-		RemotePlayer &other = kv.second;
-		if (other_sid == t_sid) continue;
-		if (other.map != chr.map) continue;
-		ChangeMapPacket(other.map, chr.x, chr.y, -1);
-		SpawnObjects(other.chr, other.map, -1);
-		AccountDataPacket(other.chr);
-		CharacterSpawnPacket(other.chr, other.x, other.y, -1, true);
-		AccountDataPacket(chr);
-		CharacterSpawnPacket(chr, x, y, -1, true);
-	}
-#endif
+	// [v54k] 回滚 v54i 的双向重发场景 -- 它导致后进图者 self spawn 完成后
+	// 又被重发的 0x10 清空场景,角色卡死. 改为 v54c 单边(只对 other_sid 重发),
+	// 接受"后进者看不到先进者"这个历史坑,做里程碑 2.2 移动同步,互见完整留作里程碑 3.
 	MP_MARK("ChangeMap exit");
 }
 
