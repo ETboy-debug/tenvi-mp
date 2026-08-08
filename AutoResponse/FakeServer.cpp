@@ -353,22 +353,23 @@ void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, int tar
 		if (context) SendPacket(sp);
 		else SendPacket2(sp);
 	}
-	// [v54] v50 forced remote spawns to CField (ctx=0), but the CN client
-	// only renders op=0x11 via CWvsContext (ctx=1) - same as monsters/NPCs.
-	// Self spawn renders fine with ctx=1; remote spawns were invisible with
-	// ctx=0. So route remote 0x11 through CWvsContext too.
-	else MP_BroadcastToSid(target_sid, sp, true);
+	// [v57] REVERT remote 0x11 to CField (ctx=0). The v54 premise "CN client
+	// renders remote 0x11 via CWvsContext" is contradicted by the live failure:
+	// remote players stay invisible at ctx=1. Canonical rule (0x11 = CField/
+	// ctx=0) is correct; the v50 ctx=0 failure was the ID-collision bug (now
+	// fixed - oids are distinct in mp_diag). Self spawn (target_sid<0) stays
+	// ctx=1 (CWvsContext) and remains correct.
+	else MP_BroadcastToSid(target_sid, sp, false);
 }
 
 // 0x12
-// [v54j] 0x12 移除改走 ctx=1(CWvsContext), 与 0x11 出生同层!
-// v50 起 0x12 走 CField(ctx=0), 但互见修复后 0x11 走 CWvsContext 渲染,
-// 移除层与渲染层不一致 → 客户端不认 0x12 → 下线后对方还显示.
+// [v57] 0x12 移除随 0x11 一起退回 CField(ctx=0): 移除层必须与渲染层一致,
+// 否则下线后对方仍显示. 远程 0x11 已退回 CField, 移除也必须同步.
 void RemoveObjectPacket(DWORD object_id, int target_sid = -1) {
 	ServerPacket sp(SP_REMOVE_OBJECT);
 	sp.Encode4(object_id); // not only for character
 	if (target_sid < 0) SendPacket(sp);
-	else MP_BroadcastToSid(target_sid, sp, true);
+	else MP_BroadcastToSid(target_sid, sp, false);
 }
 
 // 0x14
@@ -556,12 +557,10 @@ void AccountDataPacket(TenviCharacter &chr, int target_sid = -1) {
 		sp.Encode1(0);
 	}
 
-	// [v54b] 0x3D creates the character object client-side. When we broadcast
-	// a REMOTE player's spawn we must deliver its 0x3D first (targeted at the
-	// receiving client), otherwise the client has no object for the spawn oid
-	// and silently ignores it.
+	// [v57] 0x3D 远程分支退回 CField(ctx=0), 与 0x11 出生同层: 客户端在该层
+	// 用 0x3D 建对象后, 同一层的 0x11 才能引用到 oid 并渲染.
 	if (target_sid < 0) SendPacket(sp);
-	else MP_BroadcastToSid(target_sid, sp, true);
+	else MP_BroadcastToSid(target_sid, sp, false);
 }
 
 // 0x41
@@ -857,9 +856,8 @@ void MP_RemovePlayer(int) {}
 #endif
 
 #ifdef MP_SERVER
-// [v55] 移动同步: 把客户端发出的移动包(0x0C)原样广播给同图其他玩家.
-// 接收方(先进图者)客户端里对方对象已存在(v54c 重发场景创建), 移动包走
-// ctx=1(CWvsContext) 注入后能让对方角色动起来. 包体原样转发(含 opcode).
+// [v57] 移动同步: 0x0C 原样广播给同图其他玩家. 远程对象已退回 CField(ctx=0),
+// 移动包必须同层(ctx=0)注入, 对方角色才能在 CField 里动起来. 包体原样转发(含 opcode).
 void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	WORD my_map = 0;
 	{
@@ -889,7 +887,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	sp.Raw(pkt, len);
 	for (int sid : targets) {
 		printf("[MP-FWD]   -> sid=%d\n", sid);
-		MP_BroadcastToSid(sid, sp, true);
+		MP_BroadcastToSid(sid, sp, false);
 	}
 }
 #else
