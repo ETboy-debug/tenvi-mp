@@ -191,6 +191,26 @@ static void SendPacketTo(SOCKET s, ServerPacket &sp, BYTE frameType = MP_TYPE_GA
 	send(s, (const char *)&frame[0], (int)frame.size(), 0);
 }
 
+// [v61] Remote-player dispatch layer, read once from "mp_ctx.cfg" (a single
+// character: '1' = CWvsContext, '0' = CField). Missing file defaults to 1.
+// This exists so the layer can be flipped in seconds instead of waiting for a
+// cloud rebuild - v54..v60 burned several days flipping this constant.
+bool MP_RemoteCtx() {
+	static int s_ctx = -1;
+	if (s_ctx < 0) {
+		s_ctx = 1;
+		FILE *f = NULL;
+		if (fopen_s(&f, "mp_ctx.cfg", "r") == 0 && f) {
+			int c = fgetc(f);
+			if (c == '0') s_ctx = 0;
+			fclose(f);
+		}
+		Log("[MP-CFG] remote dispatch ctx = %d (%s)",
+			s_ctx, s_ctx ? "CWvsContext" : "CField");
+	}
+	return s_ctx != 0;
+}
+
 // [MP] 把包发给指定 sid 的连接(供 FakeServer 做跨玩家广播)
 // [v50] context=false means the receiving client must route this through
 // CField. Cross-player packets are, by definition, remote to the receiver -
