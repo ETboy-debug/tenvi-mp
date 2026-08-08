@@ -31,6 +31,10 @@ void MP_RemovePlayer(int sid);
 // the reopen but used ctx=0. "no reopen + ctx=1" was never tested, and ctx=1
 // is the only layer the stock single-player code ever used for 0x11.
 bool MP_RemoteCtx();
+// [v61] Whether to also push 0x3D (account data) for remote players. Defaults
+// to OFF: 0x3D is the receiver's OWN account packet and would overwrite their
+// identity once it is routed through CWvsContext. See mp_ctx.cfg.
+bool MP_RemoteSend3D();
 // [v55] 把客户端发出的游戏包(移动 0x0C 等)原样转发给同图其他玩家
 void MP_ForwardToSameMap(const BYTE *pkt, DWORD len);
 
