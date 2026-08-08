@@ -191,50 +191,85 @@ static void SendPacketTo(SOCKET s, ServerPacket &sp, BYTE frameType = MP_TYPE_GA
 	send(s, (const char *)&frame[0], (int)frame.size(), 0);
 }
 
-// [v61] Remote-player dispatch layer, read once from "mp_ctx.cfg" (a single
-// character: '1' = CWvsContext, '0' = CField). Missing file defaults to 1.
-// This exists so the layer can be flipped in seconds instead of waiting for a
-// cloud rebuild - v54..v60 burned several days flipping this constant.
-// mp_ctx.cfg layout - up to two characters, no newline required:
-//   [0] '1' = remote packets go to CWvsContext, '0' = CField   (default '1')
-//   [1] '1' = also push 0x3D account data for remote players,
-//       '0' = send only the 0x11 spawn                          (default '0')
-// 0x3D is the LOCAL player's own account packet (handler 0x00498E4F: char id,
-// name, level, guild). At ctx=0 the CField layer appears to ignore it, but at
-// ctx=1 it would overwrite the receiving player's own identity. Meanwhile 0x11
-// (handler 0x0048DB9B..0x0048DE21, which is where the render byte-patch at
-// 0x0048DD03 lives) already carries id/pos/job/level/name/appearance/equipment
-// - everything needed to draw a character. So 0x3D defaults to OFF; v54b's
-// claim that 0x11 needs 0x3D to create the object was never verified.
-static void MP_LoadCtxCfg(int &ctx, int &send3d) {
+// [v62-order-restore] Runtime knobs, read once from "mp_ctx.cfg" (plain chars,
+// no newline required). Exists so behaviour can be flipped in seconds instead
+// of waiting for a cloud rebuild - v54..v61 burned days flipping constants.
+//   [0] '1' = remote packets go to CWvsContext, '0' = CField      (default '1')
+//   [1] '1' = also push 0x3D account data for remote players      (default '1')
+//   [2] '1' = after the remote 0x3D+0x11 pair, replay the RECEIVER's own 0x3D
+//             so their account context is restored                (default '1')
+//   [3] '1' = emit the player's own 0x11 BEFORE the cross-visibility loop
+//                                                                 (default '1')
+//
+// v61b field evidence - all three behaviours below are now proven, not guessed:
+//  * 0x3D IS required (v61's "never verified" note was wrong, v54b was right).
+//    The 0x11 handler (0x0048DB9B..0x0048DE21) looks the oid up first at
+//    0x0048DCEF - "je 0x48dd4c" means object-not-found -> packet dropped - and
+//    only reaches the render check at 0x0048DD03 (the one we NOP) afterwards.
+//    The object is created by 0x3D (handler 0x00498E4F). With 0x3D off the
+//    spawn died at 0x48DCEF and the render patch never even ran. Default OFF->ON.
+//  * The remote 0x3D also overwrites the RECEIVER's own account context, which
+//    is exactly why the first player rendered the newcomer but then could not
+//    move. Knob [2] repairs that by replaying the receiver's own 0x3D after.
+//  * The client latches its identity onto the FIRST 0x11 it sees. The joining
+//    player received the remote spawn (oid=0x54C) before its own (oid=0x57C),
+//    locked onto the wrong character and drove a ghost - it could not move and
+//    could not see anyone. Knob [3] sends self spawn first to lock identity.
+static void MP_LoadCtxCfg(int &ctx, int &send3d, int &restore3d, int &selffirst) {
 	ctx = 1;
-	send3d = 0;
+	send3d = 1;
+	restore3d = 1;
+	selffirst = 1;
 	FILE *f = NULL;
 	if (fopen_s(&f, "mp_ctx.cfg", "r") == 0 && f) {
 		int c0 = fgetc(f);
 		if (c0 == '0') ctx = 0;
 		int c1 = fgetc(f);
-		if (c1 == '1') send3d = 1;
+		if (c1 == '0') send3d = 0;
+		int c2 = fgetc(f);
+		if (c2 == '0') restore3d = 0;
+		int c3 = fgetc(f);
+		if (c3 == '0') selffirst = 0;
 		fclose(f);
 	}
 }
 
-bool MP_RemoteCtx() {
-	static int s_ctx = -1;
-	static int s_3d = -1;
+// One lazy load shared by every knob, so the config line is logged exactly once.
+static void MP_Cfg(int &ctx, int &send3d, int &restore3d, int &selffirst) {
+	static int s_ctx = -1, s_3d = -1, s_rst = -1, s_first = -1;
 	if (s_ctx < 0) {
-		MP_LoadCtxCfg(s_ctx, s_3d);
-		Log("[MP-CFG] remote dispatch ctx = %d (%s), send 0x3D = %d",
-			s_ctx, s_ctx ? "CWvsContext" : "CField", s_3d);
+		MP_LoadCtxCfg(s_ctx, s_3d, s_rst, s_first);
+		Log("[MP-CFG] v62 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d",
+			s_ctx, s_ctx ? "CWvsContext" : "CField", s_3d, s_rst, s_first);
 	}
-	return s_ctx != 0;
+	ctx = s_ctx;
+	send3d = s_3d;
+	restore3d = s_rst;
+	selffirst = s_first;
+}
+
+bool MP_RemoteCtx() {
+	int ctx, send3d, restore3d, selffirst;
+	MP_Cfg(ctx, send3d, restore3d, selffirst);
+	return ctx != 0;
 }
 
 bool MP_RemoteSend3D() {
-	static int s_ctx = -1;
-	static int s_3d = -1;
-	if (s_ctx < 0) MP_LoadCtxCfg(s_ctx, s_3d);
-	return s_3d != 0;
+	int ctx, send3d, restore3d, selffirst;
+	MP_Cfg(ctx, send3d, restore3d, selffirst);
+	return send3d != 0;
+}
+
+bool MP_Restore3D() {
+	int ctx, send3d, restore3d, selffirst;
+	MP_Cfg(ctx, send3d, restore3d, selffirst);
+	return restore3d != 0;
+}
+
+bool MP_SelfSpawnFirst() {
+	int ctx, send3d, restore3d, selffirst;
+	MP_Cfg(ctx, send3d, restore3d, selffirst);
+	return selffirst != 0;
 }
 
 // [MP] 把包发给指定 sid 的连接(供 FakeServer 做跨玩家广播)
