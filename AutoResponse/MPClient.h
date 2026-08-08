@@ -80,4 +80,12 @@ void MP_ResetLoginState();
 /// [v33] 同步重连服务端(阻塞式, 用于登录前按需连接)。返回是否成功。
 bool MP_Reconnect();
 
+/// [v61-diag] Per-process diagnostic log path, e.g. "D:/mp_diag_1234.log".
+/// Both clients used to share one fixed "D:/mp_diag.log" and DllMain opens it
+/// with mode "w" on attach, so launching the SECOND client wiped every line the
+/// FIRST client had written - including its self-spawn 0x11. That is why the
+/// v60 log looked as if no 0x11 ever arrived. Never diagnose through a shared
+/// file that a second process truncates.
+const char *MP_DiagPath();
+
 #endif // MP_CLIENT_H
