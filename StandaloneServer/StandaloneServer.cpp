@@ -200,6 +200,9 @@ static void SendPacketTo(SOCKET s, ServerPacket &sp, BYTE frameType = MP_TYPE_GA
 //             so their account context is restored                (default '1')
 //   [3] '1' = emit the player's own 0x11 BEFORE the cross-visibility loop
 //                                                                 (default '1')
+//   [4] '1' = drive remote movement by re-sending 0x11 at the new coordinates,
+//             '0' = relay the raw 0x0C verbatim (the old, proven-dead path)
+//                                                                 (default '1')
 //
 // v61b field evidence - all three behaviours below are now proven, not guessed:
 //  * 0x3D IS required (v61's "never verified" note was wrong, v54b was right).
@@ -215,11 +218,13 @@ static void SendPacketTo(SOCKET s, ServerPacket &sp, BYTE frameType = MP_TYPE_GA
 //    player received the remote spawn (oid=0x54C) before its own (oid=0x57C),
 //    locked onto the wrong character and drove a ghost - it could not move and
 //    could not see anyone. Knob [3] sends self spawn first to lock identity.
-static void MP_LoadCtxCfg(int &ctx, int &send3d, int &restore3d, int &selffirst) {
+static void MP_LoadCtxCfg(int &ctx, int &send3d, int &restore3d, int &selffirst,
+		int &moveaspawn) {
 	ctx = 1;
 	send3d = 1;
 	restore3d = 1;
 	selffirst = 1;
+	moveaspawn = 1;
 	FILE *f = NULL;
 	if (fopen_s(&f, "mp_ctx.cfg", "r") == 0 && f) {
 		int c0 = fgetc(f);
@@ -230,46 +235,56 @@ static void MP_LoadCtxCfg(int &ctx, int &send3d, int &restore3d, int &selffirst)
 		if (c2 == '0') restore3d = 0;
 		int c3 = fgetc(f);
 		if (c3 == '0') selffirst = 0;
+		int c4 = fgetc(f);
+		if (c4 == '0') moveaspawn = 0;
 		fclose(f);
 	}
 }
 
 // One lazy load shared by every knob, so the config line is logged exactly once.
-static void MP_Cfg(int &ctx, int &send3d, int &restore3d, int &selffirst) {
-	static int s_ctx = -1, s_3d = -1, s_rst = -1, s_first = -1;
+static void MP_Cfg(int &ctx, int &send3d, int &restore3d, int &selffirst,
+		int &moveaspawn) {
+	static int s_ctx = -1, s_3d = -1, s_rst = -1, s_first = -1, s_move = -1;
 	if (s_ctx < 0) {
-		MP_LoadCtxCfg(s_ctx, s_3d, s_rst, s_first);
-		Log("[MP-CFG] v63 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d",
-			s_ctx, s_ctx ? "CWvsContext" : "CField", s_3d, s_rst, s_first);
+		MP_LoadCtxCfg(s_ctx, s_3d, s_rst, s_first, s_move);
+		Log("[MP-CFG] v64 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d moveAsSpawn=%d",
+			s_ctx, s_ctx ? "CWvsContext" : "CField", s_3d, s_rst, s_first, s_move);
 	}
 	ctx = s_ctx;
 	send3d = s_3d;
 	restore3d = s_rst;
 	selffirst = s_first;
+	moveaspawn = s_move;
 }
 
 bool MP_RemoteCtx() {
-	int ctx, send3d, restore3d, selffirst;
-	MP_Cfg(ctx, send3d, restore3d, selffirst);
+	int ctx, send3d, restore3d, selffirst, moveaspawn;
+	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn);
 	return ctx != 0;
 }
 
 bool MP_RemoteSend3D() {
-	int ctx, send3d, restore3d, selffirst;
-	MP_Cfg(ctx, send3d, restore3d, selffirst);
+	int ctx, send3d, restore3d, selffirst, moveaspawn;
+	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn);
 	return send3d != 0;
 }
 
 bool MP_Restore3D() {
-	int ctx, send3d, restore3d, selffirst;
-	MP_Cfg(ctx, send3d, restore3d, selffirst);
+	int ctx, send3d, restore3d, selffirst, moveaspawn;
+	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn);
 	return restore3d != 0;
 }
 
 bool MP_SelfSpawnFirst() {
-	int ctx, send3d, restore3d, selffirst;
-	MP_Cfg(ctx, send3d, restore3d, selffirst);
+	int ctx, send3d, restore3d, selffirst, moveaspawn;
+	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn);
 	return selffirst != 0;
+}
+
+bool MP_MoveAsSpawn() {
+	int ctx, send3d, restore3d, selffirst, moveaspawn;
+	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn);
+	return moveaspawn != 0;
 }
 
 // [MP] 把包发给指定 sid 的连接(供 FakeServer 做跨玩家广播)
