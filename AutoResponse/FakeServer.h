@@ -31,10 +31,18 @@ void MP_RemovePlayer(int sid);
 // the reopen but used ctx=0. "no reopen + ctx=1" was never tested, and ctx=1
 // is the only layer the stock single-player code ever used for 0x11.
 bool MP_RemoteCtx();
-// [v61] Whether to also push 0x3D (account data) for remote players. Defaults
-// to OFF: 0x3D is the receiver's OWN account packet and would overwrite their
-// identity once it is routed through CWvsContext. See mp_ctx.cfg.
+// [v62] Whether to also push 0x3D (account data) for remote players. Defaults
+// to ON now: 0x11 is dropped at 0x0048DCEF unless the character object already
+// exists, and 0x3D (handler 0x00498E4F) is what creates it. See mp_ctx.cfg.
 bool MP_RemoteSend3D();
+// [v62] After pushing a remote 0x3D+0x11 pair, replay the RECEIVER's own 0x3D.
+// The remote 0x3D overwrites the receiver's account context - v61b field report:
+// the first player rendered the newcomer but could no longer move. Default ON.
+bool MP_Restore3D();
+// [v62] Send the player's own 0x11 BEFORE the cross-visibility loop. The client
+// latches its identity onto the first 0x11 it receives; v61b showed the joining
+// player locking onto the OTHER player's oid and driving a ghost. Default ON.
+bool MP_SelfSpawnFirst();
 // [v55] 把客户端发出的游戏包(移动 0x0C 等)原样转发给同图其他玩家
 void MP_ForwardToSameMap(const BYTE *pkt, DWORD len);
 
