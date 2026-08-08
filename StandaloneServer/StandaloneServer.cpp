@@ -195,20 +195,46 @@ static void SendPacketTo(SOCKET s, ServerPacket &sp, BYTE frameType = MP_TYPE_GA
 // character: '1' = CWvsContext, '0' = CField). Missing file defaults to 1.
 // This exists so the layer can be flipped in seconds instead of waiting for a
 // cloud rebuild - v54..v60 burned several days flipping this constant.
+// mp_ctx.cfg layout - up to two characters, no newline required:
+//   [0] '1' = remote packets go to CWvsContext, '0' = CField   (default '1')
+//   [1] '1' = also push 0x3D account data for remote players,
+//       '0' = send only the 0x11 spawn                          (default '0')
+// 0x3D is the LOCAL player's own account packet (handler 0x00498E4F: char id,
+// name, level, guild). At ctx=0 the CField layer appears to ignore it, but at
+// ctx=1 it would overwrite the receiving player's own identity. Meanwhile 0x11
+// (handler 0x0048DB9B..0x0048DE21, which is where the render byte-patch at
+// 0x0048DD03 lives) already carries id/pos/job/level/name/appearance/equipment
+// - everything needed to draw a character. So 0x3D defaults to OFF; v54b's
+// claim that 0x11 needs 0x3D to create the object was never verified.
+static void MP_LoadCtxCfg(int &ctx, int &send3d) {
+	ctx = 1;
+	send3d = 0;
+	FILE *f = NULL;
+	if (fopen_s(&f, "mp_ctx.cfg", "r") == 0 && f) {
+		int c0 = fgetc(f);
+		if (c0 == '0') ctx = 0;
+		int c1 = fgetc(f);
+		if (c1 == '1') send3d = 1;
+		fclose(f);
+	}
+}
+
 bool MP_RemoteCtx() {
 	static int s_ctx = -1;
+	static int s_3d = -1;
 	if (s_ctx < 0) {
-		s_ctx = 1;
-		FILE *f = NULL;
-		if (fopen_s(&f, "mp_ctx.cfg", "r") == 0 && f) {
-			int c = fgetc(f);
-			if (c == '0') s_ctx = 0;
-			fclose(f);
-		}
-		Log("[MP-CFG] remote dispatch ctx = %d (%s)",
-			s_ctx, s_ctx ? "CWvsContext" : "CField");
+		MP_LoadCtxCfg(s_ctx, s_3d);
+		Log("[MP-CFG] remote dispatch ctx = %d (%s), send 0x3D = %d",
+			s_ctx, s_ctx ? "CWvsContext" : "CField", s_3d);
 	}
 	return s_ctx != 0;
+}
+
+bool MP_RemoteSend3D() {
+	static int s_ctx = -1;
+	static int s_3d = -1;
+	if (s_ctx < 0) MP_LoadCtxCfg(s_ctx, s_3d);
+	return s_3d != 0;
 }
 
 // [MP] 把包发给指定 sid 的连接(供 FakeServer 做跨玩家广播)
