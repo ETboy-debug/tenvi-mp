@@ -83,6 +83,14 @@ void DelayExecution() {
 // to prevent client-side state corruption (e.g. op=1E during op=10 processing)
 static bool g_mp_in_batch = false;
 
+// [v61] remote spawn buffering: CN client ignores 0x3D/0x11 for remote players
+// if they arrive before the local self-spawn (ChangeMap window not ready yet).
+// Buffer them and replay shortly after local 0x11 is injected.
+static bool g_mp_change_map_active = false;
+static bool g_mp_self_spawned = false;
+static int g_mp_self_spawn_frame = 0;
+static std::vector<std::pair<std::vector<BYTE>, bool>> g_mp_pending_remote;
+
 void MP_Pump() {
 	// [v50] Each entry carries the dispatch context supplied by the server
 	// (frame type 0 = CWvsContext, type 2 = CField). No more guessing.
@@ -113,12 +121,43 @@ void MP_Pump() {
 		BYTE mp_op = (bp.size() > 0) ? bp[0] : 0;
 		DWORD oid = 0;
 		if (bp.size() >= 5) oid = *(DWORD*)&bp[1];
+
+		// [v61] Track local ChangeMap lifecycle.
+		// 0x10 (CWvsContext) starts the ChangeMap window.
+		// 0x11 (CWvsContext) is our own spawn; after that the window is ready
+		// for remote players, but only after a few frames (client init).
+		if (mp_op == 0x10 && mp_ctx) {
+			g_mp_change_map_active = true;
+			g_mp_self_spawned = false;
+			g_mp_self_spawn_frame = 0;
+			g_mp_pending_remote.clear();
+			{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[v61] ChangeMap start, clear pending remote
+"); fflush(f); fclose(f); } }
+		}
+		if (mp_op == 0x11 && mp_ctx && g_localObjectId == 0) {
+			g_localObjectId = oid;
+			g_mp_self_spawned = true;
+			g_mp_self_spawn_frame = mp_frame_count;
+			{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[v61] self spawn oid=%08X frame=%d
+", oid, mp_frame_count); fflush(f); fclose(f); } }
+		}
+
+		// [v61] Buffer remote account/spawn packets (CField, ctx=0) until the
+		// local self-spawn has settled. Before self-spawn the client ignores them.
+		if (!mp_ctx && (mp_op == 0x3D || mp_op == 0x11) && g_mp_change_map_active && !g_mp_self_spawned) {
+			g_mp_pending_remote.push_back(std::make_pair(bp, mp_ctx));
+			{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[v61] buffer op=%02X oid=%08X (self not spawned)
+", mp_op, oid); fflush(f); fclose(f); } }
+			continue;
+		}
+
 		// Diagnostics: remember the first self-tagged spawn we ever see.
 		if (mp_op == 0x11 && mp_ctx && g_localObjectId == 0) g_localObjectId = oid;
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
-				fprintf(f, "[MP-CTX] op=%02X oid=%08X local=%08X ctx=%d src=srv\n",
+				fprintf(f, "[MP-CTX] op=%02X oid=%08X local=%08X ctx=%d src=srv
+",
 					mp_op, oid, g_localObjectId, mp_ctx ? 1 : 0);
 				fflush(f); fclose(f);
 			}
@@ -126,7 +165,8 @@ void MP_Pump() {
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
-				fprintf(f, ">> inject op=%02X len=%d\n", mp_op, (int)bp.size());
+				fprintf(f, ">> inject op=%02X len=%d
+", mp_op, (int)bp.size());
 				fflush(f); fclose(f);
 			}
 		}
@@ -134,14 +174,27 @@ void MP_Pump() {
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
-				fprintf(f, "<< done op=%02X\n", mp_op);
+				fprintf(f, "<< done op=%02X
+", mp_op);
 				fflush(f); fclose(f);
 			}
 		}
 	}
+	// [v61] Replay buffered remote spawns after local self-spawn has settled.
+	if (g_mp_self_spawned && !g_mp_pending_remote.empty() &&
+	    mp_frame_count >= g_mp_self_spawn_frame + 30) {
+		{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[v61] replay %d remote packets at frame %d
+", (int)g_mp_pending_remote.size(), mp_frame_count); fflush(f); fclose(f); } }
+		for (auto &entry : g_mp_pending_remote) {
+			ProcessPacketExec(entry.first, entry.second);
+		}
+		g_mp_pending_remote.clear();
+		g_mp_change_map_active = false;
+	}
 	{
 		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
-		if (f) { fprintf(f, "=== BATCH END (%d) ===\n", (int)batch.size()); fflush(f); fclose(f); }
+		if (f) { fprintf(f, "=== BATCH END (%d) ===
+", (int)batch.size()); fflush(f); fclose(f); }
 	}
 	g_mp_in_batch = false;  // <-- END guard: allow sends again
 }
