@@ -899,6 +899,7 @@ void MP_ForwardToSameMap(const BYTE *, DWORD) {}
 void MP_BroadcastToSid(int sid, ServerPacket &sp, bool context) {}
 // [v61] dll 侧不做跨玩家分发, 返回值无意义, 仅为链接符号
 bool MP_RemoteCtx() { return false; }
+bool MP_RemoteSend3D() { return false; }
 #endif
 
 // go to map
@@ -981,17 +982,20 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			// Now we only push a plain CField dynamic spawn (0x3D + 0x11) to the existing
 			// player; the client byte-patch at 0x0048DD03 already allows rendering non-local
 			// characters, so no window re-open is required.
-			AccountDataPacket(chr, other_sid);                   // 别人看到自己: 先给自己建角色对象
-			CharacterSpawnPacket(chr, x, y, other_sid);
+			// [v61] 0x3D is opt-in now (mp_ctx.cfg char 2). 0x11 alone carries
+			// id/pos/job/level/name/appearance/equipment, and at ctx=1 a remote
+			// 0x3D would overwrite the receiver's own character identity.
+			if (MP_RemoteSend3D()) AccountDataPacket(chr, other_sid);
+			CharacterSpawnPacket(chr, x, y, other_sid);          // 别人看到自己
 			// [v56] 后进看先进尝试: 给当前玩家也发对方的 0x3D + 0x11,
 			// 让后进者在自己的 ChangeMap 窗口里创建先进者对象.
-			AccountDataPacket(other.chr, t_sid);
-			CharacterSpawnPacket(other.chr, other.x, other.y, t_sid);
+			if (MP_RemoteSend3D()) AccountDataPacket(other.chr, t_sid);
+			CharacterSpawnPacket(other.chr, other.x, other.y, t_sid);  // 自己看到别人
 		}
 		printf("[MP-XVIS] leave t_sid=%d matched=%d\n", t_sid, xvis_matched);
 		fflush(stdout);
 	}
-	MP_MARK("ChangeMap after broadcast loop (v61-ctxcfg instrumented)");
+	MP_MARK("ChangeMap after broadcast loop (v61b-ctxcfg instrumented)");
 #endif
 	CharacterSpawnPacket(chr, x, y);
 	MP_MARK("ChangeMap after self CharacterSpawnPacket");
