@@ -900,6 +900,9 @@ void MP_BroadcastToSid(int sid, ServerPacket &sp, bool context) {}
 // [v61] dll 侧不做跨玩家分发, 返回值无意义, 仅为链接符号
 bool MP_RemoteCtx() { return false; }
 bool MP_RemoteSend3D() { return false; }
+// [v62] 同上; selffirst 必须为 false, 否则 dll 单机路径会重复发自我出生包
+bool MP_Restore3D() { return false; }
+bool MP_SelfSpawnFirst() { return false; }
 #endif
 
 // go to map
@@ -951,6 +954,18 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 		me.x = x; me.y = y;
 	}
 	MP_MARK("ChangeMap after players-table insert");
+	// [v62] SELF SPAWN FIRST. The CN client latches "who am I" onto the first
+	// 0x11 it receives. v61b field evidence: the joining client got the remote
+	// spawn (oid=0x54C) before its own (oid=0x57C), locked onto the wrong
+	// character and drove a ghost - could not move, could not see anyone. The
+	// already-stable player, whose own 0x11 arrived at login long before, DID
+	// render the newcomer. So the ordering is the whole difference.
+	bool self_spawned = false;
+	if (MP_SelfSpawnFirst()) {
+		CharacterSpawnPacket(chr, x, y);
+		self_spawned = true;
+		MP_MARK("ChangeMap self spawn (v62 early, before xvis loop)");
+	}
 	{
 		std::lock_guard<std::mutex> lk(g_playersMtx);
 		// [v61-diag] prove whether this loop actually matches anybody.
@@ -985,19 +1000,30 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			// [v61] 0x3D is opt-in now (mp_ctx.cfg char 2). 0x11 alone carries
 			// id/pos/job/level/name/appearance/equipment, and at ctx=1 a remote
 			// 0x3D would overwrite the receiver's own character identity.
+			// --- 方向A: 让已在场的 other_sid 看到我 ---
+			// 0x3D 先建对象(否则 0x11 在 0x0048DCEF 处查不到 oid 被丢弃),
+			// 0x11 再渲染, 然后立刻把 other_sid 的账户上下文还原成他自己,
+			// 否则他会被我的账户数据顶掉身份 -> 人看得见但自己动不了(v61b 实测).
 			if (MP_RemoteSend3D()) AccountDataPacket(chr, other_sid);
 			CharacterSpawnPacket(chr, x, y, other_sid);          // 别人看到自己
-			// [v56] 后进看先进尝试: 给当前玩家也发对方的 0x3D + 0x11,
-			// 让后进者在自己的 ChangeMap 窗口里创建先进者对象.
+			if (MP_RemoteSend3D() && MP_Restore3D())
+				AccountDataPacket(other.chr, other_sid);         // [v62] 还原对方身份
+			// --- 方向B: 让我(t_sid)看到已在场的 other ---
 			if (MP_RemoteSend3D()) AccountDataPacket(other.chr, t_sid);
 			CharacterSpawnPacket(other.chr, other.x, other.y, t_sid);  // 自己看到别人
+			if (MP_RemoteSend3D() && MP_Restore3D())
+				AccountDataPacket(chr, t_sid);                   // [v62] 还原自己身份
 		}
 		printf("[MP-XVIS] leave t_sid=%d matched=%d\n", t_sid, xvis_matched);
 		fflush(stdout);
 	}
-	MP_MARK("ChangeMap after broadcast loop (v61b-ctxcfg instrumented)");
-#endif
+	MP_MARK("ChangeMap after broadcast loop (v62-order-restore)");
+	// [v62] 只有在 selffirst 关闭(回退对照)时才在这里补发自我出生包,
+	// 否则会发两次 0x11, 客户端会把自己重建一遍.
+	if (!self_spawned) CharacterSpawnPacket(chr, x, y);
+#else
 	CharacterSpawnPacket(chr, x, y);
+#endif
 	MP_MARK("ChangeMap after self CharacterSpawnPacket");
 	// [v54p] 撤销 v54l/m/o 所有延迟重发场景方案 -- 客户端 ChangeMap 流程只能在
 	// 登录时执行一次, 稳定后再触发无论如何都会崩/卡(无论延迟多久/补多少包).
