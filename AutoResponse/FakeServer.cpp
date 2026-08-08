@@ -359,7 +359,7 @@ void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, int tar
 	// ctx=0) is correct; the v50 ctx=0 failure was the ID-collision bug (now
 	// fixed - oids are distinct in mp_diag). Self spawn (target_sid<0) stays
 	// ctx=1 (CWvsContext) and remains correct.
-	else MP_BroadcastToSid(target_sid, sp, false);
+	else MP_BroadcastToSid(target_sid, sp, MP_RemoteCtx());
 }
 
 // 0x12
@@ -369,7 +369,7 @@ void RemoveObjectPacket(DWORD object_id, int target_sid = -1) {
 	ServerPacket sp(SP_REMOVE_OBJECT);
 	sp.Encode4(object_id); // not only for character
 	if (target_sid < 0) SendPacket(sp);
-	else MP_BroadcastToSid(target_sid, sp, false);
+	else MP_BroadcastToSid(target_sid, sp, MP_RemoteCtx());
 }
 
 // 0x14
@@ -560,7 +560,7 @@ void AccountDataPacket(TenviCharacter &chr, int target_sid = -1) {
 	// [v57] 0x3D 远程分支退回 CField(ctx=0), 与 0x11 出生同层: 客户端在该层
 	// 用 0x3D 建对象后, 同一层的 0x11 才能引用到 oid 并渲染.
 	if (target_sid < 0) SendPacket(sp);
-	else MP_BroadcastToSid(target_sid, sp, false);
+	else MP_BroadcastToSid(target_sid, sp, MP_RemoteCtx());
 }
 
 // 0x41
@@ -887,7 +887,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	sp.Raw(pkt, len);
 	for (int sid : targets) {
 		printf("[MP-FWD]   -> sid=%d\n", sid);
-		MP_BroadcastToSid(sid, sp, false);
+		MP_BroadcastToSid(sid, sp, MP_RemoteCtx());
 	}
 }
 #else
@@ -897,6 +897,8 @@ void MP_ForwardToSameMap(const BYTE *, DWORD) {}
 #ifndef MP_SERVER
 // [MP] dll 侧无其它连接, 跨连接广播为空操作(符号需存在供链接)
 void MP_BroadcastToSid(int sid, ServerPacket &sp, bool context) {}
+// [v61] dll 侧不做跨玩家分发, 返回值无意义, 仅为链接符号
+bool MP_RemoteCtx() { return false; }
 #endif
 
 // go to map
@@ -989,7 +991,7 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 		printf("[MP-XVIS] leave t_sid=%d matched=%d\n", t_sid, xvis_matched);
 		fflush(stdout);
 	}
-	MP_MARK("ChangeMap after broadcast loop (v61-diag instrumented)");
+	MP_MARK("ChangeMap after broadcast loop (v61-ctxcfg instrumented)");
 #endif
 	CharacterSpawnPacket(chr, x, y);
 	MP_MARK("ChangeMap after self CharacterSpawnPacket");
