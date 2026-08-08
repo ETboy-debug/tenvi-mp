@@ -968,33 +968,17 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			AccountDataPacket(other.chr, other_sid);                // 对方自己的账户数据(重建)
 			CharacterSpawnPacket(other.chr, other.x, other.y, other_sid);  // 对方自己出生
 			AccountDataPacket(chr, other_sid);                   // 别人看到自己: 先给自己建角色对象
-			CharacterSpawnPacket(chr, x, y, other_sid);          // 别人看到自己
+			CharacterSpawnPacket(chr, x, y, other_sid);
+			// [v56] 后进看先进尝试: 给当前玩家也发对方的 0x3D + 0x11,
+			// 让后进者在自己的 ChangeMap 窗口里创建先进者对象.
+			AccountDataPacket(other.chr, t_sid);
+			CharacterSpawnPacket(other.chr, other.x, other.y, t_sid);
 		}
 	}
 	MP_MARK("ChangeMap after broadcast loop");
 #endif
 	CharacterSpawnPacket(chr, x, y);
 	MP_MARK("ChangeMap after self CharacterSpawnPacket");
-#ifdef MP_SERVER
-	// [v58] 后进看先进: 在 self spawn 之后补发先进者的 0x3D + 0x11.
-	// 假设: CN 客户端在 ChangeMap 窗口内只在自身对象建立(self 0x11 已到)之后
-	// 才接受远程玩家 0x11; 此前到达的远程包(原 v56/v57 放在 self 之前)被静默丢弃.
-	// self spawn 之后重发, 利用与"先进看后进"相同的动态创建路径实现双向互见.
-	// 注意: 此处不重开 ChangeMap 窗口(不发 ChangeMapPacket to t_sid), 仅补角色包,
-	// 规避 v54p 指出的"延迟重开窗口必崩".
-	{
-		std::lock_guard<std::mutex> lk(g_playersMtx);
-		for (auto &kv : g_players) {
-			int other_sid = kv.first;
-			RemotePlayer &other = kv.second;
-			if (other_sid == t_sid) continue;
-			if (other.map != chr.map) continue;
-			AccountDataPacket(other.chr, t_sid);
-			CharacterSpawnPacket(other.chr, other.x, other.y, t_sid);
-		}
-	}
-	MP_MARK("ChangeMap after backward-loop (后进看先进, v58)");
-#endif
 	// [v54p] 撤销 v54l/m/o 所有延迟重发场景方案 -- 客户端 ChangeMap 流程只能在
 	// 登录时执行一次, 稳定后再触发无论如何都会崩/卡(无论延迟多久/补多少包).
 	// 接受 v54c 单边互见(先进看后进), 后进者看先进者留作里程碑 3 优化.
