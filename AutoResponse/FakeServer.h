@@ -43,6 +43,16 @@ bool MP_Restore3D();
 // latches its identity onto the first 0x11 it receives; v61b showed the joining
 // player locking onto the OTHER player's oid and driving a ghost. Default ON.
 bool MP_SelfSpawnFirst();
+// [v64] Movement relay strategy. Disassembly of CN v126 proves the raw 0x0C
+// relay can never work: CField::OnPacket2 (0x004CBE34) only accepts opcodes
+// 0x1E/0x42/0x5C/0xA3/0xA7/0xA8 and >0xA8 - 0x0C falls through to the reject
+// branch at 0x004CBE8A. 0x0C is a CLIENT->SERVER opcode (CP_PLAYER_MOVEMENT)
+// with no object id in it; the SP table has no "remote player moved" opcode at
+// all because the stock emulator was single-player. So instead of relaying
+// 0x0C we parse the destination coordinates out of its tail and re-send 0x11
+// (CHARACTER_SPAWN) with the new position - the one packet already proven to
+// place a remote character at an exact coordinate. Default ON.
+bool MP_MoveAsSpawn();
 // [v55] 把客户端发出的游戏包(移动 0x0C 等)原样转发给同图其他玩家
 void MP_ForwardToSameMap(const BYTE *pkt, DWORD len);
 
