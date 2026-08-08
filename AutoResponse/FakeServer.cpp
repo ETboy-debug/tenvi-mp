@@ -856,12 +856,45 @@ void MP_RemovePlayer(int) {}
 #endif
 
 #ifdef MP_SERVER
-// [v63] 移动同步: 0x0C 原样广播给同图其他玩家. 注意: 远程角色在接收端是
-// CField 层的对象, 因此移动包必须固定走 ctx=false (CField). 使用 MP_RemoteCtx()
-// 会把出生包(0x3D/0x11)送到 CWvsContext 渲染, 但移动包同层注入会被忽略,
-// 导致"看得见人但不动". 所以这里硬编码 false, 与出生包分层不同.
+// [v64] Movement sync, rebuilt on disassembly evidence instead of guesswork.
+//
+// Why the v55..v63 "relay 0x0C verbatim" approach could never work:
+//   * 0x0C is CP_PLAYER_MOVEMENT - a CLIENT->SERVER opcode. Its body is a list
+//     of movement segments and carries NO object id, so the receiving client
+//     has no way to know which character moved. (The old log line printed
+//     "oid=%08X" off pkt+1 and produced a different value every packet - that
+//     was movement data being misread as an id.)
+//   * CField::OnPacket2 (0x004CBE34, CN v126) compares the opcode against
+//     0x1E / 0x42 / 0x5C / 0xA3 / 0xA7 / 0xA8 and >0xA8 only; anything else
+//     falls through to the reject branch at 0x004CBE8A. 0x0C is dropped.
+//   * The SP (server->client) opcode table has no "remote player moved" entry
+//     at all - the stock emulator was single-player and never needed one.
+//
+// So we synthesize movement out of the one packet already proven to place a
+// remote character at an exact coordinate: 0x11 CHARACTER_SPAWN. We parse the
+// destination out of the 0x0C tail ([float x][float y][1 byte terminator]),
+// cache it, and re-send 0x11 to everyone else on the map. The result is a
+// stepped ("teleporting") movement rather than a smooth walk, but the remote
+// character finally tracks its owner. Set the 5th char of mp_ctx.cfg to '0'
+// to fall back to the old verbatim relay for comparison.
 void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
+	BYTE op = (len > 0) ? pkt[0] : 0;
+
+	// Destination coords live in the last 9 bytes: [float x][float y][tail].
+	bool has_pos = false;
+	float nx = 0.0f, ny = 0.0f;
+	if (op == 0x0C && len >= 10) {
+		memcpy(&nx, pkt + len - 9, 4);
+		memcpy(&ny, pkt + len - 5, 4);
+		// Tenvi world coordinates stay well inside this box; anything outside
+		// means we mis-parsed a variant packet layout, so skip the rewrite.
+		if (nx > -1.0e5f && nx < 1.0e5f && ny > -1.0e5f && ny < 1.0e5f) {
+			has_pos = true;
+		}
+	}
+
 	WORD my_map = 0;
+	TenviCharacter me;
 	{
 		std::lock_guard<std::mutex> lk(g_playersMtx);
 		auto it = g_players.find(t_sid);
@@ -870,7 +903,13 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			return;
 		}
 		my_map = it->second.map;
+		if (has_pos) {
+			it->second.x = nx;
+			it->second.y = ny;
+		}
+		me = it->second.chr;
 	}
+
 	std::vector<int> targets;
 	{
 		std::lock_guard<std::mutex> lk(g_playersMtx);
@@ -879,17 +918,25 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			if (kv.second.map == my_map) targets.push_back(kv.first);
 		}
 	}
-	BYTE op = (len > 0) ? pkt[0] : 0;
-	DWORD oid = 0;
-	if (len >= 5) oid = *(DWORD *)(pkt + 1);
-	printf("[MP-FWD] sid=%d map=%d targets=%zu op=%02X oid=%08X\n",
-		(int)t_sid, (int)my_map, targets.size(), (unsigned)op, (unsigned)oid);
+	printf("[MP-FWD] v64 sid=%d map=%d targets=%zu op=%02X pos=%d x=%.1f y=%.1f\n",
+		(int)t_sid, (int)my_map, targets.size(), (unsigned)op,
+		has_pos ? 1 : 0, nx, ny);
 	if (targets.empty()) return;
+
+	if (MP_MoveAsSpawn() && has_pos) {
+		for (int sid : targets) {
+			printf("[MP-FWD]   -> sid=%d respawn oid=%08X at (%.1f,%.1f)\n",
+				sid, (unsigned)me.id, nx, ny);
+			CharacterSpawnPacket(me, nx, ny, sid);
+		}
+		return;
+	}
+
 	ServerPacket sp;
 	sp.Raw(pkt, len);
 	for (int sid : targets) {
-		printf("[MP-FWD]   -> sid=%d ctx=CField\n", sid);
-		MP_BroadcastToSid(sid, sp, false);
+		printf("[MP-FWD]   -> sid=%d verbatim ctx=%d\n", sid, MP_RemoteCtx() ? 1 : 0);
+		MP_BroadcastToSid(sid, sp, MP_RemoteCtx());
 	}
 }
 #else
@@ -905,6 +952,7 @@ bool MP_RemoteSend3D() { return false; }
 // [v62] 同上; selffirst 必须为 false, 否则 dll 单机路径会重复发自我出生包
 bool MP_Restore3D() { return false; }
 bool MP_SelfSpawnFirst() { return false; }
+bool MP_MoveAsSpawn() { return false; }
 #endif
 
 // go to map
