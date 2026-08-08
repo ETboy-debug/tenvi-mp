@@ -48,106 +48,21 @@ void ProcessPacketExec(std::vector<BYTE> &packet, bool context = true) {
 
 	{
 		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
-		if (f) { fprintf(f, "Exec op=%02X len=%d\n", packet.size()>0?packet[0]:0, (int)packet.size()); fflush(f); fclose(f); }
-	}
-	return OnPacketDirectExec(&ip, context);
-}
-
-void SendPacket(ServerPacket &sp) {
-	return ProcessPacketExec(sp.get());
-}
-void SendPacket2(ServerPacket &sp) {
-	return ProcessPacketExec(sp.get(), false);
-}
-
-// Delay Execution
-std::vector<std::vector<BYTE>> packet_queue;
-
-void DelaySendPacket(ServerPacket &sp) {
-	packet_queue.push_back(sp.get());
-}
-
-void DelayExecution() {
-	if (packet_queue.size()) {
-		auto &packet = packet_queue[0];
-		ProcessPacketExec(packet); // delay execution
-		packet_queue.erase(packet_queue.begin());
-	}
-}
-
-// [MP] 把独立服务端发来的明文包注入客户端。
-// 必须在客户端主线程执行, 所以挂在 ProcessPacketCaller 这个每帧轮询点上。
-// [FIX v3] 原子批处理：先把队列中所有包取到本地缓冲，再一口气注入。
-// 这样客户端原始代码不会在包序列中间插队（如换地图后发确认包打断出生包）。
-// [MP] Batch guard: suppress all client sends during packet injection batch
-// to prevent client-side state corruption (e.g. op=1E during op=10 processing)
-static bool g_mp_in_batch = false;
-
-// [v61] remote spawn buffering: CN client ignores 0x3D/0x11 for remote players
-// if they arrive before the local self-spawn (ChangeMap window not ready yet).
-// Buffer them and replay shortly after local 0x11 is injected.
-static bool g_mp_change_map_active = false;
-static bool g_mp_self_spawned = false;
-static int g_mp_self_spawn_frame = 0;
-static std::vector<std::pair<std::vector<BYTE>, bool>> g_mp_pending_remote;
-
-void MP_Pump() {
-	// [v50] Each entry carries the dispatch context supplied by the server
-	// (frame type 0 = CWvsContext, type 2 = CField). No more guessing.
-	std::vector<std::pair<std::vector<BYTE>, bool>> batch;
-	std::vector<BYTE> packet;
-	bool srv_ctx = true;
-	while (MP_PopPacketEx(packet, srv_ctx)) {
-		batch.push_back(std::make_pair(packet, srv_ctx));
-	}
-	if (batch.empty()) return;
-
-	g_mp_in_batch = true;  // <-- START guard: block all EnterSendPacket during batch
-	// [v50] Dispatch context now comes straight from the server frame type.
-	// The server is the only side that actually knows whether a 0x11 spawn
-	// belongs to this client's own character or to a remote player, so it
-	// tags every packet: SendPacket -> type 0 (CWvsContext), SendPacket2 ->
-	// type 2 (CField). The old v46 heuristic ("first 0x11 after a 0x10 is
-	// me") broke as soon as the server sent remote spawns first: the second
-	// player to log in adopted the FIRST player's object id as its own, so
-	// it could not even see itself.
-	//
-	// g_localObjectId is kept for diagnostics only - it no longer drives any
-	// routing decision.
-	static DWORD g_localObjectId = 0;
-	for (size_t i = 0; i < batch.size(); i++) {
-		std::vector<BYTE> &bp = batch[i].first;   // non-const: ProcessPacketExec takes a mutable ref
-		bool mp_ctx = batch[i].second;
-		BYTE mp_op = (bp.size() > 0) ? bp[0] : 0;
-		DWORD oid = 0;
-		if (bp.size() >= 5) oid = *(DWORD*)&bp[1];
-
-		// [v61] Track local ChangeMap lifecycle.
-		// 0x10 (CWvsContext) starts the ChangeMap window.
-		// 0x11 (CWvsContext) is our own spawn; after that the window is ready
-		// for remote players, but only after a few frames (client init).
-		if (mp_op == 0x10 && mp_ctx) {
-			g_mp_change_map_active = true;
-			g_mp_self_spawned = false;
-			g_mp_self_spawn_frame = 0;
-			g_mp_pending_remote.clear();
-			{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[v61] ChangeMap start, clear pending remote
+		if (f) { fprintf(f, "Exec op=%02X len=%d\n", packet.size()>0?packet[0]:0, (int)packet.size()); fflush(f); fclose(f); }\n	}\n	return OnPacketDirectExec(&ip, context);\n}\n\nvoid SendPacket(ServerPacket &sp) {\n	return ProcessPacketExec(sp.get());\n}\nvoid SendPacket2(ServerPacket &sp) {\n	return ProcessPacketExec(sp.get(), false);\n}\n\n// Delay Execution\nstd::vector<std::vector<BYTE>> packet_queue;\n\nvoid DelaySendPacket(ServerPacket &sp) {\n	packet_queue.push_back(sp.get());\n}\n\nvoid DelayExecution() {\n	if (packet_queue.size()) {\n		auto &packet = packet_queue[0];\n		ProcessPacketExec(packet); // delay execution\n		packet_queue.erase(packet_queue.begin());\n	}\n}\n\n// [MP] 把独立服务端发来的明文包注入客户端。\n// 必须在客户端主线程执行, 所以挂在 ProcessPacketCaller 这个每帧轮询点上。\n// [FIX v3] 原子批处理：先把队列中所有包取到本地缓冲，再一口气注入。\n// 这样客户端原始代码不会在包序列中间插队（如换地图后发确认包打断出生包）。\n// [MP] Batch guard: suppress all client sends during packet injection batch\n// to prevent client-side state corruption (e.g. op=1E during op=10 processing)\nstatic bool g_mp_in_batch = false;\n\n// [v61] remote spawn buffering: CN client ignores 0x3D/0x11 for remote players\n// if they arrive before the local self-spawn (ChangeMap window not ready yet).\n// Buffer them and replay shortly after local 0x11 is injected.\nstatic bool g_mp_change_map_active = false;\nstatic bool g_mp_self_spawned = false;\nstatic int g_mp_self_spawn_frame = 0;\nstatic std::vector<std::pair<std::vector<BYTE>, bool>> g_mp_pending_remote;\nstatic int g_mp_pump_calls = 0;\n\nvoid MP_Pump() {\n	// [v50] Each entry carries the dispatch context supplied by the server\n	// (frame type 0 = CWvsContext, type 2 = CField). No more guessing.\n	std::vector<std::pair<std::vector<BYTE>, bool>> batch;\n	std::vector<BYTE> packet;\n	bool srv_ctx = true;\n	while (MP_PopPacketEx(packet, srv_ctx)) {\n		batch.push_back(std::make_pair(packet, srv_ctx));\n	}\n	if (batch.empty()) return;\n\n	g_mp_in_batch = true;  // <-- START guard: block all EnterSendPacket during batch\n	// [v50] Dispatch context now comes straight from the server frame type.\n	// The server is the only side that actually knows whether a 0x11 spawn\n	// belongs to this client's own character or to a remote player, so it\n	// tags every packet: SendPacket -> type 0 (CWvsContext), SendPacket2 ->\n	// type 2 (CField). The old v46 heuristic ("first 0x11 after a 0x10 is\n	// me") broke as soon as the server sent remote spawns first: the second\n	// player to log in adopted the FIRST player's object id as its own, so\n	// it could not even see itself.\n	//\n	// g_localObjectId is kept for diagnostics only - it no longer drives any\n	// routing decision.\n	static DWORD g_localObjectId = 0;\n	g_mp_pump_calls++;\n	for (size_t i = 0; i < batch.size(); i++) {\n		std::vector<BYTE> &bp = batch[i].first;   // non-const: ProcessPacketExec takes a mutable ref\n		bool mp_ctx = batch[i].second;\n		BYTE mp_op = (bp.size() > 0) ? bp[0] : 0;\n		DWORD oid = 0;\n		if (bp.size() >= 5) oid = *(DWORD*)&bp[1];\n\n		// [v61] Track local ChangeMap lifecycle.\n		// 0x10 (CWvsContext) starts the ChangeMap window.\n		// 0x11 (CWvsContext) is our own spawn; after that the window is ready\n		// for remote players, but only after a few frames (client init).\n		if (mp_op == 0x10 && mp_ctx) {\n			g_mp_change_map_active = true;\n			g_mp_self_spawned = false;\n			g_mp_self_spawn_frame = 0;\n			g_mp_pending_remote.clear();\n			{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[v61] ChangeMap start, clear pending remote
 "); fflush(f); fclose(f); } }
 		}
 		if (mp_op == 0x11 && mp_ctx && g_localObjectId == 0) {
 			g_localObjectId = oid;
 			g_mp_self_spawned = true;
-			g_mp_self_spawn_frame = mp_frame_count;
-			{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[v61] self spawn oid=%08X frame=%d
-", oid, mp_frame_count); fflush(f); fclose(f); } }
+			g_mp_self_spawn_pump = g_mp_pump_calls;
+			{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[v61] self spawn oid=%08X pump=%d\n", oid, g_mp_pump_calls); fflush(f); fclose(f); } }
 		}
 
 		// [v61] Buffer remote account/spawn packets (CField, ctx=0) until the
 		// local self-spawn has settled. Before self-spawn the client ignores them.
 		if (!mp_ctx && (mp_op == 0x3D || mp_op == 0x11) && g_mp_change_map_active && !g_mp_self_spawned) {
 			g_mp_pending_remote.push_back(std::make_pair(bp, mp_ctx));
-			{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[v61] buffer op=%02X oid=%08X (self not spawned)
-", mp_op, oid); fflush(f); fclose(f); } }
+			{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[v61] buffer op=%02X oid=%08X (self not spawned)\n", mp_op, oid); fflush(f); fclose(f); } }
 			continue;
 		}
 
@@ -156,8 +71,7 @@ void MP_Pump() {
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
-				fprintf(f, "[MP-CTX] op=%02X oid=%08X local=%08X ctx=%d src=srv
-",
+				fprintf(f, "[MP-CTX] op=%02X oid=%08X local=%08X ctx=%d src=srv\n",
 					mp_op, oid, g_localObjectId, mp_ctx ? 1 : 0);
 				fflush(f); fclose(f);
 			}
@@ -165,8 +79,7 @@ void MP_Pump() {
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
-				fprintf(f, ">> inject op=%02X len=%d
-", mp_op, (int)bp.size());
+				fprintf(f, ">> inject op=%02X len=%d\n", mp_op, (int)bp.size());
 				fflush(f); fclose(f);
 			}
 		}
@@ -174,17 +87,15 @@ void MP_Pump() {
 		{
 			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
 			if (f) {
-				fprintf(f, "<< done op=%02X
-", mp_op);
+				fprintf(f, "<< done op=%02X\n", mp_op);
 				fflush(f); fclose(f);
 			}
 		}
 	}
 	// [v61] Replay buffered remote spawns after local self-spawn has settled.
 	if (g_mp_self_spawned && !g_mp_pending_remote.empty() &&
-	    mp_frame_count >= g_mp_self_spawn_frame + 30) {
-		{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[v61] replay %d remote packets at frame %d
-", (int)g_mp_pending_remote.size(), mp_frame_count); fflush(f); fclose(f); } }
+	    g_mp_pump_calls >= g_mp_self_spawn_pump + 30) {
+		{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[v61] replay %d remote packets at pump=%d\n", (int)g_mp_pending_remote.size(), g_mp_pump_calls); fflush(f); fclose(f); } }
 		for (auto &entry : g_mp_pending_remote) {
 			ProcessPacketExec(entry.first, entry.second);
 		}
@@ -193,8 +104,7 @@ void MP_Pump() {
 	}
 	{
 		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
-		if (f) { fprintf(f, "=== BATCH END (%d) ===
-", (int)batch.size()); fflush(f); fclose(f); }
+		if (f) { fprintf(f, "=== BATCH END (%d) ===\n", (int)batch.size()); fflush(f); fclose(f); }
 	}
 	g_mp_in_batch = false;  // <-- END guard: allow sends again
 }
@@ -294,117 +204,17 @@ void __fastcall WorldSelectButton_Hook(void *ecx) {
 	// 假服务端挪到远程 StandaloneServer, 回包变异步, 0x04 迟到时客户端 UI 还
 	// 停在世界选择界面 -> 崩。这里改为客户端本地同步注入 0x04(切屏),
 	// 0x05 角色数据仍由服务端异步补。
-	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "WSB clicked -> sync 0x04 + send CHARLIST\n"); fflush(f); fclose(f); } }
-	_WorldSelectButton(ecx);
-	// 同步注入 0x04 = CharacterSelectPacket (opcode 04 00 FF FF FF FF 00)
-	{
-		BYTE sel04[7] = { 0x04, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
-		std::vector<BYTE> p04(sel04, sel04 + 7);
-		ProcessPacketExec(p04);
-	}
-	// 服务端回 0x05 真实角色数据(异步)
-	MP_SendCtrl(MP_CTRL_CHARLIST);
-}
-
-bool (__thiscall *_ConnectCaller)(void *ecx, void *v1, void *v2, void *v3) = NULL;
-static int connect_call_count = 0;
-
-bool __fastcall ConnectCaller_Hook(void *ecx, void *edx, void *v1, void *v2, void *v3) {
-	connect_call_count++;
-	DEBUG(L"Connect is called!");
+	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "WSB clicked -> sync 0x04 + send CHARLIST\n"); fflush(f); fclose(f); } }\n	_WorldSelectButton(ecx);\n	// 同步注入 0x04 = CharacterSelectPacket (opcode 04 00 FF FF FF FF 00)\n	{\n		BYTE sel04[7] = { 0x04, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };\n		std::vector<BYTE> p04(sel04, sel04 + 7);\n		ProcessPacketExec(p04);\n	}\n	// 服务端回 0x05 真实角色数据(异步)\n	MP_SendCtrl(MP_CTRL_CHARLIST);\n}\n\nbool (__thiscall *_ConnectCaller)(void *ecx, void *v1, void *v2, void *v3) = NULL;\nstatic int connect_call_count = 0;\n\nbool __fastcall ConnectCaller_Hook(void *ecx, void *edx, void *v1, void *v2, void *v3) {\n	connect_call_count++;\n	DEBUG(L"Connect is called!");
 	// [DIAG] log connect attempt
-	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[CONNECT #%d]\n", connect_call_count); fflush(f); fclose(f); } }
-	// [MP v13] Like stock TenviTest: just pretend the connection succeeded.
-	// The client creates its own connection object in the post-connect flow, and
-	// finalizes it on the first native send (see EnterSendPacket_Hook). Our earlier
-	// attempts to plant a fake object pointer broke single-player startup.
-	return true;
-}
-
-
-void(__thiscall *_EnterSendPacket)(OutPacket *) = NULL;
-void __fastcall EnterSendPacket_Hook(OutPacket *op) {
-	// [MP] Bridge to standalone server always (so server can respond with more packets)
-	MP_SendGame(op->packet, op->encoded);
-	// [DIAG] Log outbound packet
-	{
-		FILE *f = NULL;
-		fopen_s(&f, "D:/mp_diag.log", "a");
+	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[CONNECT #%d]\n", connect_call_count); fflush(f); fclose(f); } }\n	// [MP v13] Like stock TenviTest: just pretend the connection succeeded.\n	// The client creates its own connection object in the post-connect flow, and\n	// finalizes it on the first native send (see EnterSendPacket_Hook). Our earlier\n	// attempts to plant a fake object pointer broke single-player startup.\n	return true;\n}\n\n\nvoid(__thiscall *_EnterSendPacket)(OutPacket *) = NULL;\nvoid __fastcall EnterSendPacket_Hook(OutPacket *op) {\n	// [MP] Bridge to standalone server always (so server can respond with more packets)\n	MP_SendGame(op->packet, op->encoded);\n	// [DIAG] Log outbound packet\n	{\n		FILE *f = NULL;\n		fopen_s(&f, "D:/mp_diag.log", "a");
 		if (f) {
 			BYTE opcode = (op->encoded > 0) ? op->packet[0] : 0xFF;
-			fprintf(f, "EnterSendPacket op=%02X len=%lu\n", opcode, (unsigned long)op->encoded);
-			fflush(f); fclose(f);
-		}
-	}
-	// [MP] During batch injection, skip the ORIGINAL send so injected packets
-	// are not echoed back to the server.
-	if (g_mp_in_batch) return;
-
-	// [CRITICAL v13] Call the ORIGINAL native send. This is what makes the client
-	// create/initialize its connection object (CWvsContext+0x180). Without it,
-	// the per-frame getter at 0x00463972 reads a NULL object and crashes every
-	// frame. This matches stock TenviTest single-player behavior.
-	_EnterSendPacket(op);
-}
-
-void (__thiscall *_ProcessPacketCaller)(void *) = NULL;
-static int mp_frame_count = 0;
-static bool g_captureStarted = false;  // [v29] 捕获是否已启动(只启动一次)
-void __fastcall ProcessPacketCaller_Hook(void *ecx) {
-	_ProcessPacketCaller(ecx);
-	// [DIAG] Frame counter
-	mp_frame_count++;
-	if (mp_frame_count <= 30 || mp_frame_count % 10 == 0) {
+			fprintf(f, "EnterSendPacket op=%02X len=%lu\n", opcode, (unsigned long)op->encoded);\n			fflush(f); fclose(f);\n		}\n	}\n	// [MP] During batch injection, skip the ORIGINAL send so injected packets\n	// are not echoed back to the server.\n	if (g_mp_in_batch) return;\n\n	// [CRITICAL v13] Call the ORIGINAL native send. This is what makes the client\n	// create/initialize its connection object (CWvsContext+0x180). Without it,\n	// the per-frame getter at 0x00463972 reads a NULL object and crashes every\n	// frame. This matches stock TenviTest single-player behavior.\n	_EnterSendPacket(op);\n}\n\nvoid (__thiscall *_ProcessPacketCaller)(void *) = NULL;\nstatic int mp_frame_count = 0;\nstatic bool g_captureStarted = false;  // [v29] 捕获是否已启动(只启动一次)\nvoid __fastcall ProcessPacketCaller_Hook(void *ecx) {\n	_ProcessPacketCaller(ecx);\n	// [DIAG] Frame counter\n	mp_frame_count++;\n	if (mp_frame_count <= 30 || mp_frame_count % 10 == 0) {\n		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+		if (f) { fprintf(f, "[FRAME %d] ProcessPacketCaller end\n", mp_frame_count); fflush(f); fclose(f); }\n	}\n	// [MP] Inject server packets into client\n	MP_Pump();\n	// [v29] 延迟启动 GetAsyncKeyState 键盘捕获: 等第10帧时游戏窗口肯定已创建\n	// [v30 FIX] 不再传固定HWND(会在启动过程中过期), 改用进程ID判断前台窗口归属\n	if (!g_captureStarted && mp_frame_count >= 10) {\n		g_captureStarted = true;\n		MP_StartCapture();\n		DEBUG(L"[MP] Capture started at frame %d (pid-based)", mp_frame_count);
 		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
-		if (f) { fprintf(f, "[FRAME %d] ProcessPacketCaller end\n", mp_frame_count); fflush(f); fclose(f); }
-	}
-	// [MP] Inject server packets into client
-	MP_Pump();
-	// [v29] 延迟启动 GetAsyncKeyState 键盘捕获: 等第10帧时游戏窗口肯定已创建
-	// [v30 FIX] 不再传固定HWND(会在启动过程中过期), 改用进程ID判断前台窗口归属
-	if (!g_captureStarted && mp_frame_count >= 10) {
-		g_captureStarted = true;
-		MP_StartCapture();
-		DEBUG(L"[MP] Capture started at frame %d (pid-based)", mp_frame_count);
-		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
-		if (f) { fprintf(f, "[MP-CAP] Started at frame %d (pid=%u)\n", mp_frame_count, GetCurrentProcessId()); fflush(f); fclose(f); }
-	}
-	// [DIAG] Post-pump: confirm MP_Pump returned safely
-	if (mp_frame_count > 2190) {
-		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
-		if (f) { fprintf(f, "[FRAME %d] after MP_Pump OK\n", mp_frame_count); fflush(f); fclose(f); }
-	}
-	DelayExecution();
-	// [DIAG] Post-delay: confirm entire frame completed
-	if (mp_frame_count > 2190) {
-		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
-		if (f) { fprintf(f, "[FRAME %d] after DelayExecution OK\n", mp_frame_count); fflush(f); fclose(f); }
-	}
-}
-
-bool AutoResponseHook() {
-	Rosemary r;
-
-	switch (GetRegion()) {
-	case TENVI_JP: {
-		SetServerPacketHeader_JP_v127();
-		SetClientPacketHeader_JP_v127();
-
-		Addr_OnPacketClass = 0x006DB164;
-		// press button to go world select
-		SHookFunction(LoginButton, 0x0052E43B);
-		// world select to go character select
-		SHookFunction(WorldSelectButton, 0x0052F038);
-		// read send packet buffer without using server
-		SHookFunction(EnterSendPacket, 0x0055F2A8);
-		// ignore connect checks for world select and character select
-		SHookFunction(ConnectCaller, 0x0055EFE2);
-		// delay execution test
-		SHookFunction(ProcessPacketCaller, 0x0055E926);
-
-		// patch
-		// portal id to map id
-		//r.Patch(0x0042D3DC + 2, L"18");
+		if (f) { fprintf(f, "[MP-CAP] Started at frame %d (pid=%u)\n", mp_frame_count, GetCurrentProcessId()); fflush(f); fclose(f); }\n	}\n	// [DIAG] Post-pump: confirm MP_Pump returned safely\n	if (mp_frame_count > 2190) {\n		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+		if (f) { fprintf(f, "[FRAME %d] after MP_Pump OK\n", mp_frame_count); fflush(f); fclose(f); }\n	}\n	DelayExecution();\n	// [DIAG] Post-delay: confirm entire frame completed\n	if (mp_frame_count > 2190) {\n		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+		if (f) { fprintf(f, "[FRAME %d] after DelayExecution OK\n", mp_frame_count); fflush(f); fclose(f); }\n	}\n}\n\nbool AutoResponseHook() {\n	Rosemary r;\n\n	switch (GetRegion()) {\n	case TENVI_JP: {\n		SetServerPacketHeader_JP_v127();\n		SetClientPacketHeader_JP_v127();\n\n		Addr_OnPacketClass = 0x006DB164;\n		// press button to go world select\n		SHookFunction(LoginButton, 0x0052E43B);\n		// world select to go character select\n		SHookFunction(WorldSelectButton, 0x0052F038);\n		// read send packet buffer without using server\n		SHookFunction(EnterSendPacket, 0x0055F2A8);\n		// ignore connect checks for world select and character select\n		SHookFunction(ConnectCaller, 0x0055EFE2);\n		// delay execution test\n		SHookFunction(ProcessPacketCaller, 0x0055E926);\n\n		// patch\n		// portal id to map id\n		//r.Patch(0x0042D3DC + 2, L"18");
 		// disable spamming character movement packet
 		r.Patch(0x00459649, L"B8 01 00 00 00");
 
