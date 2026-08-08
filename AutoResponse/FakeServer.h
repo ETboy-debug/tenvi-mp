@@ -23,6 +23,14 @@ extern thread_local int t_sid;
 // true -> CWvsContext, false -> CField (remote players / objects).
 void MP_BroadcastToSid(int sid, ServerPacket &sp, bool context = true);
 void MP_RemovePlayer(int sid);
+// [v61] Dispatch layer used for REMOTE-player packets (0x3D/0x11/0x12/0x0C).
+// Runtime-configurable via "mp_ctx.cfg" next to StandaloneServer.exe so the
+// layer can be flipped with a server restart instead of a 10-minute cloud
+// build. History: v54 tested ctx=1 but was confounded by the window-reopen
+// bug that wiped the stable client's field (only found in v60); v60 removed
+// the reopen but used ctx=0. "no reopen + ctx=1" was never tested, and ctx=1
+// is the only layer the stock single-player code ever used for 0x11.
+bool MP_RemoteCtx();
 // [v55] 把客户端发出的游戏包(移动 0x0C 等)原样转发给同图其他玩家
 void MP_ForwardToSameMap(const BYTE *pkt, DWORD len);
 
