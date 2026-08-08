@@ -978,7 +978,7 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			CharacterSpawnPacket(other.chr, other.x, other.y, t_sid);
 		}
 	}
-	MP_MARK("ChangeMap after broadcast loop (v60 no-window-reopen)");
+	MP_MARK("ChangeMap after broadcast loop (v61 remote-spawn-buffer)");
 #endif
 	CharacterSpawnPacket(chr, x, y);
 	MP_MARK("ChangeMap after self CharacterSpawnPacket");
