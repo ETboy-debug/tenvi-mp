@@ -856,8 +856,10 @@ void MP_RemovePlayer(int) {}
 #endif
 
 #ifdef MP_SERVER
-// [v57] 移动同步: 0x0C 原样广播给同图其他玩家. 远程对象已退回 CField(ctx=0),
-// 移动包必须同层(ctx=0)注入, 对方角色才能在 CField 里动起来. 包体原样转发(含 opcode).
+// [v63] 移动同步: 0x0C 原样广播给同图其他玩家. 注意: 远程角色在接收端是
+// CField 层的对象, 因此移动包必须固定走 ctx=false (CField). 使用 MP_RemoteCtx()
+// 会把出生包(0x3D/0x11)送到 CWvsContext 渲染, 但移动包同层注入会被忽略,
+// 导致"看得见人但不动". 所以这里硬编码 false, 与出生包分层不同.
 void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	WORD my_map = 0;
 	{
@@ -886,8 +888,8 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	ServerPacket sp;
 	sp.Raw(pkt, len);
 	for (int sid : targets) {
-		printf("[MP-FWD]   -> sid=%d\n", sid);
-		MP_BroadcastToSid(sid, sp, MP_RemoteCtx());
+		printf("[MP-FWD]   -> sid=%d ctx=CField\n", sid);
+		MP_BroadcastToSid(sid, sp, false);
 	}
 }
 #else
