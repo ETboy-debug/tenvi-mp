@@ -47,7 +47,7 @@ void ProcessPacketExec(std::vector<BYTE> &packet, bool context = true) {
 	ip.length = (WORD)buffer.size(); // real buffer size
 
 	{
-		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) { fprintf(f, "Exec op=%02X len=%d\n", packet.size()>0?packet[0]:0, (int)packet.size()); fflush(f); fclose(f); }
 	}
 	return OnPacketDirectExec(&ip, context);
@@ -116,7 +116,7 @@ void MP_Pump() {
 		// Diagnostics: remember the first self-tagged spawn we ever see.
 		if (mp_op == 0x11 && mp_ctx && g_localObjectId == 0) g_localObjectId = oid;
 		{
-			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 			if (f) {
 				fprintf(f, "[MP-CTX] op=%02X oid=%08X local=%08X ctx=%d src=srv\n",
 					mp_op, oid, g_localObjectId, mp_ctx ? 1 : 0);
@@ -124,7 +124,7 @@ void MP_Pump() {
 			}
 		}
 		{
-			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 			if (f) {
 				fprintf(f, ">> inject op=%02X len=%d\n", mp_op, (int)bp.size());
 				fflush(f); fclose(f);
@@ -132,7 +132,7 @@ void MP_Pump() {
 		}
 		ProcessPacketExec(bp, mp_ctx);
 		{
-			FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 			if (f) {
 				fprintf(f, "<< done op=%02X\n", mp_op);
 				fflush(f); fclose(f);
@@ -140,7 +140,7 @@ void MP_Pump() {
 		}
 	}
 	{
-		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) { fprintf(f, "=== BATCH END (%d) ===\n", (int)batch.size()); fflush(f); fclose(f); }
 	}
 	g_mp_in_batch = false;  // <-- END guard: allow sends again
@@ -241,7 +241,7 @@ void __fastcall WorldSelectButton_Hook(void *ecx) {
 	// 假服务端挪到远程 StandaloneServer, 回包变异步, 0x04 迟到时客户端 UI 还
 	// 停在世界选择界面 -> 崩。这里改为客户端本地同步注入 0x04(切屏),
 	// 0x05 角色数据仍由服务端异步补。
-	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "WSB clicked -> sync 0x04 + send CHARLIST\n"); fflush(f); fclose(f); } }
+	{ FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a"); if (f) { fprintf(f, "WSB clicked -> sync 0x04 + send CHARLIST\n"); fflush(f); fclose(f); } }
 	_WorldSelectButton(ecx);
 	// 同步注入 0x04 = CharacterSelectPacket (opcode 04 00 FF FF FF FF 00)
 	{
@@ -260,7 +260,7 @@ bool __fastcall ConnectCaller_Hook(void *ecx, void *edx, void *v1, void *v2, voi
 	connect_call_count++;
 	DEBUG(L"Connect is called!");
 	// [DIAG] log connect attempt
-	{ FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a"); if (f) { fprintf(f, "[CONNECT #%d]\n", connect_call_count); fflush(f); fclose(f); } }
+	{ FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a"); if (f) { fprintf(f, "[CONNECT #%d]\n", connect_call_count); fflush(f); fclose(f); } }
 	// [MP v13] Like stock TenviTest: just pretend the connection succeeded.
 	// The client creates its own connection object in the post-connect flow, and
 	// finalizes it on the first native send (see EnterSendPacket_Hook). Our earlier
@@ -276,7 +276,7 @@ void __fastcall EnterSendPacket_Hook(OutPacket *op) {
 	// [DIAG] Log outbound packet
 	{
 		FILE *f = NULL;
-		fopen_s(&f, "D:/mp_diag.log", "a");
+		fopen_s(&f, MP_DiagPath(), "a");
 		if (f) {
 			BYTE opcode = (op->encoded > 0) ? op->packet[0] : 0xFF;
 			fprintf(f, "EnterSendPacket op=%02X len=%lu\n", opcode, (unsigned long)op->encoded);
@@ -302,7 +302,7 @@ void __fastcall ProcessPacketCaller_Hook(void *ecx) {
 	// [DIAG] Frame counter
 	mp_frame_count++;
 	if (mp_frame_count <= 30 || mp_frame_count % 10 == 0) {
-		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) { fprintf(f, "[FRAME %d] ProcessPacketCaller end\n", mp_frame_count); fflush(f); fclose(f); }
 	}
 	// [MP] Inject server packets into client
@@ -313,18 +313,18 @@ void __fastcall ProcessPacketCaller_Hook(void *ecx) {
 		g_captureStarted = true;
 		MP_StartCapture();
 		DEBUG(L"[MP] Capture started at frame %d (pid-based)", mp_frame_count);
-		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) { fprintf(f, "[MP-CAP] Started at frame %d (pid=%u)\n", mp_frame_count, GetCurrentProcessId()); fflush(f); fclose(f); }
 	}
 	// [DIAG] Post-pump: confirm MP_Pump returned safely
 	if (mp_frame_count > 2190) {
-		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) { fprintf(f, "[FRAME %d] after MP_Pump OK\n", mp_frame_count); fflush(f); fclose(f); }
 	}
 	DelayExecution();
 	// [DIAG] Post-delay: confirm entire frame completed
 	if (mp_frame_count > 2190) {
-		FILE *f = NULL; fopen_s(&f, "D:/mp_diag.log", "a");
+		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) { fprintf(f, "[FRAME %d] after DelayExecution OK\n", mp_frame_count); fflush(f); fclose(f); }
 	}
 }
