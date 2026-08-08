@@ -950,11 +950,20 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 	MP_MARK("ChangeMap after players-table insert");
 	{
 		std::lock_guard<std::mutex> lk(g_playersMtx);
+		// [v61-diag] prove whether this loop actually matches anybody.
+		printf("[MP-XVIS] enter t_sid=%d my_map=%d table_size=%d\n",
+			t_sid, (int)chr.map, (int)g_players.size());
+		fflush(stdout);
+		int xvis_matched = 0;
 		for (auto &kv : g_players) {
 			int other_sid = kv.first;
 			RemotePlayer &other = kv.second;
+			printf("[MP-XVIS]   cand sid=%d map=%d self=%d\n",
+				other_sid, (int)other.map, (other_sid == t_sid) ? 1 : 0);
+			fflush(stdout);
 			if (other_sid == t_sid) continue;
 			if (other.map != chr.map) continue;
+			xvis_matched++;
 			// [v54b] 0x3D must reach the receiving client BEFORE the 0x11 spawn:
 			// the CN client creates the character object from 0x3D and ignores
 			// any spawn whose oid is not a known object. v50-v54 sent only the
@@ -977,8 +986,10 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			AccountDataPacket(other.chr, t_sid);
 			CharacterSpawnPacket(other.chr, other.x, other.y, t_sid);
 		}
+		printf("[MP-XVIS] leave t_sid=%d matched=%d\n", t_sid, xvis_matched);
+		fflush(stdout);
 	}
-	MP_MARK("ChangeMap after broadcast loop (v61 remote-spawn-buffer)");
+	MP_MARK("ChangeMap after broadcast loop (v61-diag instrumented)");
 #endif
 	CharacterSpawnPacket(chr, x, y);
 	MP_MARK("ChangeMap after self CharacterSpawnPacket");
