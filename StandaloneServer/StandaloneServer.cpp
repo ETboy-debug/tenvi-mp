@@ -202,6 +202,17 @@ void MP_BroadcastToSid(int sid, ServerPacket &sp, bool context) {
 		auto it = g_onlineSock.find(sid);
 		if (it != g_onlineSock.end()) s = it->second;
 	}
+	// [v61-diag] This path used to be completely silent. Every cross-player
+	// packet (spawn/account/move) goes through here; if the target sid is not
+	// in g_onlineSock the packet was dropped without a trace, which is why
+	// v57/v58/v60 were all diagnosed blind.
+	{
+		vector<BYTE> pv = sp.get();
+		int op = pv.empty() ? -1 : (int)pv[0];
+		Log("[MP-SEND] to_sid=%d op=%02X len=%d ctx=%d sock=%s",
+			sid, op, (int)pv.size(), context ? 1 : 0,
+			(s != INVALID_SOCKET) ? "OK" : "MISSING");
+	}
 	if (s != INVALID_SOCKET) {
 		SendPacketTo(s, sp, context ? MP_TYPE_GAME : MP_TYPE_GAME_FIELD);
 	}
