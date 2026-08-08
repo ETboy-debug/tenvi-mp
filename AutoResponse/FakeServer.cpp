@@ -963,10 +963,13 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			// 这里时,与 t_client 自己的 ChangeMap 流程冲突→崩溃). 改为在 ChangeMap
 			// 函数末尾 self spawn 之后发,此时 t_client 自己的 ChangeMap 已完成.
 			// [v54c] "别人看到自己": 给 other_sid 重发场景
-			ChangeMapPacket(chr.map, other.x, other.y, other_sid);   // 重开对方换图窗口
-			SpawnObjects(chr, chr.map, other_sid);                  // 重发怪物/NPC
-			AccountDataPacket(other.chr, other_sid);                // 对方自己的账户数据(重建)
-			CharacterSpawnPacket(other.chr, other.x, other.y, other_sid);  // 对方自己出生
+			// [v60] REMOVED: ChangeMapPacket/SpawnObjects/AccountData/Spawn for other_sid.
+			// Re-opening the ChangeMap window (0x10) on an ALREADY-STABLE client wipes its
+			// field state -- the first player lost even his OWN character the moment a second
+			// player joined (v57r field report). v54p law: ChangeMap runs ONCE at login only.
+			// Now we only push a plain CField dynamic spawn (0x3D + 0x11) to the existing
+			// player; the client byte-patch at 0x0048DD03 already allows rendering non-local
+			// characters, so no window re-open is required.
 			AccountDataPacket(chr, other_sid);                   // 别人看到自己: 先给自己建角色对象
 			CharacterSpawnPacket(chr, x, y, other_sid);
 			// [v56] 后进看先进尝试: 给当前玩家也发对方的 0x3D + 0x11,
@@ -975,7 +978,7 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			CharacterSpawnPacket(other.chr, other.x, other.y, t_sid);
 		}
 	}
-	MP_MARK("ChangeMap after broadcast loop");
+	MP_MARK("ChangeMap after broadcast loop (v60 no-window-reopen)");
 #endif
 	CharacterSpawnPacket(chr, x, y);
 	MP_MARK("ChangeMap after self CharacterSpawnPacket");
