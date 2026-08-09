@@ -29,10 +29,10 @@ static std::map<DWORD, RemoteInterp> g_interp;
 static bool g_interp_announced = false;
 static int mp_frame_count = 0;  // per-frame counter, incremented at top of MP_Pump
 
-// [v72a] Hook CField::GetCharacterByOID(this=CField*, oid) at 0x42AC5C.
-// thiscall: ecx=this(CField*), [esp+4]=oid, returns eax=CCharacter* (or a
-// wrapper holding it). We intercept to learn the live CCharacter* for each
-// remote oid so V72b can write coords into it for smooth movement.
+// [v72a-fix] Hook CField::GetCharacterByOID(this=CField*, oid) at 0x42ACDD.
+// thiscall: ecx=this(CField*), [esp+4]=oid, returns eax=CCharacter*.
+// 0x42AC5C was the wrong target (not on hot path); 0x42ACDD is the real one
+// (prologue: push [ebp+8]=oid, this+0x1c0 container lookup, ret 4).
 // Observation-only for now: we just record oid->ptr when the oid belongs to a
 // remote player we already track in g_interp. No coordinate writes yet, so this
 // build is safe to ship and only proves the function identity via diag log.
@@ -607,12 +607,14 @@ bool AutoResponseHook() {
 		SHookFunction(ConnectCaller, 0x0056A4FD);
 		SHookFunction(ProcessPacketCaller, 0x0056A579);
 
-		// [v72a] Hook CField::GetCharacterByOID to learn live CCharacter* per oid.
-		// 0x42AC5C is thiscall(this=CField*, [esp+4]=oid, eax=CCharacter*).
-		SHookFunction(GetCharacterByOID, 0x0042AC5C);
+		// [v72a-fix] Hook CField::GetCharacterByOID to learn live CCharacter* per oid.
+		// REAL function is 0x42ACDD: thiscall(this=CField*, [esp+4]=oid, eax=CCharacter*).
+		// (0x42AC5C was a sibling/wrapper that is NOT on the hot path - wrong target before.)
+		// 0x42ACDD does [esp+4]=oid lookup into this+0x1c0 container via 0x415303, ret 4.
+		SHookFunction(GetCharacterByOID, 0x0042ACDD);
 		{
 			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-			if (f) { fprintf(f, "[MP-HOOK] GetCharacterByOID hooked at 0x0042AC5C (installed=%s)\n",
+			if (f) { fprintf(f, "[MP-HOOK] GetCharacterByOID hooked at 0x0042ACDD (installed=%s)\n",
 			        (_GetCharacterByOID != NULL) ? "yes" : "NO"); fflush(f); fclose(f); }
 		}
 
