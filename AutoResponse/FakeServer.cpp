@@ -930,14 +930,14 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	if (targets.empty()) return;
 
 	if (MP_MoveAsSpawn() && has_pos) {
-		// [v67] Bleed-stop for the v66 flicker/vanirsh regression.
-		// The client already holds this oid, so re-sending 0x3D+0x11 just
-		// relocates the avatar in place. RemoveObject (v66) made it vanish for
-		// a frame and strobe, so we drop it entirely. The client still has no
-		// "remote player moved" opcode, so the update is still a teleport, not
-		// a walk - true smoothing needs client-side DLL interpolation (v68).
-		// We only emit once per MOVE_THRESHOLD px so we don't spam rebuilds.
-		const float MOVE_THRESHOLD = 20.0f;
+		// [v68] Resurrect RemoveObject and widen threshold to stop the v67
+		// "trailing clones" regression (screen showed a long line of duplicated
+		// avatars because every 0x11 created a fresh object).
+		// The client cannot update an existing remote avatar via 0x11 alone:
+		// it treats each 0x11 as a spawn. We must RemoveObject first, then
+		// 0x3D+0x11 to recreate at the new coordinate. We only do this once
+		// per MOVE_THRESHOLD pixels so it does not strobe every step.
+		const float MOVE_THRESHOLD = 50.0f;
 		bool do_update = false;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
@@ -957,7 +957,9 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			return;
 		}
 		for (auto &t : targets) {
-			// NO RemoveObject: client already has this oid, just relocate it.
+			printf("[MP-FWD]   -> sid=%d remove+respawn oid=%08X to (%.1f,%.1f)\n",
+				t.sid, (unsigned)me.id, nx, ny);
+			RemoveObjectPacket(me.id, t.sid);
 			if (MP_RemoteSend3D()) AccountDataPacket(me, t.sid);
 			CharacterSpawnPacket(me, nx, ny, t.sid);
 			if (MP_RemoteSend3D() && MP_Restore3D())
@@ -972,8 +974,6 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 				it->second.has_last_move = true;
 			}
 		}
-		printf("[MP-FWD]   -> sid updated oid=%08X to (%.1f,%.1f) (no remove)\n",
-			(unsigned)me.id, nx, ny);
 		return;
 	}
 
