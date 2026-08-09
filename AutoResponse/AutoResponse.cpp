@@ -2,6 +2,7 @@
 #include"MPClient.h"
 #include <map>
 #include <cstring>
+#include <cmath>
 
 DWORD Addr_OnPacketClass = 0;
 DWORD Addr_OnPacketClass2 = 0;
@@ -73,16 +74,30 @@ DWORD __fastcall GetCharacterByOID_Hook(void *ecx_this, void *edx_unused, DWORD 
 	return ptr;
 }
 
+// [v73] Interpolation config: reads interp=1, x_off=HEX, y_off=HEX, speed=FLOAT.
+// Offsets are byte offsets into the CCharacter object where x/y floats live.
+// Speed is the lerp factor per frame (0.1 = move 10% of the gap each frame).
+static int g_interp_x_off = 0;
+static int g_interp_y_off = 0;
+static float g_interp_speed = 0.15f;
+
 // Returns true only if "mp_interp.cfg" (placed next to Tenvi.exe) contains
 // the line "interp=1". ASCII filename only - no Chinese in source per build rule.
 static bool MP_InterpEnabled() {
 	FILE* f = NULL;
 	fopen_s(&f, "mp_interp.cfg", "r");
 	if (!f) return false;
-	char line[64];
+	char line[128];
 	bool on = false;
 	while (fgets(line, sizeof(line), f)) {
 		if (strncmp(line, "interp=1", 8) == 0) on = true;
+		else if (strncmp(line, "x_off=0x", 8) == 0) {
+			g_interp_x_off = (int)strtol(line + 6, NULL, 16);
+		} else if (strncmp(line, "y_off=0x", 8) == 0) {
+			g_interp_y_off = (int)strtol(line + 6, NULL, 16);
+		} else if (strncmp(line, "speed=", 6) == 0) {
+			g_interp_speed = (float)atof(line + 6);
+		}
 	}
 	fclose(f);
 	return on;
@@ -225,6 +240,46 @@ void MP_Pump() {
 			} else {
 				it->second.tx = rx; it->second.ty = ry; it->second.stale = 0;
 			}
+			// [v73] Probe mode: scan the CCharacter object memory for floats
+			// that match the spawn coords. This auto-discovers the correct
+			// x/y offsets so the user does not need Cheat Engine.
+			static bool probe_checked = false;
+			if (MP_InterpEnabled() && !probe_checked) {
+				auto cit = g_char_by_oid.find(oid);
+				if (cit != g_char_by_oid.end() && cit->second != 0) {
+					DWORD char_ptr = cit->second;
+					FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+					if (f) {
+						fprintf(f, "[MP-PROBE] Scanning CCharacter at %08X for spawn coords (%.1f, %.1f)\n",
+							char_ptr, rx, ry);
+						int found_x = -1, found_y = -1;
+						// Scan first 0x200 bytes of the object for matching floats
+						for (int off = 0; off < 0x200; off += 4) {
+							float val = 0;
+							memcpy(&val, (void*)(char_ptr + off), 4);
+							if (fabsf(val - rx) < 0.01f && found_x < 0) {
+								found_x = off;
+								fprintf(f, "  [MP-PROBE] x match at offset +0x%03X  (val=%.3f)\n", off, val);
+							}
+							if (fabsf(val - ry) < 0.01f && found_y < 0 && off != found_x) {
+								found_y = off;
+								fprintf(f, "  [MP-PROBE] y match at offset +0x%03X  (val=%.3f)\n", off, val);
+							}
+						}
+						if (found_x >= 0 && found_y >= 0) {
+							fprintf(f, "  [MP-PROBE] *** AUTO-DETECTED: x_off=0x%X y_off=0x%X ***\n",
+								found_x, found_y);
+							// Auto-apply the detected offsets
+							if (g_interp_x_off == 0) g_interp_x_off = found_x;
+							if (g_interp_y_off == 0) g_interp_y_off = found_y;
+						} else {
+							fprintf(f, "  [MP-PROBE] no match found in first 0x200 bytes\n");
+						}
+						fflush(f); fclose(f);
+					}
+					probe_checked = true;  // only probe once per session
+				}
+			}
 			// [v72a-diag] Ungated marker proving the spawn-cache block executes.
 			static int spawn_seen = 0;
 			if (spawn_seen < 50) {
@@ -267,19 +322,57 @@ void MP_Pump() {
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) { fprintf(f, "=== BATCH END (%d) ===\n", (int)batch.size()); fflush(f); fclose(f); }
 	}
-	// [v71] Per-frame interpolation step. Currently a no-op + diag log:
-	// writing to client memory needs CCharacter x/y offsets that are still
-	// TBD via Cheat Engine. When MP_InterpEnabled() (mp_interp.cfg says
-	// interp=1) we would, for every tracked oid, locate the client-side
-	// CCharacter object, lerp cx/cy toward tx/ty, and write the new coords
-	// back - that is the real smoothing. Until then we just age the cache.
+	// [v73] Per-frame movement interpolation - REAL implementation.
+	// For each tracked remote player:
+	//   1. Look up the live CCharacter* via g_char_by_oid (populated by
+	//      GetCharacterByOID_Hook every time the client resolves that oid).
+	//   2. Read current x/y from the client object at the configured offsets.
+	//   3. Lerp current toward target (tx/ty) by g_interp_speed.
+	//   4. Write the smoothed coords back.
+	// Result: the remote avatar slides smoothly instead of teleporting.
+	// If offsets are not configured (both 0), we fall back to the old
+	// no-op behavior so a missing cfg does not crash anything.
 	if (MP_InterpEnabled()) {
-		for (auto &kv : g_interp) kv.second.stale++;
+		bool have_offsets = (g_interp_x_off != 0 || g_interp_y_off != 0);
 		static int dbg = 0;
 		if (++dbg % 60 == 0) {
 			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-			if (f) { fprintf(f, "[MP-INTERP] ENABLED but apply is no-op (offsets TBD), tracked=%d\n",
-				(int)g_interp.size()); fflush(f); fclose(f); }
+			if (f) { fprintf(f, "[MP-INTERP] ENABLED tracked=%d offsets=(%04X,%04X) speed=%.3f\n",
+				(int)g_interp.size(), g_interp_x_off, g_interp_y_off, g_interp_speed);
+				fflush(f); fclose(f); }
+		}
+		if (have_offsets && !g_interp.empty()) {
+			int applied = 0;
+			for (auto &kv : g_interp) {
+				RemoteInterp &ri = kv.second;
+				ri.stale++;
+				auto it = g_char_by_oid.find(ri.oid);
+				if (it == g_char_by_oid.end() || it->second == 0) continue;
+				DWORD char_ptr = it->second;
+				// Read current client-side coords
+				float cx = 0, cy = 0;
+				if (g_interp_x_off) memcpy(&cx, (void*)(char_ptr + g_interp_x_off), 4);
+				if (g_interp_y_off) memcpy(&cy, (void*)(char_ptr + g_interp_y_off), 4);
+				// Lerp toward target
+				float nx = cx + (ri.tx - cx) * g_interp_speed;
+				float ny = cy + (ri.ty - cy) * g_interp_speed;
+				// Snap if very close (avoids jitter when nearly arrived)
+				if (fabsf(nx - ri.tx) < 0.5f) nx = ri.tx;
+				if (fabsf(ny - ri.ty) < 0.5f) ny = ri.ty;
+				// Write back
+				if (g_interp_x_off) memcpy((void*)(char_ptr + g_interp_x_off), &nx, 4);
+				if (g_interp_y_off) memcpy((void*)(char_ptr + g_interp_y_off), &ny, 4);
+				ri.cx = nx; ri.cy = ny;
+				applied++;
+			}
+			if (applied > 0 && (dbg % 60) == 0) {
+				FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+				if (f) { fprintf(f, "[MP-INTERP] applied lerp to %d/%d tracked\n",
+					applied, (int)g_interp.size()); fflush(f); fclose(f); }
+			}
+		} else {
+			// No offsets configured - just age the entries like before
+			for (auto &kv : g_interp) kv.second.stale++;
 		}
 	}
 	// [v71] Drop stale entries so the map does not grow forever if a remote
