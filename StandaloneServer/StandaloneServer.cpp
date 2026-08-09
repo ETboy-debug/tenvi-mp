@@ -247,7 +247,7 @@ static void MP_Cfg(int &ctx, int &send3d, int &restore3d, int &selffirst,
 	static int s_ctx = -1, s_3d = -1, s_rst = -1, s_first = -1, s_move = -1;
 	if (s_ctx < 0) {
 		MP_LoadCtxCfg(s_ctx, s_3d, s_rst, s_first, s_move);
-		Log("[MP-CFG] v66 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d moveAsSpawn=%d",
+		Log("[MP-CFG] v67 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d moveAsSpawn=%d",
 			s_ctx, s_ctx ? "CWvsContext" : "CField", s_3d, s_rst, s_first, s_move);
 	}
 	ctx = s_ctx;
