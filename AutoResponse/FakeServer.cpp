@@ -930,16 +930,23 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	if (targets.empty()) return;
 
 	if (MP_MoveAsSpawn() && has_pos) {
-		// [v69] Push the threshold out further. User feedback (screenshot)
-		// shows that each 0x11 respawn triggers the client-side "entered map"
-		// UI effect (map name "魔法密林" flashing repeatedly), because the
-		// client treats every CharacterSpawn as a birth/arrival event. We
-		// cannot stop that effect from the server, so the only lever we have
-		// is to respawn less often. 150px means the remote avatar jumps once
-		// per roughly screen-and-a-half walked - still teleporty, but the
-		// screen no longer strobes every few steps. If this is still too
-		// jarring, v70 will drop to "sync only when the owner stops moving".
-		const float MOVE_THRESHOLD = 150.0f;
+		// [v70] Filter out the (0,0) poison packets that v69 logged by the
+		// hundreds. The 0x0C parser reads the last 8 bytes as floats, but not
+		// every 0x0C sub-packet carries coordinates there - sometimes we get
+		// zeros. Spawning a remote avatar at (0,0) moves it to the map origin
+		// (often off-screen / under the floor), which looks like "he ran and
+		// disappeared". Only accept non-zero coordinates for the respawn.
+		if (fabsf(nx) < 0.001f && fabsf(ny) < 0.001f) {
+			printf("[MP-FWD]   skip invalid (0,0) pos\n");
+			return;
+		}
+		// [v69] Each 0x11 respawn triggers the client-side "entered map" UI
+		// effect (map name flashing), because the client treats every
+		// CharacterSpawn as a birth/arrival event. We cannot stop that from
+		// the server, so the only lever is to respawn less often.
+		// [v70] 100px is a compromise: less strobing than 30/50px, but not as
+		// teleporty as 150px, and the (0,0) filter stops the disappear bug.
+		const float MOVE_THRESHOLD = 100.0f;
 		bool do_update = false;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
