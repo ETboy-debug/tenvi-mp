@@ -189,11 +189,14 @@ void MP_Pump() {
 		if (bp.size() >= 5) oid = *(DWORD*)&bp[1];
 		// Diagnostics: remember the first self-tagged spawn we ever see.
 		if (mp_op == 0x11 && mp_ctx && g_localObjectId == 0) g_localObjectId = oid;
-		// [v71] Cache remote 0x11 spawn coords for interpolation. A remote
-		// spawn is one that arrived on the CField layer (!mp_ctx) and is not
-		// our own object id. The 0x11 body is: [0]=op, [1..4]=oid,
-		// [5..8]=x(float), [9..12]=y(float) - see CharacterSpawnPacket().
-		if (mp_op == 0x11 && !mp_ctx && oid != g_localObjectId && bp.size() >= 13) {
+		// [v72a-fix] Cache remote 0x11 spawn coords for interpolation. A remote
+		// spawn is ANY 0x11 whose oid is not our own object id. Empirically the
+		// deployed server sends all 0x11 spawns on the CWvsContext layer
+		// (mp_ctx=true, ctx=1) - NOT CField - yet they render fine, so the old
+		// "!mp_ctx" gate was wrong and left g_interp empty (hook never fired).
+		// Drop the ctx requirement; identify remote purely by oid != self.
+		// 0x11 body: [0]=op, [1..4]=oid, [5..8]=x(float), [9..12]=y(float).
+		if (mp_op == 0x11 && oid != g_localObjectId && bp.size() >= 13) {
 			float rx = *(float*)&bp[5];
 			float ry = *(float*)&bp[9];
 			auto it = g_interp.find(oid);
