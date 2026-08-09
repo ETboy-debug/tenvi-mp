@@ -191,7 +191,7 @@ static void SendPacketTo(SOCKET s, ServerPacket &sp, BYTE frameType = MP_TYPE_GA
 	send(s, (const char *)&frame[0], (int)frame.size(), 0);
 }
 
-// [v63-order-restore] Runtime knobs, read once from "mp_ctx.cfg" (plain chars,
+// [v65-order-restore] Runtime knobs, read once from "mp_ctx.cfg" (plain chars,
 // no newline required). Exists so behaviour can be flipped in seconds instead
 // of waiting for a cloud rebuild - v54..v61 burned days flipping constants.
 //   [0] '1' = remote packets go to CWvsContext, '0' = CField      (default '1')
@@ -247,7 +247,7 @@ static void MP_Cfg(int &ctx, int &send3d, int &restore3d, int &selffirst,
 	static int s_ctx = -1, s_3d = -1, s_rst = -1, s_first = -1, s_move = -1;
 	if (s_ctx < 0) {
 		MP_LoadCtxCfg(s_ctx, s_3d, s_rst, s_first, s_move);
-		Log("[MP-CFG] v64 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d moveAsSpawn=%d",
+		Log("[MP-CFG] v65 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d moveAsSpawn=%d",
 			s_ctx, s_ctx ? "CWvsContext" : "CField", s_3d, s_rst, s_first, s_move);
 	}
 	ctx = s_ctx;
