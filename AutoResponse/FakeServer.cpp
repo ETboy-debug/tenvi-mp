@@ -946,7 +946,9 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// the server, so the only lever is to respawn less often.
 		// [v70] 100px is a compromise: less strobing than 30/50px, but not as
 		// teleporty as 150px, and the (0,0) filter stops the disappear bug.
-		const float MOVE_THRESHOLD = 100.0f;
+		// [v73] Lowered to 30px for smoother movement. Combined with the
+		// no-remove optimization below, the teleport feel is greatly reduced.
+		const float MOVE_THRESHOLD = 30.0f;
 		bool do_update = false;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
@@ -966,9 +968,14 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			return;
 		}
 		for (auto &t : targets) {
-			printf("[MP-FWD]   -> sid=%d remove+respawn oid=%08X to (%.1f,%.1f)\n",
+			printf("[MP-FWD]   -> sid=%d respawn-only oid=%08X to (%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, nx, ny);
-			RemoveObjectPacket(me.id, t.sid);
+			// [v73] Removed RemoveObjectPacket before respawn. The client
+			// updates the existing character object in-place when it receives
+			// another 0x11 spawn, so skipping the remove eliminates the
+			// "blink out then reappear" flash. Result: the avatar still
+			// jumps to the new position, but without the intermediate
+			// disappearance - much less jarring visually.
 			if (MP_RemoteSend3D()) AccountDataPacket(me, t.sid);
 			CharacterSpawnPacket(me, nx, ny, t.sid);
 			if (MP_RemoteSend3D() && MP_Restore3D())
