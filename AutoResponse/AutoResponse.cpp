@@ -36,11 +36,28 @@ static int mp_frame_count = 0;  // per-frame counter, incremented at top of MP_P
 // remote player we already track in g_interp. No coordinate writes yet, so this
 // build is safe to ship and only proves the function identity via diag log.
 static std::map<DWORD, DWORD> g_char_by_oid;
+// [v72a-diag] Track every distinct oid the client resolves via this function,
+// ungated by g_interp, so we can prove (a) the hook is installed and (b) whether
+// remote char oids (e.g. 0x57C) ever flow through GetCharacterByOID. Capped.
+static std::map<DWORD, bool> g_hook_seen;
+static int g_hook_seen_n = 0;
 
 DWORD (__thiscall *_GetCharacterByOID)(void *ecx, DWORD oid) = NULL;
 DWORD __fastcall GetCharacterByOID_Hook(void *ecx_this, void *edx_unused, DWORD oid) {
 	// Call the original (thiscall): ecx=this, oid on stack, eax=CCharacter*.
 	DWORD ptr = _GetCharacterByOID(ecx_this, oid);
+	// [v72a-diag] Log every distinct oid once (capped). Reveals which oids the
+	// client resolves here - including whether remote characters appear at all.
+	if (g_hook_seen_n < 600 && g_hook_seen.find(oid) == g_hook_seen.end()) {
+		g_hook_seen[oid] = true;
+		g_hook_seen_n++;
+		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+		if (f) {
+			fprintf(f, "[MP-HOOK] oid=%08X -> char_ptr=%08X (seen #%d)\n",
+			        oid, ptr, g_hook_seen_n);
+			fflush(f); fclose(f);
+		}
+	}
 	if (g_interp.count(oid)) {
 		g_char_by_oid[oid] = ptr;
 		static int oid_log = 0;
@@ -207,6 +224,14 @@ void MP_Pump() {
 				g_interp[oid] = ri;
 			} else {
 				it->second.tx = rx; it->second.ty = ry; it->second.stale = 0;
+			}
+			// [v72a-diag] Ungated marker proving the spawn-cache block executes.
+			static int spawn_seen = 0;
+			if (spawn_seen < 50) {
+				spawn_seen++;
+				FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+				if (f) { fprintf(f, "[MP-INTERP] SPAWN oid=%08X -> (%.1f,%.1f) g_interp=%d\n",
+					oid, rx, ry, (int)g_interp.size()); fflush(f); fclose(f); }
 			}
 			if (mp_frame_count % 30 == 0) {
 				FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
@@ -492,6 +517,11 @@ bool AutoResponseHook() {
 		// [v72a] Hook CField::GetCharacterByOID to learn live CCharacter* per oid.
 		// 0x42AC5C is thiscall(this=CField*, [esp+4]=oid, eax=CCharacter*).
 		SHookFunction(GetCharacterByOID, 0x0042AC5C);
+		{
+			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+			if (f) { fprintf(f, "[MP-HOOK] GetCharacterByOID hooked at 0x0042AC5C (installed=%s)\n",
+			        (_GetCharacterByOID != NULL) ? "yes" : "NO"); fflush(f); fclose(f); }
+		}
 
 		// [FIX v19] Surgical byte patches at the 3 NULL-deref virtual-call sites inside the
 		// per-frame network session update function (entry 0x4947F6, epilogue 0x494923).
