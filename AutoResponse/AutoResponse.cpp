@@ -26,6 +26,7 @@ struct RemoteInterp {
 
 static std::map<DWORD, RemoteInterp> g_interp;
 static bool g_interp_announced = false;
+static int mp_frame_count = 0;  // per-frame counter, incremented at top of MP_Pump
 
 // [v72a] Hook CField::GetCharacterByOID(this=CField*, oid) at 0x42AC5C.
 // thiscall: ecx=this(CField*), [esp+4]=oid, returns eax=CCharacter* (or a
@@ -149,6 +150,7 @@ void DelayExecution() {
 static bool g_mp_in_batch = false;
 
 void MP_Pump() {
+	mp_frame_count++;
 	// [v50] Each entry carries the dispatch context supplied by the server
 	// (frame type 0 = CWvsContext, type 2 = CField). No more guessing.
 	std::vector<std::pair<std::vector<BYTE>, bool>> batch;
