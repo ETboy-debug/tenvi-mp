@@ -29,50 +29,16 @@ static std::map<DWORD, RemoteInterp> g_interp;
 static bool g_interp_announced = false;
 static int mp_frame_count = 0;  // per-frame counter, incremented at top of MP_Pump
 
-// [v72a-fix] Hook CField::GetCharacterByOID(this=CField*, oid) at 0x42ACDD.
-// thiscall: ecx=this(CField*), [esp+4]=oid, returns eax=CCharacter*.
-// 0x42AC5C was the wrong target (not on hot path); 0x42ACDD is the real one
-// (prologue: push [ebp+8]=oid, this+0x1c0 container lookup, ret 4).
-// Observation-only for now: we just record oid->ptr when the oid belongs to a
-// remote player we already track in g_interp. No coordinate writes yet, so this
-// build is safe to ship and only proves the function identity via diag log.
-static std::map<DWORD, DWORD> g_char_by_oid;
-// [v72a-diag] Track every distinct oid the client resolves via this function,
-// ungated by g_interp, so we can prove (a) the hook is installed and (b) whether
-// remote char oids (e.g. 0x57C) ever flow through GetCharacterByOID. Capped.
-static std::map<DWORD, bool> g_hook_seen;
-static int g_hook_seen_n = 0;
-
-DWORD (__thiscall *_GetCharacterByOID)(void *ecx, DWORD oid) = NULL;
-DWORD __fastcall GetCharacterByOID_Hook(void *ecx_this, void *edx_unused, DWORD oid) {
-	// Call the original (thiscall): ecx=this, oid on stack, eax=CCharacter*.
-	DWORD ptr = _GetCharacterByOID(ecx_this, oid);
-	// [v72a-diag] Log every distinct oid once (capped). Reveals which oids the
-	// client resolves here - including whether remote characters appear at all.
-	if (g_hook_seen_n < 600 && g_hook_seen.find(oid) == g_hook_seen.end()) {
-		g_hook_seen[oid] = true;
-		g_hook_seen_n++;
-		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) {
-			fprintf(f, "[MP-HOOK] oid=%08X -> char_ptr=%08X (seen #%d)\n",
-			        oid, ptr, g_hook_seen_n);
-			fflush(f); fclose(f);
-		}
-	}
-	if (g_interp.count(oid)) {
-		g_char_by_oid[oid] = ptr;
-		static int oid_log = 0;
-		if ((oid_log++ % 60) == 0) {
-			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-			if (f) {
-				fprintf(f, "[MP-OID] oid=%08X -> char_ptr=%08X  (remote tracked)\n",
-				        oid, ptr);
-				fflush(f); fclose(f);
-			}
-		}
-	}
-	return ptr;
-}
+// [v73] Direct call to CField::GetCharacterByOID(this=CField*, oid) at 0x42ACDD.
+// We do NOT hook it: the 0x11 spawn handler resolves remote characters via the
+// internal sibling label 0x42AC5C, so a hook on 0x42ACDD would miss them.
+// Instead we call 0x42ACDD explicitly every frame from MP_Pump to look up the
+// live CCharacter* for each tracked remote oid.  thiscall: ecx=CField*,
+// [esp+4]=oid, eax=CCharacter*.
+typedef DWORD (__thiscall *GetCharacterByOIDFn)(void *this_ptr, DWORD oid);
+static GetCharacterByOIDFn _GetCharacterByOID = (GetCharacterByOIDFn)0x0042ACDD;
+static DWORD MP_GetCFieldPtr() { return *(DWORD *)0x006FAF6C; }
+static std::map<DWORD, DWORD> g_char_by_oid;  // filled per-frame by direct lookup
 
 // [v73] Interpolation config: reads interp=1, x_off=HEX, y_off=HEX, speed=FLOAT.
 // Offsets are byte offsets into the CCharacter object where x/y floats live.
@@ -240,46 +206,47 @@ void MP_Pump() {
 			} else {
 				it->second.tx = rx; it->second.ty = ry; it->second.stale = 0;
 			}
-			// [v73] Probe mode: scan the CCharacter object memory for floats
-			// that match the spawn coords. This auto-discovers the correct
-			// x/y offsets so the user does not need Cheat Engine.
-			static bool probe_checked = false;
-			if (MP_InterpEnabled() && !probe_checked) {
-				auto cit = g_char_by_oid.find(oid);
-				if (cit != g_char_by_oid.end() && cit->second != 0) {
-					DWORD char_ptr = cit->second;
-					FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-					if (f) {
-						fprintf(f, "[MP-PROBE] Scanning CCharacter at %08X for spawn coords (%.1f, %.1f)\n",
-							char_ptr, rx, ry);
-						int found_x = -1, found_y = -1;
-						// Scan first 0x200 bytes of the object for matching floats
-						for (int off = 0; off < 0x200; off += 4) {
-							float val = 0;
-							memcpy(&val, (void*)(char_ptr + off), 4);
-							if (fabsf(val - rx) < 0.01f && found_x < 0) {
-								found_x = off;
-								fprintf(f, "  [MP-PROBE] x match at offset +0x%03X  (val=%.3f)\n", off, val);
-							}
-							if (fabsf(val - ry) < 0.01f && found_y < 0 && off != found_x) {
-								found_y = off;
-								fprintf(f, "  [MP-PROBE] y match at offset +0x%03X  (val=%.3f)\n", off, val);
-							}
+		// [v73] Probe mode: scan the CCharacter object memory for floats
+		// that match the spawn coords. This auto-discovers the correct
+		// x/y offsets so the user does not need Cheat Engine.
+		static bool probe_checked = false;
+		if (MP_InterpEnabled() && !probe_checked) {
+			DWORD cfield = MP_GetCFieldPtr();
+			DWORD char_ptr = (cfield && _GetCharacterByOID) ? _GetCharacterByOID((void*)cfield, oid) : 0;
+			if (char_ptr != 0) {
+				g_char_by_oid[oid] = char_ptr;
+				FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+				if (f) {
+					fprintf(f, "[MP-PROBE] Scanning CCharacter at %08X for spawn coords (%.1f, %.1f)\n",
+						char_ptr, rx, ry);
+					int found_x = -1, found_y = -1;
+					// Scan first 0x200 bytes of the object for matching floats
+					for (int off = 0; off < 0x200; off += 4) {
+						float val = 0;
+						memcpy(&val, (void*)(char_ptr + off), 4);
+						if (fabsf(val - rx) < 0.01f && found_x < 0) {
+							found_x = off;
+							fprintf(f, "  [MP-PROBE] x match at offset +0x%03X  (val=%.3f)\n", off, val);
 						}
-						if (found_x >= 0 && found_y >= 0) {
-							fprintf(f, "  [MP-PROBE] *** AUTO-DETECTED: x_off=0x%X y_off=0x%X ***\n",
-								found_x, found_y);
-							// Auto-apply the detected offsets
-							if (g_interp_x_off == 0) g_interp_x_off = found_x;
-							if (g_interp_y_off == 0) g_interp_y_off = found_y;
-						} else {
-							fprintf(f, "  [MP-PROBE] no match found in first 0x200 bytes\n");
+						if (fabsf(val - ry) < 0.01f && found_y < 0 && off != found_x) {
+							found_y = off;
+							fprintf(f, "  [MP-PROBE] y match at offset +0x%03X  (val=%.3f)\n", off, val);
 						}
-						fflush(f); fclose(f);
 					}
-					probe_checked = true;  // only probe once per session
+					if (found_x >= 0 && found_y >= 0) {
+						fprintf(f, "  [MP-PROBE] *** AUTO-DETECTED: x_off=0x%X y_off=0x%X ***\n",
+							found_x, found_y);
+						// Auto-apply the detected offsets
+						if (g_interp_x_off == 0) g_interp_x_off = found_x;
+						if (g_interp_y_off == 0) g_interp_y_off = found_y;
+					} else {
+						fprintf(f, "  [MP-PROBE] no match found in first 0x200 bytes\n");
+					}
+					fflush(f); fclose(f);
 				}
+				probe_checked = true;  // only probe once per session
 			}
+		}
 			// [v72a-diag] Ungated marker proving the spawn-cache block executes.
 			static int spawn_seen = 0;
 			if (spawn_seen < 50) {
@@ -324,8 +291,8 @@ void MP_Pump() {
 	}
 	// [v73] Per-frame movement interpolation - REAL implementation.
 	// For each tracked remote player:
-	//   1. Look up the live CCharacter* via g_char_by_oid (populated by
-	//      GetCharacterByOID_Hook every time the client resolves that oid).
+	//   1. Look up the live CCharacter* via g_char_by_oid (populated each frame
+	//      by a direct call to CField::GetCharacterByOID at 0x42ACDD).
 	//   2. Read current x/y from the client object at the configured offsets.
 	//   3. Lerp current toward target (tx/ty) by g_interp_speed.
 	//   4. Write the smoothed coords back.
@@ -340,6 +307,16 @@ void MP_Pump() {
 			if (f) { fprintf(f, "[MP-INTERP] ENABLED tracked=%d offsets=(%04X,%04X) speed=%.3f\n",
 				(int)g_interp.size(), g_interp_x_off, g_interp_y_off, g_interp_speed);
 				fflush(f); fclose(f); }
+		}
+		// [v73] Resolve live CCharacter* for every tracked remote oid each frame.
+		// The 0x11 handler uses an internal sibling (0x42AC5C) so we cannot rely on
+		// a hook; we call the clean exported function 0x42ACDD directly instead.
+		DWORD cfield = MP_GetCFieldPtr();
+		if (cfield && _GetCharacterByOID) {
+			for (auto &kv : g_interp) {
+				DWORD ptr = _GetCharacterByOID((void*)cfield, kv.first);
+				if (ptr) g_char_by_oid[kv.first] = ptr;
+			}
 		}
 		if (have_offsets && !g_interp.empty()) {
 			int applied = 0;
@@ -606,17 +583,6 @@ bool AutoResponseHook() {
 		SHookFunction(EnterSendPacket, 0x0056AADB);
 		SHookFunction(ConnectCaller, 0x0056A4FD);
 		SHookFunction(ProcessPacketCaller, 0x0056A579);
-
-		// [v72a-fix] Hook CField::GetCharacterByOID to learn live CCharacter* per oid.
-		// REAL function is 0x42ACDD: thiscall(this=CField*, [esp+4]=oid, eax=CCharacter*).
-		// (0x42AC5C was a sibling/wrapper that is NOT on the hot path - wrong target before.)
-		// 0x42ACDD does [esp+4]=oid lookup into this+0x1c0 container via 0x415303, ret 4.
-		SHookFunction(GetCharacterByOID, 0x0042ACDD);
-		{
-			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-			if (f) { fprintf(f, "[MP-HOOK] GetCharacterByOID hooked at 0x0042ACDD (installed=%s)\n",
-			        (_GetCharacterByOID != NULL) ? "yes" : "NO"); fflush(f); fclose(f); }
-		}
 
 		// [FIX v19] Surgical byte patches at the 3 NULL-deref virtual-call sites inside the
 		// per-frame network session update function (entry 0x4947F6, epilogue 0x494923).
