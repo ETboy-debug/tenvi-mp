@@ -1,9 +1,46 @@
 #include"AutoResponse.h"
 #include"MPClient.h"
+#include <map>
+#include <cstring>
 
 DWORD Addr_OnPacketClass = 0;
 DWORD Addr_OnPacketClass2 = 0;
 DWORD Addr_OnPacket2 = 0;
+
+// [v71] Client-side movement interpolation scaffold (default OFF).
+// We intercept remote 0x11 spawns here, cache oid + target coords, and
+// (when enabled via mp_interp.cfg) would lerp the client's CCharacter object
+// each frame so the remote avatar slides instead of teleporting. Writing to
+// client memory needs CCharacter x/y offsets still TBD via Cheat Engine, so
+// MP_InterpApply() is a no-op + diag log until those offsets are filled in.
+// Safe by design: if the cfg is missing or does not say interp=1, nothing
+// happens and the existing spawn/teleport path is untouched.
+static const char* MP_INTERP_TAG = "MP_INTERP_V71";
+
+struct RemoteInterp {
+	DWORD oid;
+	float tx, ty;   // target (last server coord from 0x11)
+	float cx, cy;   // current client coord - filled once offsets known
+	int   stale;    // frames since last 0x11
+};
+
+static std::map<DWORD, RemoteInterp> g_interp;
+static bool g_interp_announced = false;
+
+// Returns true only if "mp_interp.cfg" (placed next to Tenvi.exe) contains
+// the line "interp=1". ASCII filename only - no Chinese in source per build rule.
+static bool MP_InterpEnabled() {
+	FILE* f = NULL;
+	fopen_s(&f, "mp_interp.cfg", "r");
+	if (!f) return false;
+	char line[64];
+	bool on = false;
+	while (fgets(line, sizeof(line), f)) {
+		if (strncmp(line, "interp=1", 8) == 0) on = true;
+	}
+	fclose(f);
+	return on;
+}
 
 /*
 	0055E7E4 - 8B 10                 - mov edx,[eax]
@@ -93,6 +130,13 @@ void MP_Pump() {
 		batch.push_back(std::make_pair(packet, srv_ctx));
 	}
 	if (batch.empty()) return;
+	// [v71] Announce the interpolation scaffold once, so a deployed DLL can
+	// be confirmed via the diag log without relying on a version string grep.
+	if (!g_interp_announced) {
+		g_interp_announced = true;
+		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+		if (f) { fprintf(f, "[MP-INTERP] %s scaffold loaded\n", MP_INTERP_TAG); fflush(f); fclose(f); }
+	}
 
 	g_mp_in_batch = true;  // <-- START guard: block all EnterSendPacket during batch
 	// [v50] Dispatch context now comes straight from the server frame type.
@@ -115,6 +159,28 @@ void MP_Pump() {
 		if (bp.size() >= 5) oid = *(DWORD*)&bp[1];
 		// Diagnostics: remember the first self-tagged spawn we ever see.
 		if (mp_op == 0x11 && mp_ctx && g_localObjectId == 0) g_localObjectId = oid;
+		// [v71] Cache remote 0x11 spawn coords for interpolation. A remote
+		// spawn is one that arrived on the CField layer (!mp_ctx) and is not
+		// our own object id. The 0x11 body is: [0]=op, [1..4]=oid,
+		// [5..8]=x(float), [9..12]=y(float) - see CharacterSpawnPacket().
+		if (mp_op == 0x11 && !mp_ctx && oid != g_localObjectId && bp.size() >= 13) {
+			float rx = *(float*)&bp[5];
+			float ry = *(float*)&bp[9];
+			auto it = g_interp.find(oid);
+			if (it == g_interp.end()) {
+				RemoteInterp ri;
+				ri.oid = oid; ri.tx = rx; ri.ty = ry;
+				ri.cx = rx; ri.cy = ry; ri.stale = 0;
+				g_interp[oid] = ri;
+			} else {
+				it->second.tx = rx; it->second.ty = ry; it->second.stale = 0;
+			}
+			if (mp_frame_count % 30 == 0) {
+				FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+				if (f) { fprintf(f, "[MP-INTERP] cache oid=%08X -> (%.1f,%.1f) total=%d\n",
+					oid, rx, ry, (int)g_interp.size()); fflush(f); fclose(f); }
+			}
+		}
 		{
 			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 			if (f) {
@@ -142,6 +208,27 @@ void MP_Pump() {
 	{
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) { fprintf(f, "=== BATCH END (%d) ===\n", (int)batch.size()); fflush(f); fclose(f); }
+	}
+	// [v71] Per-frame interpolation step. Currently a no-op + diag log:
+	// writing to client memory needs CCharacter x/y offsets that are still
+	// TBD via Cheat Engine. When MP_InterpEnabled() (mp_interp.cfg says
+	// interp=1) we would, for every tracked oid, locate the client-side
+	// CCharacter object, lerp cx/cy toward tx/ty, and write the new coords
+	// back - that is the real smoothing. Until then we just age the cache.
+	if (MP_InterpEnabled()) {
+		for (auto &kv : g_interp) kv.second.stale++;
+		static int dbg = 0;
+		if (++dbg % 60 == 0) {
+			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+			if (f) { fprintf(f, "[MP-INTERP] ENABLED but apply is no-op (offsets TBD), tracked=%d\n",
+				(int)g_interp.size()); fflush(f); fclose(f); }
+		}
+	}
+	// [v71] Drop stale entries so the map does not grow forever if a remote
+	// player leaves and we never get a 0x12 remove. 600 frames ~ 10s @60fps.
+	for (auto it = g_interp.begin(); it != g_interp.end(); ) {
+		if (it->second.stale > 600) it = g_interp.erase(it);
+		else ++it;
 	}
 	g_mp_in_batch = false;  // <-- END guard: allow sends again
 }
