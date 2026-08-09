@@ -24,6 +24,10 @@ struct RemotePlayer {
 	TenviCharacter chr;
 	WORD map;
 	float x, y;
+	// [v65] last coordinate we actually broadcast as a movement update,
+	// so we do not remove+respawn the remote character on every tiny step.
+	float last_move_x, last_move_y;
+	bool has_last_move;
 };
 static std::mutex g_playersMtx;
 static std::map<int, RemotePlayer> g_players;
@@ -910,33 +914,62 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		me = it->second.chr;
 	}
 
-	std::vector<int> targets;
+	struct TargetInfo { int sid; TenviCharacter chr; };
+	std::vector<TargetInfo> targets;
 	{
 		std::lock_guard<std::mutex> lk(g_playersMtx);
 		for (auto &kv : g_players) {
 			if (kv.first == t_sid) continue;
-			if (kv.second.map == my_map) targets.push_back(kv.first);
+			if (kv.second.map == my_map) targets.push_back({ kv.first, kv.second.chr });
 		}
 	}
-	printf("[MP-FWD] v64 sid=%d map=%d targets=%zu op=%02X pos=%d x=%.1f y=%.1f\n",
+	printf("[MP-FWD] v65 sid=%d map=%d targets=%zu op=%02X pos=%d x=%.1f y=%.1f\n",
 		(int)t_sid, (int)my_map, targets.size(), (unsigned)op,
 		has_pos ? 1 : 0, nx, ny);
 	if (targets.empty()) return;
 
 	if (MP_MoveAsSpawn() && has_pos) {
-		for (int sid : targets) {
-			printf("[MP-FWD]   -> sid=%d respawn oid=%08X at (%.1f,%.1f)\n",
-				sid, (unsigned)me.id, nx, ny);
-			CharacterSpawnPacket(me, nx, ny, sid);
+		const float MOVE_THRESHOLD = 30.0f; // pixels: only force a visual refresh beyond this
+		for (auto &t : targets) {
+			bool do_refresh = true;
+			{
+				std::lock_guard<std::mutex> lk(g_playersMtx);
+				auto it = g_players.find(t_sid);
+				if (it != g_players.end() && it->second.has_last_move) {
+					float dx = nx - it->second.last_move_x;
+					float dy = ny - it->second.last_move_y;
+					if (dx * dx + dy * dy < MOVE_THRESHOLD * MOVE_THRESHOLD)
+						do_refresh = false;
+				}
+				// [v65] update the last broadcast coordinate when we refresh (or on
+				// the very first movement packet), so small steps accumulate.
+				if (it != g_players.end() && (do_refresh || !it->second.has_last_move)) {
+					it->second.last_move_x = nx;
+					it->second.last_move_y = ny;
+					it->second.has_last_move = true;
+				}
+			}
+			if (do_refresh) {
+				printf("[MP-FWD]   -> sid=%d remove+respawn oid=%08X at (%.1f,%.1f)\n",
+					t.sid, (unsigned)me.id, nx, ny);
+				RemoveObjectPacket(me.id, t.sid);
+				if (MP_RemoteSend3D()) AccountDataPacket(me, t.sid);
+				CharacterSpawnPacket(me, nx, ny, t.sid);
+				if (MP_RemoteSend3D() && MP_Restore3D())
+					AccountDataPacket(t.chr, t.sid);
+			} else {
+				printf("[MP-FWD]   -> sid=%d skip refresh oid=%08X at (%.1f,%.1f) (under threshold)\n",
+					t.sid, (unsigned)me.id, nx, ny);
+			}
 		}
 		return;
 	}
 
 	ServerPacket sp;
 	sp.Raw(pkt, len);
-	for (int sid : targets) {
-		printf("[MP-FWD]   -> sid=%d verbatim ctx=%d\n", sid, MP_RemoteCtx() ? 1 : 0);
-		MP_BroadcastToSid(sid, sp, MP_RemoteCtx());
+	for (auto &t : targets) {
+		printf("[MP-FWD]   -> sid=%d verbatim ctx=%d\n", t.sid, MP_RemoteCtx() ? 1 : 0);
+		MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
 	}
 }
 #else
@@ -1002,6 +1035,8 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 		me.chr = chr;
 		me.map = chr.map;
 		me.x = x; me.y = y;
+		me.last_move_x = x; me.last_move_y = y;
+		me.has_last_move = false;
 	}
 	MP_MARK("ChangeMap after players-table insert");
 	// [v62] SELF SPAWN FIRST. The CN client latches "who am I" onto the first
