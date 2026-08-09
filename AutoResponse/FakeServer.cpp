@@ -930,42 +930,36 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	if (targets.empty()) return;
 
 	if (MP_MoveAsSpawn() && has_pos) {
-		// [v66] Smooth-ish movement. Instead of one 30px teleport, walk the
-		// remote character from its last broadcast position to the new one in
-		// small MOVE_STEP hops. The client still has no native "remote moved"
-		// opcode (see v64 note), so each hop is a 0x11 respawn - there is mild
-		// per-hop flicker, but it reads as continuous motion, not blinking.
-		const float MOVE_STEP = 8.0f;
-		float from_x = nx, from_y = ny;
+		// [v67] Bleed-stop for the v66 flicker/vanirsh regression.
+		// The client already holds this oid, so re-sending 0x3D+0x11 just
+		// relocates the avatar in place. RemoveObject (v66) made it vanish for
+		// a frame and strobe, so we drop it entirely. The client still has no
+		// "remote player moved" opcode, so the update is still a teleport, not
+		// a walk - true smoothing needs client-side DLL interpolation (v68).
+		// We only emit once per MOVE_THRESHOLD px so we don't spam rebuilds.
+		const float MOVE_THRESHOLD = 20.0f;
+		bool do_update = false;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
 			auto it = g_players.find(t_sid);
-			if (it != g_players.end() && it->second.has_last_move) {
-				from_x = it->second.last_move_x;
-				from_y = it->second.last_move_y;
+			if (it == g_players.end()) return;
+			if (it->second.has_last_move) {
+				float ddx = nx - it->second.last_move_x;
+				float ddy = ny - it->second.last_move_y;
+				if (ddx * ddx + ddy * ddy >= MOVE_THRESHOLD * MOVE_THRESHOLD)
+					do_update = true;
+			} else {
+				do_update = true; // first movement in this session
 			}
 		}
-		float dx = nx - from_x, dy = ny - from_y;
-		float dist = sqrtf(dx * dx + dy * dy);
-		std::vector<std::pair<float, float>> pts;
-		if (dist <= MOVE_STEP) {
-			pts.push_back({ nx, ny });
-		} else {
-			int steps = (int)(dist / MOVE_STEP);
-			for (int i = 1; i <= steps; ++i) {
-				float t = (float)i * MOVE_STEP / dist;
-				pts.push_back({ from_x + dx * t, from_y + dy * t });
-			}
-			pts.push_back({ nx, ny }); // real endpoint, avoid accumulated error
+		if (!do_update) {
+			printf("[MP-FWD]   skip (under %.0fpx threshold)\n", MOVE_THRESHOLD);
+			return;
 		}
 		for (auto &t : targets) {
-			for (size_t pi = 0; pi < pts.size(); ++pi) {
-				printf("[MP-FWD]   -> sid=%d hop %zu/%zu oid=%08X at (%.1f,%.1f)\n",
-					t.sid, pi + 1, pts.size(), (unsigned)me.id, pts[pi].first, pts[pi].second);
-				RemoveObjectPacket(me.id, t.sid);
-				if (MP_RemoteSend3D()) AccountDataPacket(me, t.sid);
-				CharacterSpawnPacket(me, pts[pi].first, pts[pi].second, t.sid);
-			}
+			// NO RemoveObject: client already has this oid, just relocate it.
+			if (MP_RemoteSend3D()) AccountDataPacket(me, t.sid);
+			CharacterSpawnPacket(me, nx, ny, t.sid);
 			if (MP_RemoteSend3D() && MP_Restore3D())
 				AccountDataPacket(t.chr, t.sid);
 		}
@@ -978,6 +972,8 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 				it->second.has_last_move = true;
 			}
 		}
+		printf("[MP-FWD]   -> sid updated oid=%08X to (%.1f,%.1f) (no remove)\n",
+			(unsigned)me.id, nx, ny);
 		return;
 	}
 
