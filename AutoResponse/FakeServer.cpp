@@ -930,14 +930,16 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	if (targets.empty()) return;
 
 	if (MP_MoveAsSpawn() && has_pos) {
-		// [v68] Resurrect RemoveObject and widen threshold to stop the v67
-		// "trailing clones" regression (screen showed a long line of duplicated
-		// avatars because every 0x11 created a fresh object).
-		// The client cannot update an existing remote avatar via 0x11 alone:
-		// it treats each 0x11 as a spawn. We must RemoveObject first, then
-		// 0x3D+0x11 to recreate at the new coordinate. We only do this once
-		// per MOVE_THRESHOLD pixels so it does not strobe every step.
-		const float MOVE_THRESHOLD = 50.0f;
+		// [v69] Push the threshold out further. User feedback (screenshot)
+		// shows that each 0x11 respawn triggers the client-side "entered map"
+		// UI effect (map name "魔法密林" flashing repeatedly), because the
+		// client treats every CharacterSpawn as a birth/arrival event. We
+		// cannot stop that effect from the server, so the only lever we have
+		// is to respawn less often. 150px means the remote avatar jumps once
+		// per roughly screen-and-a-half walked - still teleporty, but the
+		// screen no longer strobes every few steps. If this is still too
+		// jarring, v70 will drop to "sync only when the owner stops moving".
+		const float MOVE_THRESHOLD = 150.0f;
 		bool do_update = false;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
