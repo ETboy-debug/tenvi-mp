@@ -412,7 +412,6 @@ void __fastcall EnterSendPacket_Hook(OutPacket *op) {
 }
 
 void (__thiscall *_ProcessPacketCaller)(void *) = NULL;
-static int mp_frame_count = 0;
 static bool g_captureStarted = false;  // [v29] 捕获是否已启动(只启动一次)
 void __fastcall ProcessPacketCaller_Hook(void *ecx) {
 	_ProcessPacketCaller(ecx);
