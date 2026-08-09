@@ -27,6 +27,34 @@ struct RemoteInterp {
 static std::map<DWORD, RemoteInterp> g_interp;
 static bool g_interp_announced = false;
 
+// [v72a] Hook CField::GetCharacterByOID(this=CField*, oid) at 0x42AC5C.
+// thiscall: ecx=this(CField*), [esp+4]=oid, returns eax=CCharacter* (or a
+// wrapper holding it). We intercept to learn the live CCharacter* for each
+// remote oid so V72b can write coords into it for smooth movement.
+// Observation-only for now: we just record oid->ptr when the oid belongs to a
+// remote player we already track in g_interp. No coordinate writes yet, so this
+// build is safe to ship and only proves the function identity via diag log.
+static std::map<DWORD, DWORD> g_char_by_oid;
+
+DWORD (__thiscall *_GetCharacterByOID)(void *ecx, DWORD oid) = NULL;
+DWORD __fastcall GetCharacterByOID_Hook(void *ecx_this, void *edx_unused, DWORD oid) {
+	// Call the original (thiscall): ecx=this, oid on stack, eax=CCharacter*.
+	DWORD ptr = _GetCharacterByOID(ecx_this, oid);
+	if (g_interp.count(oid)) {
+		g_char_by_oid[oid] = ptr;
+		static int oid_log = 0;
+		if ((oid_log++ % 60) == 0) {
+			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+			if (f) {
+				fprintf(f, "[MP-OID] oid=%08X -> char_ptr=%08X  (remote tracked)\n",
+				        oid, ptr);
+				fflush(f); fclose(f);
+			}
+		}
+	}
+	return ptr;
+}
+
 // Returns true only if "mp_interp.cfg" (placed next to Tenvi.exe) contains
 // the line "interp=1". ASCII filename only - no Chinese in source per build rule.
 static bool MP_InterpEnabled() {
@@ -456,6 +484,10 @@ bool AutoResponseHook() {
 		SHookFunction(EnterSendPacket, 0x0056AADB);
 		SHookFunction(ConnectCaller, 0x0056A4FD);
 		SHookFunction(ProcessPacketCaller, 0x0056A579);
+
+		// [v72a] Hook CField::GetCharacterByOID to learn live CCharacter* per oid.
+		// 0x42AC5C is thiscall(this=CField*, [esp+4]=oid, eax=CCharacter*).
+		SHookFunction(GetCharacterByOID, 0x0042AC5C);
 
 		// [FIX v19] Surgical byte patches at the 3 NULL-deref virtual-call sites inside the
 		// per-frame network session update function (entry 0x4947F6, epilogue 0x494923).
