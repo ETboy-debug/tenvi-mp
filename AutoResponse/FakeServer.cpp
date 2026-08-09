@@ -3,6 +3,7 @@
 #include"TemporaryData.h"
 #include <mutex>
 #include <map>
+#include <cmath>
 
 #ifdef MP_SERVER
 #include "../StandaloneServer/db.h"
@@ -929,37 +930,52 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	if (targets.empty()) return;
 
 	if (MP_MoveAsSpawn() && has_pos) {
-		const float MOVE_THRESHOLD = 30.0f; // pixels: only force a visual refresh beyond this
-		for (auto &t : targets) {
-			bool do_refresh = true;
-			{
-				std::lock_guard<std::mutex> lk(g_playersMtx);
-				auto it = g_players.find(t_sid);
-				if (it != g_players.end() && it->second.has_last_move) {
-					float dx = nx - it->second.last_move_x;
-					float dy = ny - it->second.last_move_y;
-					if (dx * dx + dy * dy < MOVE_THRESHOLD * MOVE_THRESHOLD)
-						do_refresh = false;
-				}
-				// [v65] update the last broadcast coordinate when we refresh (or on
-				// the very first movement packet), so small steps accumulate.
-				if (it != g_players.end() && (do_refresh || !it->second.has_last_move)) {
-					it->second.last_move_x = nx;
-					it->second.last_move_y = ny;
-					it->second.has_last_move = true;
-				}
+		// [v66] Smooth-ish movement. Instead of one 30px teleport, walk the
+		// remote character from its last broadcast position to the new one in
+		// small MOVE_STEP hops. The client still has no native "remote moved"
+		// opcode (see v64 note), so each hop is a 0x11 respawn - there is mild
+		// per-hop flicker, but it reads as continuous motion, not blinking.
+		const float MOVE_STEP = 8.0f;
+		float from_x = nx, from_y = ny;
+		{
+			std::lock_guard<std::mutex> lk(g_playersMtx);
+			auto it = g_players.find(t_sid);
+			if (it != g_players.end() && it->second.has_last_move) {
+				from_x = it->second.last_move_x;
+				from_y = it->second.last_move_y;
 			}
-			if (do_refresh) {
-				printf("[MP-FWD]   -> sid=%d remove+respawn oid=%08X at (%.1f,%.1f)\n",
-					t.sid, (unsigned)me.id, nx, ny);
+		}
+		float dx = nx - from_x, dy = ny - from_y;
+		float dist = sqrtf(dx * dx + dy * dy);
+		std::vector<std::pair<float, float>> pts;
+		if (dist <= MOVE_STEP) {
+			pts.push_back({ nx, ny });
+		} else {
+			int steps = (int)(dist / MOVE_STEP);
+			for (int i = 1; i <= steps; ++i) {
+				float t = (float)i * MOVE_STEP / dist;
+				pts.push_back({ from_x + dx * t, from_y + dy * t });
+			}
+			pts.push_back({ nx, ny }); // real endpoint, avoid accumulated error
+		}
+		for (auto &t : targets) {
+			for (size_t pi = 0; pi < pts.size(); ++pi) {
+				printf("[MP-FWD]   -> sid=%d hop %zu/%zu oid=%08X at (%.1f,%.1f)\n",
+					t.sid, pi + 1, pts.size(), (unsigned)me.id, pts[pi].first, pts[pi].second);
 				RemoveObjectPacket(me.id, t.sid);
 				if (MP_RemoteSend3D()) AccountDataPacket(me, t.sid);
-				CharacterSpawnPacket(me, nx, ny, t.sid);
-				if (MP_RemoteSend3D() && MP_Restore3D())
-					AccountDataPacket(t.chr, t.sid);
-			} else {
-				printf("[MP-FWD]   -> sid=%d skip refresh oid=%08X at (%.1f,%.1f) (under threshold)\n",
-					t.sid, (unsigned)me.id, nx, ny);
+				CharacterSpawnPacket(me, pts[pi].first, pts[pi].second, t.sid);
+			}
+			if (MP_RemoteSend3D() && MP_Restore3D())
+				AccountDataPacket(t.chr, t.sid);
+		}
+		{
+			std::lock_guard<std::mutex> lk(g_playersMtx);
+			auto it = g_players.find(t_sid);
+			if (it != g_players.end()) {
+				it->second.last_move_x = nx;
+				it->second.last_move_y = ny;
+				it->second.has_last_move = true;
 			}
 		}
 		return;
