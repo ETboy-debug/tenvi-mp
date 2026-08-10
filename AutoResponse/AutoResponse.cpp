@@ -345,7 +345,7 @@ static void MP_ProbeCoordOffsets() {
 	g_interp_y_intc  = best_y.ok ? best_y.intc  : 0.0f;
 	g_probe_locked = true;
 
-	f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+	FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 	if (f) {
 		fprintf(f, "[MP-PROBE v87] *** LOCKED x_off=0x%X(%s s=%.3f i=%.1f) y_off=0x%X(%s s=%.3f i=%.1f) ***\n",
 			x_off, best_x.is_int ? "int" : "flt", best_x.slope, best_x.intc,
