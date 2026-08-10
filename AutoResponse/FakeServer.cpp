@@ -12,6 +12,9 @@
 #include <cstdio>
 // [DIAG] 崩溃定位标记: 直接写 stdout(服务端无缓冲, 落到 server_live.log)
 #define MP_MARK(msg) do { printf("[TenviServer] MARK %s\n", msg); } while(0)
+
+// [v80] Deployment sentinel string (grep-friendly binary marker).
+static const char *MP_SERVER_VERSION_TAG = "MP_SERVER_V80_TELEPORT_SPAWN";
 #else
 #define MP_MARK(msg) do { } while(0)
 #endif
@@ -472,17 +475,21 @@ void ShowObjectPacket(TenviRegen &regen, int target_sid = -1) {
 }
 
 // 0x3C
-void InMapTeleportPacket(TenviCharacter &chr) {
+// [v80] Accept explicit destination so we can use this packet for remote
+// player position updates. The original zero-coord version is preserved as
+// the default call for the local player.
+void InMapTeleportPacket(TenviCharacter &chr, int tx = 0, int ty = 0, int target_sid = -1, bool context = true) {
 	ServerPacket sp(SP_IN_MAP_TELEPORT);
 	sp.Encode4(chr.id); // 00489222, character id
 	sp.Encode1(1); // 0048923E, 0 = fall down, 1 = teleport to platform
-	sp.Encode4(0); // 0048924B, x?
-	sp.Encode4(0); // 00489255, y?
+	sp.Encode4(tx); // 0048924B, x?
+	sp.Encode4(ty); // 00489255, y?
 	sp.Encode1(0); // 0048925F, 0 = face left, 1 = face right
 	sp.Encode1(0); // 00489269
 	sp.Encode1(0); // 00489276
 	sp.Encode1(1); // 00489283, 0 = no guardian, 1 = with guardian
-	SendPacket(sp);
+	if (target_sid < 0) SendPacket(sp);
+	else MP_BroadcastToSid(target_sid, sp, context);
 }
 
 // 0x3D
@@ -982,26 +989,26 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		for (auto &t : targets) {
 			printf("[MP-FWD]   -> sid=%d move-0x11-only oid=%08X to (%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, nx, ny);
-			// [v74] MOVEMENT MUST NOT re-send 0x3D. The 0x3D (AccountData) handler
-			// (0x00498E4F) CREATES the character object; re-sending it on every step
-			// spawned a duplicate object per move -> "影分身" (shadow clones). The
-			// object already exists from the join-time 0x3D+0x11 pair, and 0x11
-			// updates it IN PLACE (oid looked up at 0x48DCEF, not re-created), so
-			// movement = 0x11 only. No per-move 0x3D and therefore no identity
-			// restore either (identity latches on the FIRST 0x11, see v62).
-			// [v75] Movement 0x11 is dispatched to CField (ctx=0) so the receiving
-			// client updates the remote avatar position on the field layer, while
-			// the initial join-time spawn stays on CWvsContext (ctx=1) where the
-			// client actually renders the character.
-			// [v78] Movement 0x11 goes back to CWvsContext (ctx=1, default).
-			// The client's native 0x11 handler updates an existing remote
-			// character IN PLACE by oid (no re-spawn, no shadow clones). CField (ctx=0)
-			// silently drops 0x11, which is why movement was invisible. The DLL
-			// still caches g_interp for later smoothing once the probe finds
-			// the CField x/y offsets.
-			CharacterSpawnPacket(me, nx, ny, t.sid);
-		}
-		MP_MARK("MP-FWD move=0x11-only v77 ctx-respect smooth-10px");
+		// [v74] MOVEMENT MUST NOT re-send 0x3D. The 0x3D (AccountData) handler
+		// (0x00498E4F) CREATES the character object; re-sending it on every step
+		// spawned a duplicate object per move -> "影分身" (shadow clones).
+		// [v80] Field reports prove that 0x11 alone does NOT update the remote
+		// avatar's visible position on a settled client. The client accepts 0x11
+		// (ctx=1) for the initial render because the object is created from the
+		// join-time 0x3D+0x11 pair, but subsequent 0x11 spawns for the same oid
+		// are treated as no-ops. Instead we send 0x3C IN_MAP_TELEPORT with the
+		// new integer coordinates; this opcode is designed to reposition an
+		// existing character on the current map.
+		//
+		// We still keep a 0x11 refresh as a safety net so the remote avatar does
+		// not disappear if 0x3C ever fails to carry the appearance data, but the
+		// position update is now driven by 0x3C.
+		InMapTeleportPacket(me, (int)nx, (int)ny, t.sid, true);
+		CharacterSpawnPacket(me, nx, ny, t.sid);
+		printf("[MP-FWD]   -> sid=%d move-0x3C+0x11 oid=%08X to (%.1f,%.1f)\n",
+			t.sid, (unsigned)me.id, nx, ny);
+	}
+	MP_MARK("MP-FWD move=0x3C+0x11 v80 teleport-spawn");
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
 			auto it = g_players.find(t_sid);
