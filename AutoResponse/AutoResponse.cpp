@@ -17,7 +17,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_INTERP_V77";
+static const char* MP_INTERP_TAG = "MP_DLL_V86_NOFLICKER_PROBE";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -47,6 +47,35 @@ static std::map<DWORD, DWORD> g_char_by_oid;  // filled per-frame by direct look
 static int g_interp_x_off = 0;
 static int g_interp_y_off = 0;
 static float g_interp_speed = 0.15f;
+
+// [v86] Coordinate-offset probe state.
+//
+// WHY THE v83/v85 PROBE NEVER RAN: it lived INSIDE the batch loop, before
+// ProcessPacketExec. During a v84 move sequence (0x12 remove -> 0x3D -> 0x11
+// spawn) the object is DELETED at that moment, so GetCharacterByOID returned
+// NULL and the whole probe block was skipped. Not one [MP-PROBE] line was ever
+// written. The probe now runs AFTER the batch has been injected, when the
+// object provably exists again.
+//
+// Method: multi-round cross-validation against a KNOWN value. The 0x11 packet
+// carries the authoritative x, and horizontal position is never snapped by the
+// client (only y is pulled onto the platform foothold). So we keep a candidate
+// set of offsets whose float matches the packet x, and intersect it every
+// round. An offset that survives PROBE_LOCK_ROUNDS distinct positions is the
+// real x field - a coincidental match cannot track a moving value.
+static bool g_probe_locked = false;
+static int  g_probe_round = 0;
+static std::map<int, int> g_probe_cand;   // offset -> consecutive hit count
+static float g_probe_last_x = 1.0e9f;     // last probed target x (dedupe)
+static const int   PROBE_SCAN_RANGE  = 0x2000;
+static const float PROBE_TOL_X       = 1.5f;   // x is exact-ish in the packet
+static const float PROBE_TOL_Y       = 40.0f;  // y gets snapped to the foothold
+static const int   PROBE_LOCK_ROUNDS = 3;      // distinct positions required
+
+// [v86] Suppress-respawn state: once offsets are locked we stop letting the
+// despawn/respawn packets touch the client and drive movement by memory write.
+static bool g_suppress_active = false;
+static int  g_suppress_count = 0;
 
 // Returns true only if "mp_interp.cfg" (placed next to Tenvi.exe) contains
 // the line "interp=1". ASCII filename only - no Chinese in source per build rule.
@@ -148,6 +177,122 @@ void DelayExecution() {
 // to prevent client-side state corruption (e.g. op=1E during op=10 processing)
 static bool g_mp_in_batch = false;
 
+// [v86] Persist the discovered offsets so the probe only ever runs once.
+static void MP_SaveInterpCfg() {
+	FILE *f = NULL;
+	fopen_s(&f, "mp_interp.cfg", "w");
+	if (!f) return;
+	fprintf(f, "interp=1\n");
+	fprintf(f, "speed=%.3f\n", g_interp_speed);
+	fprintf(f, "x_off=0x%X\n", g_interp_x_off);
+	fprintf(f, "y_off=0x%X\n", g_interp_y_off);
+	fclose(f);
+}
+
+// [v86] Locate the x/y float fields inside a remote CCharacter.
+//
+// Must be called AFTER the batch has been injected: during a move sequence the
+// 0x12 deletes the object and the 0x11 recreates it, so the object only exists
+// once ProcessPacketExec has run. This is precisely why every earlier probe
+// version silently no-opped.
+//
+// The 0x11 packet gives us the authoritative x. The client never snaps x (only
+// y is pulled onto the platform foothold), so x is a reliable needle. A single
+// sample yields many coincidental matches, so we intersect the candidate set
+// across several DIFFERENT positions: only a field that tracks the value every
+// time is the real one.
+static void MP_ProbeCoordOffsets() {
+	if (g_probe_locked || g_interp.empty()) return;
+	DWORD cfield = MP_GetCFieldPtr();
+	if (!cfield || !_GetCharacterByOID) return;
+
+	DWORD oid = 0, ptr = 0;
+	float tx = 0.0f, ty = 0.0f;
+	for (std::map<DWORD, RemoteInterp>::iterator it = g_interp.begin(); it != g_interp.end(); ++it) {
+		DWORD p = _GetCharacterByOID((void*)cfield, it->first);
+		if (p) { oid = it->first; ptr = p; tx = it->second.tx; ty = it->second.ty; break; }
+	}
+	if (!ptr) return;
+
+	// Require real displacement between rounds - resampling the same spot
+	// proves nothing about which field is tracking the position.
+	if (fabsf(tx - g_probe_last_x) < 8.0f) return;
+	g_probe_last_x = tx;
+	g_probe_round++;
+
+	std::map<int, int> hits;
+	for (int off = 0; off < PROBE_SCAN_RANGE; off += 4) {
+		float val = 0.0f;
+		memcpy(&val, (void*)(ptr + off), 4);
+		if (!isfinite(val)) continue;
+		if (fabsf(val - tx) <= PROBE_TOL_X) hits[off] = 1;
+	}
+
+	if (g_probe_round == 1) {
+		g_probe_cand = hits;
+	} else {
+		std::map<int, int> keep;
+		for (std::map<int, int>::iterator c = g_probe_cand.begin(); c != g_probe_cand.end(); ++c) {
+			if (hits.find(c->first) != hits.end()) keep[c->first] = c->second + 1;
+		}
+		g_probe_cand = keep;
+	}
+
+	FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+	if (f) {
+		fprintf(f, "[MP-PROBE v86] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) hits=%d cand=%d\n",
+			g_probe_round, oid, ptr, tx, ty, (int)hits.size(), (int)g_probe_cand.size());
+		int shown = 0;
+		for (std::map<int, int>::iterator c = g_probe_cand.begin();
+			c != g_probe_cand.end() && shown < 12; ++c, ++shown) {
+			float val = 0.0f;
+			memcpy(&val, (void*)(ptr + c->first), 4);
+			fprintf(f, "    cand +0x%04X = %12.4f (survived %d)\n", c->first, val, c->second);
+		}
+		fflush(f); fclose(f);
+	}
+
+	// Candidate set collapsed - the assumption or tolerance was wrong. Restart
+	// the intersection rather than locking onto nothing.
+	if (g_probe_cand.empty() && g_probe_round > 1) {
+		g_probe_round = 0;
+		g_probe_last_x = 1.0e9f;
+		return;
+	}
+	if (g_probe_round < PROBE_LOCK_ROUNDS || g_probe_cand.empty()) return;
+
+	// Lock x on the surviving candidate; prefer the lowest offset (the real
+	// position field sits early in the object, decoys tend to be render caches).
+	int x_off = g_probe_cand.begin()->first;
+
+	// y sits adjacent to x in practically every 2D engine layout. Search a tight
+	// window with a loose tolerance because the client snaps y to the foothold.
+	int y_off = 0;
+	float best_err = 1.0e9f;
+	int lo = (x_off - 0x20 < 0) ? 0 : (x_off - 0x20);
+	int hi = x_off + 0x20;
+	for (int off = lo; off <= hi; off += 4) {
+		if (off == x_off) continue;
+		float val = 0.0f;
+		memcpy(&val, (void*)(ptr + off), 4);
+		if (!isfinite(val)) continue;
+		float err = fabsf(val - ty);
+		if (err < best_err && err <= PROBE_TOL_Y) { best_err = err; y_off = off; }
+	}
+
+	g_interp_x_off = x_off;
+	g_interp_y_off = y_off;   // 0 is valid: x-only writes still kill the flicker
+	g_probe_locked = true;
+	MP_SaveInterpCfg();
+
+	f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+	if (f) {
+		fprintf(f, "[MP-PROBE v86] *** LOCKED x_off=0x%X y_off=0x%X (y_err=%.2f) - saved to mp_interp.cfg ***\n",
+			x_off, y_off, (y_off ? best_err : -1.0f));
+		fflush(f); fclose(f);
+	}
+}
+
 void MP_Pump() {
 	mp_frame_count++;
 	// [v50] Each entry carries the dispatch context supplied by the server
@@ -180,6 +325,59 @@ void MP_Pump() {
 	// g_localObjectId is kept for diagnostics only - it no longer drives any
 	// routing decision.
 	static DWORD g_localObjectId = 0;
+
+	// [v86] FLICKER ROOT CAUSE + FIX.
+	//
+	// The server moves a remote player by despawn-respawn:
+	//     0x12 (remove) -> 0x3D (account data) -> 0x11 (spawn at new pos) -> 0x3D
+	// Even though all four land in the SAME frame, the client genuinely destroys
+	// and recreates the CCharacter every single step: sprites are reloaded and
+	// the animation state resets to frame 0. That is the flicker. No amount of
+	// interpolation, tick-rate or buffering tuning can fix it, because the object
+	// being interpolated is thrown away several times per second.
+	//
+	// Once the coordinate offsets are known we do not need the rebuild at all:
+	// we swallow 0x12 / the rebuild 0x3D / 0x11 and let the per-frame lerp below
+	// write the new position straight into the surviving object. The avatar is
+	// never destroyed, so it never flickers, and it slides instead of teleporting.
+	//
+	// The trailing 0x3D restores the RECEIVING player's own account data and is
+	// always forwarded. If offsets are not locked yet, nothing is suppressed and
+	// behaviour is byte-for-byte identical to v85.
+	std::vector<char> mp_suppress(batch.size(), 0);
+	if (g_probe_locked && g_interp_x_off != 0) {
+		DWORD cf = MP_GetCFieldPtr();
+		for (size_t i = 0; i + 1 < batch.size(); i++) {
+			if (batch[i].first.size() < 5 || batch[i].first[0] != 0x12) continue;
+			DWORD roid = *(DWORD*)&batch[i].first[1];
+			if (roid == 0 || g_interp.find(roid) == g_interp.end()) continue;
+			// Only suppress when the object is alive right now - otherwise we
+			// would swallow the rebuild of an avatar that is genuinely gone.
+			DWORD live = (cf && _GetCharacterByOID) ? _GetCharacterByOID((void*)cf, roid) : 0;
+			if (!live) continue;
+			int j = -1;
+			for (size_t k = i + 1; k < batch.size() && k <= i + 3; k++) {
+				if (batch[k].first.size() >= 5 && batch[k].first[0] == 0x11 &&
+					*(DWORD*)&batch[k].first[1] == roid) { j = (int)k; break; }
+			}
+			if (j < 0) continue;   // lone 0x12 = real departure, let it through
+			mp_suppress[i] = 1;
+			mp_suppress[j] = 1;
+			for (int k = (int)i + 1; k < j; k++)
+				if (!batch[k].first.empty() && batch[k].first[0] == 0x3D) mp_suppress[k] = 1;
+			g_suppress_active = true;
+			g_suppress_count++;
+			if (g_suppress_count <= 5 || (g_suppress_count % 50) == 0) {
+				FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+				if (f) {
+					fprintf(f, "[MP-SUPPRESS v86] respawn swallowed #%d oid=%08X ptr=%08X -> memory-write move\n",
+						g_suppress_count, roid, live);
+					fflush(f); fclose(f);
+				}
+			}
+		}
+	}
+
 	for (size_t i = 0; i < batch.size(); i++) {
 		std::vector<BYTE> &bp = batch[i].first;   // non-const: ProcessPacketExec takes a mutable ref
 		bool mp_ctx = batch[i].second;
@@ -217,118 +415,10 @@ void MP_Pump() {
 		// the v76 heuristic latched onto a +0x0 candidate (object vtable-ish
 		// float) as x because it allowed any error < 1.0, which silently broke
 		// horizontal movement.
-		static bool probe_offsets_found = false;
-		if (MP_InterpEnabled() && !probe_offsets_found) {
-			DWORD cfield = MP_GetCFieldPtr();
-			DWORD char_ptr = (cfield && _GetCharacterByOID) ? _GetCharacterByOID((void*)cfield, oid) : 0;
-			if (char_ptr != 0) {
-				g_char_by_oid[oid] = char_ptr;
-				FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-				if (f) {
-					fprintf(f, "[MP-PROBE] Scanning CCharacter at %08X for spawn coords (%.1f, %.1f)\n",
-						char_ptr, rx, ry);
-					// [v83-diag] Client snaps spawn coords to the platform foothold,
-					// so the stored value may differ from the packet coord. Dump
-					// plausible floats and report any field within 50.0 of either
-					// packet coord so the real x/y offset is visible.
-					static int g_probe_dump = 0;
-					if (g_probe_dump < 2) {
-						g_probe_dump++;
-						fprintf(f, "  [MP-PROBE-NEAR] fields within 50.0 of (%.1f,%.1f):\n", rx, ry);
-						for (int off = 0; off < 0x2000; off += 4) {
-							float val = 0;
-							memcpy(&val, (void*)(char_ptr + off), 4);
-							if (!isfinite(val)) continue;
-							if (fabsf(val - rx) < 50.0f || fabsf(val - ry) < 50.0f)
-								fprintf(f, "    +0x%04X = %14.4f\n", off, val);
-						}
-						fprintf(f, "  [MP-PROBE-DUMP] all floats |v| in [0.5,500000] (0x2000):\n");
-						for (int off = 0; off < 0x2000; off += 4) {
-							float val = 0;
-							memcpy(&val, (void*)(char_ptr + off), 4);
-							if (!isfinite(val)) continue;
-							if (fabsf(val) < 0.5f || fabsf(val) > 500000.0f) continue;
-							fprintf(f, "    +0x%04X = %14.4f\n", off, val);
-						}
-					}
-					int best_y = -1, best_x = -1;
-					float best_y_err = 1.0e9f, best_x_err = 1.0e9f;
-					// First pass: find y with tight tolerance. x/y are usually
-					// close together in the object, so once y is pinned we look
-					// for x in a tight window around y.
-					const int SCAN_RANGE = 0x4000;
-					const float TOL = 0.05f;
-					for (int off = 0; off < SCAN_RANGE; off += 4) {
-						float val = 0;
-						memcpy(&val, (void*)(char_ptr + off), 4);
-						if (!isfinite(val)) continue;
-						float ey = fabsf(val - ry);
-						if (ey < best_y_err && ey < TOL) {
-							best_y_err = ey;
-							best_y = off;
-						}
-					}
-					if (best_y >= 0) {
-						// Look for x within +/-0x40 of y; if not there, fall back
-						// to a full-range search for x.
-						int x_min = (best_y - 0x40 < 0) ? 0 : (best_y - 0x40);
-						int x_max = (best_y + 0x40 > SCAN_RANGE) ? SCAN_RANGE : (best_y + 0x40);
-						for (int off = x_min; off < x_max; off += 4) {
-							if (off == best_y) continue;
-							float val = 0;
-							memcpy(&val, (void*)(char_ptr + off), 4);
-							if (!isfinite(val)) continue;
-							float ex = fabsf(val - rx);
-							if (ex < best_x_err && ex < TOL) {
-								best_x_err = ex;
-								best_x = off;
-							}
-						}
-						// Full fallback if x wasn't right next to y.
-						if (best_x < 0) {
-							for (int off = 0; off < SCAN_RANGE; off += 4) {
-								if (off == best_y) continue;
-								float val = 0;
-								memcpy(&val, (void*)(char_ptr + off), 4);
-								if (!isfinite(val)) continue;
-								float ex = fabsf(val - rx);
-								if (ex < best_x_err && ex < TOL) {
-									best_x_err = ex;
-									best_x = off;
-								}
-							}
-						}
-					}
-					fprintf(f, "  [MP-PROBE] y candidate: +0x%04X err=%.4f\n", best_y, best_y_err);
-					fprintf(f, "  [MP-PROBE] x candidate: +0x%04X err=%.4f\n", best_x, best_x_err);
-					// Dump the float neighbourhood around y so we can eyeball x.
-					if (best_y >= 0) {
-						fprintf(f, "  [MP-PROBE] floats around y (+/-0x40):\n");
-						int dump_min = (best_y - 0x40 < 0) ? 0 : (best_y - 0x40);
-						int dump_max = (best_y + 0x40 > SCAN_RANGE - 4) ? (SCAN_RANGE - 4) : (best_y + 0x40);
-						for (int off = dump_min; off <= dump_max; off += 4) {
-							float val = 0;
-							memcpy(&val, (void*)(char_ptr + off), 4);
-							if (isfinite(val)) {
-								fprintf(f, "    +0x%04X = %12.4f  %s\n", off, val,
-									(off == best_y ? "<-Y" : (fabsf(val - rx) < TOL ? "<-?x" : "")));
-							}
-						}
-					}
-					if (best_x >= 0 && best_y >= 0 && best_x != best_y &&
-						best_x_err < TOL && best_y_err < TOL) {
-						fprintf(f, "  [MP-PROBE] *** AUTO-DETECTED: x_off=0x%X y_off=0x%X ***\n",
-							best_x, best_y);
-						if (g_interp_x_off == 0) g_interp_x_off = best_x;
-						if (g_interp_y_off == 0) g_interp_y_off = best_y;
-						probe_offsets_found = true;
-					} else {
-						fprintf(f, "  [MP-PROBE] no reliable match (tol=%.2f), will retry\n", TOL);
-					}
-					fflush(f); fclose(f);
-				}
-			}
-		}
+		// [v86] The old in-loop probe was removed: it ran BEFORE injection,
+		// when the 0x12 had already deleted the object, so GetCharacterByOID
+		// always returned NULL and it never executed once. The real probe now
+		// runs after the batch is injected (see MP_ProbeCoordOffsets below).
 			// [v72a-diag] Ungated marker proving the spawn-cache block executes.
 			static int spawn_seen = 0;
 			if (spawn_seen < 50) {
@@ -369,7 +459,10 @@ void MP_Pump() {
 		//   (a) 0x12 evicts the oid from the cache (the pointer is dead anyway).
 		//   (b) The skip test queries CField live instead of trusting the cache,
 		//       so we only skip when the object genuinely still exists.
-		if (mp_op == 0x12 && oid != 0) {
+		// [v86] Only evict when the 0x12 is actually delivered. A suppressed
+		// 0x12 never reaches the client, so the object - and its pointer -
+		// stay valid and must remain cached.
+		if (mp_op == 0x12 && oid != 0 && !mp_suppress[i]) {
 			g_char_by_oid.erase(oid);
 			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 			if (f) {
@@ -378,7 +471,7 @@ void MP_Pump() {
 			}
 		}
 		bool mp_skip_inject = false;
-		if (mp_op == 0x11 && oid != g_localObjectId) {
+		if (mp_op == 0x11 && oid != g_localObjectId && !mp_suppress[i]) {
 			DWORD cfield_chk = MP_GetCFieldPtr();
 			DWORD live_ptr = (cfield_chk && _GetCharacterByOID)
 				? _GetCharacterByOID((void*)cfield_chk, oid) : 0;
@@ -395,7 +488,7 @@ void MP_Pump() {
 				fflush(f); fclose(f);
 			}
 		}
-		if (!mp_skip_inject) {
+		if (!mp_skip_inject && !mp_suppress[i]) {
 		ProcessPacketExec(bp, mp_ctx);
 		{
 			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
@@ -410,6 +503,10 @@ void MP_Pump() {
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) { fprintf(f, "=== BATCH END (%d) ===\n", (int)batch.size()); fflush(f); fclose(f); }
 	}
+	// [v86] Probe AFTER injection - this is the whole point. At this moment the
+	// 0x11 has rebuilt the CCharacter, so GetCharacterByOID actually resolves.
+	// Cheap no-op once locked.
+	if (MP_InterpEnabled()) MP_ProbeCoordOffsets();
 	// [v73] Per-frame movement interpolation - REAL implementation.
 	// For each tracked remote player:
 	//   1. Look up the live CCharacter* via g_char_by_oid (populated each frame
