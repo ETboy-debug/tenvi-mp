@@ -4,6 +4,8 @@
 #include <mutex>
 #include <map>
 #include <cmath>
+#include <thread>
+#include <chrono>
 
 #ifdef MP_SERVER
 #include "../StandaloneServer/db.h"
@@ -1137,10 +1139,31 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			if (MP_RemoteSend3D() && MP_Restore3D())
 				AccountDataPacket(other.chr, other_sid);         // [v62] 还原对方身份
 			// --- 方向B: 让我(t_sid)看到已在场的 other ---
-			if (MP_RemoteSend3D()) AccountDataPacket(other.chr, t_sid);
-			CharacterSpawnPacket(other.chr, other.x, other.y, t_sid);  // 自己看到别人
-			if (MP_RemoteSend3D() && MP_Restore3D())
-				AccountDataPacket(chr, t_sid);                   // [v62] 还原自己身份
+			// [v78] DEFER this send. The CN client only renders a remote 0x11
+			// spawn while IT is settled; when the spawn arrives during the
+			// newcomer's own ChangeMap/login flow it is silently dropped
+			// (the classic "后进看不先进" asymmetry: A sees B, B sees nothing).
+			// A (already-settled) renders B fine because B's spawn reaches A
+			// after A's own ChangeMap closed. So we delay B's view of A by
+			// ~1.2s until B's client is settled, then push the exact same
+			// 0x3D+0x11+restore triple that works for A. If B left in the
+			// meantime, MP_BroadcastToSid simply logs MISSING and drops.
+			{
+				TenviCharacter other_copy = other.chr;
+				float ox = other.x, oy = other.y;
+				TenviCharacter self_copy = chr;
+				int delay_sid = t_sid;
+				std::thread([other_copy, ox, oy, self_copy, delay_sid]() {
+					std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+					if (MP_RemoteSend3D()) AccountDataPacket(other_copy, delay_sid);
+					CharacterSpawnPacket(other_copy, ox, oy, delay_sid);  // 自己看到别人
+					if (MP_RemoteSend3D() && MP_Restore3D())
+						AccountDataPacket(self_copy, delay_sid);          // [v62] 还原自己身份
+					printf("[MP-XVIS] deferred 方向B v78-defer -> sid=%d other oid=%08X\n",
+						delay_sid, (unsigned)other_copy.id);
+					fflush(stdout);
+				}).detach();
+			}
 		}
 		printf("[MP-XVIS] leave t_sid=%d matched=%d\n", t_sid, xvis_matched);
 		fflush(stdout);
