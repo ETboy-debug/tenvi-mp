@@ -1,6 +1,7 @@
 #include"AutoResponse.h"
 #include"MPClient.h"
 #include <map>
+#include <vector>
 #include <cstring>
 #include <cmath>
 
@@ -357,15 +358,42 @@ void MP_Pump() {
 				fflush(f); fclose(f);
 			}
 		}
-		// [v83] Skip re-injecting a remote 0x11 whose CCharacter object already
-		// exists (a movement update); re-injecting the spawn for an existing oid
-		// crashes the client. Movement is driven by writing target coords into
-		// CCharacter memory in the interpolation block below. Initial spawns
-		// (object not yet tracked) are still injected so the avatar appears.
+		// [v85] ROOT CAUSE of the v84 "we cannot see each other" regression.
+		// v84 moves a remote player with a despawn-respawn sequence:
+		//     0x12 (remove object) -> 0x3D (account data) -> 0x11 (spawn at new pos)
+		// The v83 skip test below consulted the g_char_by_oid CACHE, and 0x12
+		// never cleared that cache. So the 0x12 really did delete the remote
+		// avatar, then the 0x11 that was supposed to rebuild it was silently
+		// dropped ("already exists") - the avatar disappeared permanently the
+		// moment either player moved. Two fixes:
+		//   (a) 0x12 evicts the oid from the cache (the pointer is dead anyway).
+		//   (b) The skip test queries CField live instead of trusting the cache,
+		//       so we only skip when the object genuinely still exists.
+		if (mp_op == 0x12 && oid != 0) {
+			g_char_by_oid.erase(oid);
+			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+			if (f) {
+				fprintf(f, "[MP-RESPAWN MP_DLL_V85_RESPAWN_CACHE_FIX] op=12 oid=%08X cache evicted\n", oid);
+				fflush(f); fclose(f);
+			}
+		}
 		bool mp_skip_inject = false;
 		if (mp_op == 0x11 && oid != g_localObjectId) {
-			auto it = g_char_by_oid.find(oid);
-			if (it != g_char_by_oid.end() && it->second != 0) mp_skip_inject = true;
+			DWORD cfield_chk = MP_GetCFieldPtr();
+			DWORD live_ptr = (cfield_chk && _GetCharacterByOID)
+				? _GetCharacterByOID((void*)cfield_chk, oid) : 0;
+			if (live_ptr != 0) {
+				g_char_by_oid[oid] = live_ptr;
+				mp_skip_inject = true;
+			} else {
+				g_char_by_oid.erase(oid);
+			}
+			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+			if (f) {
+				fprintf(f, "[MP-RESPAWN MP_DLL_V85_RESPAWN_CACHE_FIX] op=11 oid=%08X live=%08X skip=%d\n",
+					oid, live_ptr, mp_skip_inject ? 1 : 0);
+				fflush(f); fclose(f);
+			}
 		}
 		if (!mp_skip_inject) {
 		ProcessPacketExec(bp, mp_ctx);
@@ -406,10 +434,18 @@ void MP_Pump() {
 		// a hook; we call the clean exported function 0x42ACDD directly instead.
 		DWORD cfield = MP_GetCFieldPtr();
 		if (cfield && _GetCharacterByOID) {
+			// [v85] Also EVICT entries whose object no longer exists. The old
+			// code only ever wrote non-null pointers, so a removed character
+			// left a dangling pointer in the cache forever - which is what let
+			// the v83 skip test believe a despawned avatar was still alive.
+			std::vector<DWORD> dead_oids;
 			for (auto &kv : g_interp) {
 				DWORD ptr = _GetCharacterByOID((void*)cfield, kv.first);
 				if (ptr) g_char_by_oid[kv.first] = ptr;
+				else dead_oids.push_back(kv.first);
 			}
+			for (size_t d = 0; d < dead_oids.size(); d++)
+				g_char_by_oid.erase(dead_oids[d]);
 		}
 		if (have_offsets && !g_interp.empty()) {
 			int applied = 0;
