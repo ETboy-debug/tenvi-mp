@@ -977,9 +977,13 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			// updates it IN PLACE (oid looked up at 0x48DCEF, not re-created), so
 			// movement = 0x11 only. No per-move 0x3D and therefore no identity
 			// restore either (identity latches on the FIRST 0x11, see v62).
-			CharacterSpawnPacket(me, nx, ny, t.sid);
+			// [v75] Movement 0x11 is dispatched to CField (ctx=0) so the receiving
+			// client updates the remote avatar position on the field layer, while
+			// the initial join-time spawn stays on CWvsContext (ctx=1) where the
+			// client actually renders the character.
+			CharacterSpawnPacket(me, nx, ny, t.sid, false);
 		}
-		MP_MARK("MP-FWD move=0x11-only v74 no-move-3d");
+		MP_MARK("MP-FWD move=0x11-only v75 move-cfield");
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
 			auto it = g_players.find(t_sid);
