@@ -17,7 +17,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_DLL_V86_NOFLICKER_PROBE";
+static const char* MP_INTERP_TAG = "MP_DLL_V87_FITPROBE";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -65,12 +65,29 @@ static float g_interp_speed = 0.15f;
 // real x field - a coincidental match cannot track a moving value.
 static bool g_probe_locked = false;
 static int  g_probe_round = 0;
-static std::map<int, int> g_probe_cand;   // offset -> consecutive hit count
 static float g_probe_last_x = 1.0e9f;     // last probed target x (dedupe)
 static const int   PROBE_SCAN_RANGE  = 0x2000;
-static const float PROBE_TOL_X       = 1.5f;   // x is exact-ish in the packet
-static const float PROBE_TOL_Y       = 40.0f;  // y gets snapped to the foothold
-static const int   PROBE_LOCK_ROUNDS = 3;      // distinct positions required
+static const int   PROBE_LOCK_ROUNDS = 3;
+
+// Linear-fit probe buffers. We no longer require the in-memory value to EQUAL
+// the packet coordinate - that assumption broke on every client that stores
+// coords as int pixels, or in a shifted/scaled frame. Instead we collect
+// (target, mem-as-float, mem-as-int32) at each distinct position and later fit
+// mem ~ slope*target + intercept. The real coordinate field is the one whose
+// stored value tracks the packet coordinate with slope ~1, regardless of a
+// fixed offset or 1:1 scale.
+struct ProbeSample { float t; float memf; int memi; };
+static std::map<int, std::vector<ProbeSample>> g_probe_xsamp;
+static std::map<int, std::vector<ProbeSample>> g_probe_ysamp;
+
+// Locked coordinate layout (runtime only - NOT persisted; the probe re-runs
+// each launch so a stale type/scale can never silently corrupt the object).
+static bool  g_interp_x_is_int = false;
+static float g_interp_x_scale = 1.0f;   // client_val = t*scale + intc
+static float g_interp_x_intc  = 0.0f;
+static bool  g_interp_y_is_int = false;
+static float g_interp_y_scale = 1.0f;
+static float g_interp_y_intc  = 0.0f;
 
 // [v86] Suppress-respawn state: once offsets are locked we stop letting the
 // despawn/respawn packets touch the client and drive movement by memory write.
@@ -87,11 +104,7 @@ static bool MP_InterpEnabled() {
 	bool on = false;
 	while (fgets(line, sizeof(line), f)) {
 		if (strncmp(line, "interp=1", 8) == 0) on = true;
-		else if (strncmp(line, "x_off=0x", 8) == 0) {
-			g_interp_x_off = (int)strtol(line + 6, NULL, 16);
-		} else if (strncmp(line, "y_off=0x", 8) == 0) {
-			g_interp_y_off = (int)strtol(line + 6, NULL, 16);
-		} else if (strncmp(line, "speed=", 6) == 0) {
+		else if (strncmp(line, "speed=", 6) == 0) {
 			g_interp_speed = (float)atof(line + 6);
 		}
 	}
@@ -177,30 +190,80 @@ void DelayExecution() {
 // to prevent client-side state corruption (e.g. op=1E during op=10 processing)
 static bool g_mp_in_batch = false;
 
-// [v86] Persist the discovered offsets so the probe only ever runs once.
+// [v87] Persist only interp/speed. Offsets are intentionally NOT persisted:
+// they are discovered live each launch, so a stale type/scale can never
+// silently corrupt the remote avatar object on the next run.
 static void MP_SaveInterpCfg() {
 	FILE *f = NULL;
 	fopen_s(&f, "mp_interp.cfg", "w");
 	if (!f) return;
 	fprintf(f, "interp=1\n");
 	fprintf(f, "speed=%.3f\n", g_interp_speed);
-	fprintf(f, "x_off=0x%X\n", g_interp_x_off);
-	fprintf(f, "y_off=0x%X\n", g_interp_y_off);
 	fclose(f);
 }
 
-// [v86] Locate the x/y float fields inside a remote CCharacter.
+// [v87] Locate the x/y coordinate fields inside a remote CCharacter.
 //
-// Must be called AFTER the batch has been injected: during a move sequence the
-// 0x12 deletes the object and the 0x11 recreates it, so the object only exists
-// once ProcessPacketExec has run. This is precisely why every earlier probe
-// version silently no-opped.
-//
-// The 0x11 packet gives us the authoritative x. The client never snaps x (only
-// y is pulled onto the platform foothold), so x is a reliable needle. A single
-// sample yields many coincidental matches, so we intersect the candidate set
-// across several DIFFERENT positions: only a field that tracks the value every
-// time is the real one.
+// Called AFTER the batch has been injected (object provably exists then).
+// The v86 approach required the in-memory float to EXACTLY equal the packet
+// coordinate - which fails whenever the client stores coords as int pixels or
+// in a shifted/scaled frame. v87 instead collects (target, mem-as-float,
+// mem-as-int32) at several distinct positions and fits mem ~ slope*target +
+// intercept. The real field is the one that tracks the packet coordinate with
+// slope ~1, no matter the storage type or a fixed offset/scale.
+
+// Least-squares fit of mem ~ slope*t + intercept, testing both float-stored and
+// int32-stored dependent values. Returns the better channel if it tracks the
+// target with slope ~1 within resid_thresh.
+struct ProbeFit { bool ok; bool is_int; float slope; float intc; float resid; };
+static ProbeFit MP_FitProbeChannel(const std::vector<ProbeSample>& s, float resid_thresh) {
+	ProbeFit best; best.ok = false; best.resid = 1.0e9f;
+	if (s.size() < 2) return best;
+	float n = (float)s.size();
+	// float channel
+	{
+		float st = 0, sy = 0, stt = 0, sty = 0;
+		for (size_t i = 0; i < s.size(); i++) { st += s[i].t; sy += s[i].memf; stt += s[i].t*s[i].t; sty += s[i].t*s[i].memf; }
+		float den = n*stt - st*st;
+		if (fabsf(den) > 1e-3f) {
+			float slope = (n*sty - st*sy) / den;
+			float intc = (sy - slope*st) / n;
+			float rmax = 0;
+			for (size_t i = 0; i < s.size(); i++) { float e = fabsf(s[i].memf - (slope*s[i].t + intc)); if (e > rmax) rmax = e; }
+			if (fabsf(slope - 1.0f) < 0.35f && rmax < resid_thresh && rmax < best.resid) {
+				best.ok = true; best.is_int = false; best.slope = slope; best.intc = intc; best.resid = rmax;
+			}
+		}
+	}
+	// int channel
+	{
+		float st = 0, sy = 0, stt = 0, sty = 0;
+		for (size_t i = 0; i < s.size(); i++) { st += s[i].t; sy += (float)s[i].memi; stt += s[i].t*s[i].t; sty += s[i].t*(float)s[i].memi; }
+		float den = n*stt - st*st;
+		if (fabsf(den) > 1e-3f) {
+			float slope = (n*sty - st*sy) / den;
+			float intc = (sy - slope*st) / n;
+			float rmax = 0;
+			for (size_t i = 0; i < s.size(); i++) { float e = fabsf((float)s[i].memi - (slope*s[i].t + intc)); if (e > rmax) rmax = e; }
+			if (fabsf(slope - 1.0f) < 0.35f && rmax < resid_thresh && rmax < best.resid) {
+				best.ok = true; best.is_int = true; best.slope = slope; best.intc = intc; best.resid = rmax;
+			}
+		}
+	}
+	return best;
+}
+
+// [v87] Type/scale-aware coordinate read/write for the lerp pass.
+static float MP_ReadCoord(DWORD base, int off, bool is_int) {
+	if (off == 0) return 0.0f;
+	if (is_int) { int iv = 0; memcpy(&iv, (void*)(base + off), 4); return (float)iv; }
+	float fv = 0; memcpy(&fv, (void*)(base + off), 4); return fv;
+}
+static void MP_WriteCoord(DWORD base, int off, bool is_int, float client_val) {
+	if (off == 0) return;
+	if (is_int) { int iv = (int)roundf(client_val); memcpy((void*)(base + off), &iv, 4); }
+	else { memcpy((void*)(base + off), &client_val, 4); }
+}
 static void MP_ProbeCoordOffsets() {
 	if (g_probe_locked || g_interp.empty()) return;
 	DWORD cfield = MP_GetCFieldPtr();
@@ -220,75 +283,73 @@ static void MP_ProbeCoordOffsets() {
 	g_probe_last_x = tx;
 	g_probe_round++;
 
-	std::map<int, int> hits;
+	// Collect (target, mem-as-float, mem-as-int32) for every 4-byte slot.
 	for (int off = 0; off < PROBE_SCAN_RANGE; off += 4) {
-		float val = 0.0f;
-		memcpy(&val, (void*)(ptr + off), 4);
-		if (!isfinite(val)) continue;
-		if (fabsf(val - tx) <= PROBE_TOL_X) hits[off] = 1;
+		ProbeSample sx; sx.t = tx;
+		memcpy(&sx.memf, (void*)(ptr + off), 4);
+		memcpy(&sx.memi, (void*)(ptr + off), 4);
+		if (!isfinite(sx.memf)) continue;   // float channel skips NaN/Inf
+		g_probe_xsamp[off].push_back(sx);
+		ProbeSample sy; sy.t = ty; sy.memf = sx.memf; sy.memi = sx.memi;
+		g_probe_ysamp[off].push_back(sy);
 	}
 
-	if (g_probe_round == 1) {
-		g_probe_cand = hits;
-	} else {
-		std::map<int, int> keep;
-		for (std::map<int, int>::iterator c = g_probe_cand.begin(); c != g_probe_cand.end(); ++c) {
-			if (hits.find(c->first) != hits.end()) keep[c->first] = c->second + 1;
+	// Diagnostics: print the best-fitting x candidates while probing.
+	if (g_probe_round <= 8) {
+		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+		if (f) {
+			fprintf(f, "[MP-PROBE v87] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) slots=%d\n",
+				g_probe_round, oid, ptr, tx, ty, (int)g_probe_xsamp.size());
+			int shown = 0;
+			for (std::map<int, std::vector<ProbeSample>>::iterator c = g_probe_xsamp.begin();
+				c != g_probe_xsamp.end() && shown < 4; ++c) {
+				ProbeFit fit = MP_FitProbeChannel(c->second, 4.0f);
+				if (fit.ok) {
+					fprintf(f, "    x cand +0x%04X %s slope=%.3f intc=%.1f resid=%.2f\n",
+						c->first, fit.is_int ? "int" : "flt", fit.slope, fit.intc, fit.resid);
+					shown++;
+				}
+			}
+			fflush(f); fclose(f);
 		}
-		g_probe_cand = keep;
 	}
 
-	FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-	if (f) {
-		fprintf(f, "[MP-PROBE v86] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) hits=%d cand=%d\n",
-			g_probe_round, oid, ptr, tx, ty, (int)hits.size(), (int)g_probe_cand.size());
-		int shown = 0;
-		for (std::map<int, int>::iterator c = g_probe_cand.begin();
-			c != g_probe_cand.end() && shown < 12; ++c, ++shown) {
-			float val = 0.0f;
-			memcpy(&val, (void*)(ptr + c->first), 4);
-			fprintf(f, "    cand +0x%04X = %12.4f (survived %d)\n", c->first, val, c->second);
-		}
-		fflush(f); fclose(f);
+	if (g_probe_round < PROBE_LOCK_ROUNDS) return;
+
+	// Lock x (tight residual) then y (loose: client snaps y to foothold).
+	ProbeFit best_x; best_x.ok = false; best_x.resid = 1.0e9f; int x_off = 0;
+	for (std::map<int, std::vector<ProbeSample>>::iterator c = g_probe_xsamp.begin(); c != g_probe_xsamp.end(); ++c) {
+		ProbeFit fit = MP_FitProbeChannel(c->second, 4.0f);
+		if (fit.ok && fit.resid < best_x.resid) { best_x = fit; x_off = c->first; }
+	}
+	ProbeFit best_y; best_y.ok = false; best_y.resid = 1.0e9f; int y_off = 0;
+	for (std::map<int, std::vector<ProbeSample>>::iterator c = g_probe_ysamp.begin(); c != g_probe_ysamp.end(); ++c) {
+		ProbeFit fit = MP_FitProbeChannel(c->second, 40.0f);
+		if (fit.ok && fit.resid < best_y.resid) { best_y = fit; y_off = c->first; }
 	}
 
-	// Candidate set collapsed - the assumption or tolerance was wrong. Restart
-	// the intersection rather than locking onto nothing.
-	if (g_probe_cand.empty() && g_probe_round > 1) {
-		g_probe_round = 0;
-		g_probe_last_x = 1.0e9f;
+	if (!best_x.ok) {
+		// Could not lock x - restart probing (clears stale samples).
+		g_probe_round = 0; g_probe_last_x = 1.0e9f;
+		g_probe_xsamp.clear(); g_probe_ysamp.clear();
+		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+		if (f) { fprintf(f, "[MP-PROBE v87] x LOCK FAILED at round %d - see candidates above\n", PROBE_LOCK_ROUNDS); fflush(f); fclose(f); }
 		return;
-	}
-	if (g_probe_round < PROBE_LOCK_ROUNDS || g_probe_cand.empty()) return;
-
-	// Lock x on the surviving candidate; prefer the lowest offset (the real
-	// position field sits early in the object, decoys tend to be render caches).
-	int x_off = g_probe_cand.begin()->first;
-
-	// y sits adjacent to x in practically every 2D engine layout. Search a tight
-	// window with a loose tolerance because the client snaps y to the foothold.
-	int y_off = 0;
-	float best_err = 1.0e9f;
-	int lo = (x_off - 0x20 < 0) ? 0 : (x_off - 0x20);
-	int hi = x_off + 0x20;
-	for (int off = lo; off <= hi; off += 4) {
-		if (off == x_off) continue;
-		float val = 0.0f;
-		memcpy(&val, (void*)(ptr + off), 4);
-		if (!isfinite(val)) continue;
-		float err = fabsf(val - ty);
-		if (err < best_err && err <= PROBE_TOL_Y) { best_err = err; y_off = off; }
 	}
 
 	g_interp_x_off = x_off;
 	g_interp_y_off = y_off;   // 0 is valid: x-only writes still kill the flicker
+	g_interp_x_is_int = best_x.is_int; g_interp_x_scale = best_x.slope; g_interp_x_intc = best_x.intc;
+	g_interp_y_is_int = best_y.ok ? best_y.is_int : false;
+	g_interp_y_scale = best_y.ok ? best_y.slope : 1.0f;
+	g_interp_y_intc  = best_y.ok ? best_y.intc  : 0.0f;
 	g_probe_locked = true;
-	MP_SaveInterpCfg();
 
 	f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 	if (f) {
-		fprintf(f, "[MP-PROBE v86] *** LOCKED x_off=0x%X y_off=0x%X (y_err=%.2f) - saved to mp_interp.cfg ***\n",
-			x_off, y_off, (y_off ? best_err : -1.0f));
+		fprintf(f, "[MP-PROBE v87] *** LOCKED x_off=0x%X(%s s=%.3f i=%.1f) y_off=0x%X(%s s=%.3f i=%.1f) ***\n",
+			x_off, best_x.is_int ? "int" : "flt", best_x.slope, best_x.intc,
+			y_off, best_y.ok ? (best_y.is_int ? "int" : "flt") : "none", best_y.ok ? best_y.slope : 0, best_y.ok ? best_y.intc : 0);
 		fflush(f); fclose(f);
 	}
 }
@@ -553,20 +614,24 @@ void MP_Pump() {
 				if (it == g_char_by_oid.end() || it->second == 0) continue;
 				DWORD char_ptr = it->second;
 				// Read current client-side coords
-				float cx = 0, cy = 0;
-				if (g_interp_x_off) memcpy(&cx, (void*)(char_ptr + g_interp_x_off), 4);
-				if (g_interp_y_off) memcpy(&cy, (void*)(char_ptr + g_interp_y_off), 4);
-				// Lerp toward target
-				float nx = cx + (ri.tx - cx) * g_interp_speed;
-				float ny = cy + (ri.ty - cy) * g_interp_speed;
-				// Snap if very close (avoids jitter when nearly arrived)
-				if (fabsf(nx - ri.tx) < 0.5f) nx = ri.tx;
-				if (fabsf(ny - ri.ty) < 0.5f) ny = ri.ty;
-				// Write back
-				if (g_interp_x_off) memcpy((void*)(char_ptr + g_interp_x_off), &nx, 4);
-				if (g_interp_y_off) memcpy((void*)(char_ptr + g_interp_y_off), &ny, 4);
-				ri.cx = nx; ri.cy = ny;
-				applied++;
+			// Read current client-space coords (type/scale aware).
+			float cur_cx = MP_ReadCoord(char_ptr, g_interp_x_off, g_interp_x_is_int);
+			float cur_cy = MP_ReadCoord(char_ptr, g_interp_y_off, g_interp_y_is_int);
+			// Inverse to packet space, lerp, forward back to client space.
+			float cur_px = (g_interp_x_scale != 0.0f) ? (cur_cx - g_interp_x_intc) / g_interp_x_scale : cur_cx;
+			float nxt_px = cur_px + (ri.tx - cur_px) * g_interp_speed;
+			if (fabsf(nxt_px - ri.tx) < 0.5f) nxt_px = ri.tx;
+			float nxt_cx = (g_interp_x_scale != 0.0f) ? (nxt_px * g_interp_x_scale + g_interp_x_intc) : nxt_px;
+			MP_WriteCoord(char_ptr, g_interp_x_off, g_interp_x_is_int, nxt_cx);
+			ri.cx = nxt_cx;
+
+			float cur_py = (g_interp_y_scale != 0.0f) ? (cur_cy - g_interp_y_intc) / g_interp_y_scale : cur_cy;
+			float nxt_py = cur_py + (ri.ty - cur_py) * g_interp_speed;
+			if (fabsf(nxt_py - ri.ty) < 0.5f) nxt_py = ri.ty;
+			float nxt_cy = (g_interp_y_scale != 0.0f) ? (nxt_py * g_interp_y_scale + g_interp_y_intc) : nxt_py;
+			MP_WriteCoord(char_ptr, g_interp_y_off, g_interp_y_is_int, nxt_cy);
+			ri.cy = nxt_cy;
+			applied++;
 			}
 			if (applied > 0 && (dbg % 60) == 0) {
 				FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
