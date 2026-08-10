@@ -16,7 +16,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_INTERP_V71";
+static const char* MP_INTERP_TAG = "MP_INTERP_V77";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -206,12 +206,16 @@ void MP_Pump() {
 			} else {
 				it->second.tx = rx; it->second.ty = ry; it->second.stale = 0;
 			}
-		// [v76] Enhanced probe: scan a wider window with relaxed tolerance and
-		// keep trying on every remote spawn until offsets are found. The v73
-		// single-shot 0x200 scan failed because CCharacter may store coords at
-		// a larger offset or in a slightly different format (double/int), or
-		// GetCharacterByOID may return a different object than the one whose
-		// memory is visible at render time.
+		// [v77] The deployed server sends initial 0x11 spawns through
+		// CWvsContext (ctx=1) so the client renders them, but CField also
+		// keeps a CCharacter object for each remote player. The renderable
+		// coordinates live in the CField object; the CWvsContext copy is only
+		// used for spawn/rendering. Therefore the interpolation target is the
+		// CField CCharacter, found via GetCharacterByOID(0x42ACDD), exactly as
+		// before. The fix here is a more robust auto-detection of x/y offsets:
+		// the v76 heuristic latched onto a +0x0 candidate (object vtable-ish
+		// float) as x because it allowed any error < 1.0, which silently broke
+		// horizontal movement.
 		static bool probe_offsets_found = false;
 		if (MP_InterpEnabled() && !probe_offsets_found) {
 			DWORD cfield = MP_GetCFieldPtr();
@@ -222,38 +226,77 @@ void MP_Pump() {
 				if (f) {
 					fprintf(f, "[MP-PROBE] Scanning CCharacter at %08X for spawn coords (%.1f, %.1f)\n",
 						char_ptr, rx, ry);
-					int best_x = -1, best_y = -1;
-					float best_x_err = 1.0e9f, best_y_err = 1.0e9f;
-					// Scan a much larger object window. CCharacter-derived objects
-					// in this engine are often 0x400-0x1000 bytes; the render coords
-					// can live quite far from the vtable.
-					for (int off = 0; off < 0x2000; off += 4) {
+					int best_y = -1, best_x = -1;
+					float best_y_err = 1.0e9f, best_x_err = 1.0e9f;
+					// First pass: find y with tight tolerance. x/y are usually
+					// close together in the object, so once y is pinned we look
+					// for x in a tight window around y.
+					const int SCAN_RANGE = 0x4000;
+					const float TOL = 0.05f;
+					for (int off = 0; off < SCAN_RANGE; off += 4) {
 						float val = 0;
 						memcpy(&val, (void*)(char_ptr + off), 4);
-						float ex = fabsf(val - rx);
+						if (!isfinite(val)) continue;
 						float ey = fabsf(val - ry);
-						if (ex < best_x_err && ex < 1.0f) {
-							best_x_err = ex;
-							best_x = off;
-						}
-						if (ey < best_y_err && ey < 1.0f && off != best_x) {
+						if (ey < best_y_err && ey < TOL) {
 							best_y_err = ey;
 							best_y = off;
 						}
 					}
-					// Also record the top candidates for manual review.
-					fprintf(f, "  [MP-PROBE] best x candidates: +0x%03X err=%.3f, +0x%03X err=%.3f\n",
-						best_x, best_x_err, -1, 0.0f);
-					fprintf(f, "  [MP-PROBE] best y candidates: +0x%03X err=%.3f, +0x%03X err=%.3f\n",
-						best_y, best_y_err, -1, 0.0f);
-					if (best_x >= 0 && best_y >= 0 && best_x != best_y) {
+					if (best_y >= 0) {
+						// Look for x within +/-0x40 of y; if not there, fall back
+						// to a full-range search for x.
+						int x_min = max(0, best_y - 0x40);
+						int x_max = min(SCAN_RANGE, best_y + 0x40);
+						for (int off = x_min; off < x_max; off += 4) {
+							if (off == best_y) continue;
+							float val = 0;
+							memcpy(&val, (void*)(char_ptr + off), 4);
+							if (!isfinite(val)) continue;
+							float ex = fabsf(val - rx);
+							if (ex < best_x_err && ex < TOL) {
+								best_x_err = ex;
+								best_x = off;
+							}
+						}
+						// Full fallback if x wasn't right next to y.
+						if (best_x < 0) {
+							for (int off = 0; off < SCAN_RANGE; off += 4) {
+								if (off == best_y) continue;
+								float val = 0;
+								memcpy(&val, (void*)(char_ptr + off), 4);
+								if (!isfinite(val)) continue;
+								float ex = fabsf(val - rx);
+								if (ex < best_x_err && ex < TOL) {
+									best_x_err = ex;
+									best_x = off;
+								}
+							}
+						}
+					}
+					fprintf(f, "  [MP-PROBE] y candidate: +0x%04X err=%.4f\n", best_y, best_y_err);
+					fprintf(f, "  [MP-PROBE] x candidate: +0x%04X err=%.4f\n", best_x, best_x_err);
+					// Dump the float neighbourhood around y so we can eyeball x.
+					if (best_y >= 0) {
+						fprintf(f, "  [MP-PROBE] floats around y (+/-0x40):\n");
+						for (int off = max(0, best_y - 0x40); off <= min(SCAN_RANGE - 4, best_y + 0x40); off += 4) {
+							float val = 0;
+							memcpy(&val, (void*)(char_ptr + off), 4);
+							if (isfinite(val)) {
+								fprintf(f, "    +0x%04X = %12.4f  %s\n", off, val,
+									(off == best_y ? "<-Y" : (fabsf(val - rx) < TOL ? "<-?x" : "")));
+							}
+						}
+					}
+					if (best_x >= 0 && best_y >= 0 && best_x != best_y &&
+						best_x_err < TOL && best_y_err < TOL) {
 						fprintf(f, "  [MP-PROBE] *** AUTO-DETECTED: x_off=0x%X y_off=0x%X ***\n",
 							best_x, best_y);
 						if (g_interp_x_off == 0) g_interp_x_off = best_x;
 						if (g_interp_y_off == 0) g_interp_y_off = best_y;
 						probe_offsets_found = true;
 					} else {
-						fprintf(f, "  [MP-PROBE] no reliable match in first 0x2000 bytes, will retry\n");
+						fprintf(f, "  [MP-PROBE] no reliable match (tol=%.2f), will retry\n", TOL);
 					}
 					fflush(f); fclose(f);
 				}
