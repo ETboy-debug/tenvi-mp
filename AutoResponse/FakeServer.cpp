@@ -13,8 +13,8 @@
 // [DIAG] 崩溃定位标记: 直接写 stdout(服务端无缓冲, 落到 server_live.log)
 #define MP_MARK(msg) do { printf("[TenviServer] MARK %s\n", msg); } while(0)
 
-// [v81] Deployment sentinel string (grep-friendly binary marker).
-static const char *MP_SERVER_VERSION_TAG = "MP_SERVER_V81_NO_TELEPORT_SPAWN";
+// [v82] Deployment sentinel string (grep-friendly binary marker).
+static const char *MP_SERVER_VERSION_TAG = "MP_SERVER_V82_CTX_SYNC_SPAWN";
 #else
 #define MP_MARK(msg) do { } while(0)
 #endif
@@ -994,9 +994,12 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// when sent for a remote character id. We fall back to 0x11-only and
 		// will solve position updates through client-side memory patching or
 		// a different server opcode, not 0x3C.
-		CharacterSpawnPacket(me, nx, ny, t.sid);
-		printf("[MP-FWD]   -> sid=%d move-0x11-only v81 oid=%08X to (%.1f,%.1f)\n",
-			t.sid, (unsigned)me.id, nx, ny);
+		// [v82] Route the movement respawn through the same layer as 0x3D so
+		// the receiving client updates an existing object on the same layer.
+		// Layer is runtime-configurable via mp_ctx.cfg char 1 (MP_RemoteCtx).
+		CharacterSpawnPacket(me, nx, ny, t.sid, MP_RemoteCtx());
+		printf("[MP-FWD]   -> sid=%d move-0x11-only v82 ctx=%d oid=%08X to (%.1f,%.1f)\n",
+			t.sid, MP_RemoteCtx() ? 1 : 0, (unsigned)me.id, nx, ny);
 	}
 	MP_MARK("MP-FWD move=0x11-only v81 no-teleport");
 		{
@@ -1136,8 +1139,10 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			// 0x11 to render, then immediately restore other_sid's own account
 			// context, or it gets overwritten by my account data and the viewer
 			// can see people but cannot move itself (v61b field report).
+			// [v82] 0x11 now uses the same layer as 0x3D (MP_RemoteCtx) so the
+			// object is created and rendered on the same client layer.
 			if (MP_RemoteSend3D()) AccountDataPacket(chr, other_sid);
-			CharacterSpawnPacket(chr, x, y, other_sid);          // other sees me
+			CharacterSpawnPacket(chr, x, y, other_sid, MP_RemoteCtx()); // other sees me
 			if (MP_RemoteSend3D() && MP_Restore3D())
 				AccountDataPacket(other.chr, other_sid);         // [v62] restore other identity
 			// --- dirB: let me (t_sid) see the already-present other ---
@@ -1152,11 +1157,11 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			// thread (1.2s), not the whole server.
 			Sleep(1200);
 			if (MP_RemoteSend3D()) AccountDataPacket(other.chr, t_sid);
-			CharacterSpawnPacket(other.chr, other.x, other.y, t_sid); // I see other
+			CharacterSpawnPacket(other.chr, other.x, other.y, t_sid, MP_RemoteCtx()); // I see other
 			if (MP_RemoteSend3D() && MP_Restore3D())
 				AccountDataPacket(chr, t_sid);                        // [v62] restore my identity
-			printf("[MP-XVIS] deferred dirB v79-sleep -> sid=%d other oid=%08X\n",
-				t_sid, (unsigned)other.chr.id);
+			printf("[MP-XVIS] deferred dirB v82 ctx=%d -> sid=%d other oid=%08X\n",
+				MP_RemoteCtx() ? 1 : 0, t_sid, (unsigned)other.chr.id);
 			fflush(stdout);
 		}
 		printf("[MP-XVIS] leave t_sid=%d matched=%d\n", t_sid, xvis_matched);
