@@ -13,8 +13,8 @@
 // [DIAG] 崩溃定位标记: 直接写 stdout(服务端无缓冲, 落到 server_live.log)
 #define MP_MARK(msg) do { printf("[TenviServer] MARK %s\n", msg); } while(0)
 
-// [v82] Deployment sentinel string (grep-friendly binary marker).
-static const char *MP_SERVER_VERSION_TAG = "MP_SERVER_V83_MOVE_MEMWRITE";
+// [v84] Deployment sentinel string (grep-friendly binary marker).
+static const char *MP_SERVER_VERSION_TAG = "MP_SERVER_V84_MOVE_RESPAWN";
 #else
 #define MP_MARK(msg) do { } while(0)
 #endif
@@ -967,7 +967,11 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// DLL now lerp-smoothes each remote spawn, so we can send more frequent
 		// position updates without the "teleport" look. This tightens position
 		// sync and lets the lerp do the visual smoothing.
-		const float MOVE_THRESHOLD = 10.0f;
+		// [v84] Movement is now despawn+respawn (not a bare 0x11), so each
+		// update tears down and rebuilds the remote object. A larger threshold
+		// reduces that churn (less strobing, fewer identity-restore windows).
+		// 60px is a compromise: clearly visible tracking, not nauseating flicker.
+		const float MOVE_THRESHOLD = 60.0f;
 		bool do_update = false;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
@@ -987,21 +991,27 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			return;
 		}
 	for (auto &t : targets) {
-		// [v74] MOVEMENT MUST NOT re-send 0x3D. The 0x3D (AccountData) handler
-		// (0x00498E4F) CREATES the character object; re-sending it on every step
-		// spawned a duplicate object per move -> "影分身" (shadow clones).
-		// [v81] Revert v80: 0x3C IN_MAP_TELEPORT crashes the receiving client
-		// when sent for a remote character id. We fall back to 0x11-only and
-		// will solve position updates through client-side memory patching or
-		// a different server opcode, not 0x3C.
-		// [v82] Route the movement respawn through the same layer as 0x3D so
-		// the receiving client updates an existing object on the same layer.
-		// Layer is runtime-configurable via mp_ctx.cfg char 1 (MP_RemoteCtx).
+		// [v84] MOVEMENT = despawn + respawn. Re-sending 0x11 alone for an
+		// existing oid is ignored by the client (no position update); 0x3C
+		// IN_MAP_TELEPORT crashes for a remote id. The only packet path that
+		// actually relocates an already-rendered remote character is to remove
+		// its object and recreate it at the new position with a fresh
+		// 0x3D+0x11 pair - the same sequence used for initial cross-visibility
+		// (which is known crash-free). 0x12 must use the SAME layer as the
+		// spawn (ctx), or the object lingers after removal.
+		// The 0x3D re-send temporarily overwrites the viewer's own account
+		// context, so we restore the viewer's 0x3D immediately after (matching
+		// the v62 identity-restore dance used at join time).
+		RemoveObjectPacket(me.id, t.sid);
+		if (MP_RemoteSend3D())
+			AccountDataPacket(me, t.sid);
 		CharacterSpawnPacket(me, nx, ny, t.sid, MP_RemoteCtx());
-		printf("[MP-FWD]   -> sid=%d move-0x11-only v82 ctx=%d oid=%08X to (%.1f,%.1f)\n",
+		if (MP_RemoteSend3D() && MP_Restore3D())
+			AccountDataPacket(t.chr, t.sid);
+		printf("[MP-FWD]   -> sid=%d move-respawn v84 ctx=%d oid=%08X to (%.1f,%.1f)\n",
 			t.sid, MP_RemoteCtx() ? 1 : 0, (unsigned)me.id, nx, ny);
 	}
-	MP_MARK("MP-FWD move=0x11-only v81 no-teleport");
+	MP_MARK("MP-FWD move=despawn-respawn v84");
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
 			auto it = g_players.find(t_sid);
