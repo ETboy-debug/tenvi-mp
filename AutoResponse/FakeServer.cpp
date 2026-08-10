@@ -14,7 +14,7 @@
 #define MP_MARK(msg) do { printf("[TenviServer] MARK %s\n", msg); } while(0)
 
 // [v84] Deployment sentinel string (grep-friendly binary marker).
-static const char *MP_SERVER_VERSION_TAG = "MP_SERVER_V84_MOVE_RESPAWN";
+static const char *MP_SERVER_VERSION_TAG = "MP_SERVER_V85_RESPAWN_CACHE_FIX";
 #else
 #define MP_MARK(msg) do { } while(0)
 #endif
