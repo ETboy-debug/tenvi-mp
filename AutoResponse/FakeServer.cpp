@@ -948,7 +948,11 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// teleporty as 150px, and the (0,0) filter stops the disappear bug.
 		// [v73] Lowered to 30px for smoother movement. Combined with the
 		// no-remove optimization below, the teleport feel is greatly reduced.
-		const float MOVE_THRESHOLD = 30.0f;
+		// [v76] Drop to 10px while client-side interpolation is enabled. The
+		// DLL now lerp-smoothes each remote spawn, so we can send more frequent
+		// position updates without the "teleport" look. This tightens position
+		// sync and lets the lerp do the visual smoothing.
+		const float MOVE_THRESHOLD = 10.0f;
 		bool do_update = false;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
@@ -983,7 +987,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			// client actually renders the character.
 			CharacterSpawnPacket(me, nx, ny, t.sid, false);
 		}
-		MP_MARK("MP-FWD move=0x11-only v75 move-cfield");
+		MP_MARK("MP-FWD move=0x11-only v76 smooth-10px");
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
 			auto it = g_players.find(t_sid);
