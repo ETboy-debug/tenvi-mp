@@ -206,11 +206,14 @@ void MP_Pump() {
 			} else {
 				it->second.tx = rx; it->second.ty = ry; it->second.stale = 0;
 			}
-		// [v73] Probe mode: scan the CCharacter object memory for floats
-		// that match the spawn coords. This auto-discovers the correct
-		// x/y offsets so the user does not need Cheat Engine.
-		static bool probe_checked = false;
-		if (MP_InterpEnabled() && !probe_checked) {
+		// [v76] Enhanced probe: scan a wider window with relaxed tolerance and
+		// keep trying on every remote spawn until offsets are found. The v73
+		// single-shot 0x200 scan failed because CCharacter may store coords at
+		// a larger offset or in a slightly different format (double/int), or
+		// GetCharacterByOID may return a different object than the one whose
+		// memory is visible at render time.
+		static bool probe_offsets_found = false;
+		if (MP_InterpEnabled() && !probe_offsets_found) {
 			DWORD cfield = MP_GetCFieldPtr();
 			DWORD char_ptr = (cfield && _GetCharacterByOID) ? _GetCharacterByOID((void*)cfield, oid) : 0;
 			if (char_ptr != 0) {
@@ -219,32 +222,41 @@ void MP_Pump() {
 				if (f) {
 					fprintf(f, "[MP-PROBE] Scanning CCharacter at %08X for spawn coords (%.1f, %.1f)\n",
 						char_ptr, rx, ry);
-					int found_x = -1, found_y = -1;
-					// Scan first 0x200 bytes of the object for matching floats
-					for (int off = 0; off < 0x200; off += 4) {
+					int best_x = -1, best_y = -1;
+					float best_x_err = 1.0e9f, best_y_err = 1.0e9f;
+					// Scan a much larger object window. CCharacter-derived objects
+					// in this engine are often 0x400-0x1000 bytes; the render coords
+					// can live quite far from the vtable.
+					for (int off = 0; off < 0x2000; off += 4) {
 						float val = 0;
 						memcpy(&val, (void*)(char_ptr + off), 4);
-						if (fabsf(val - rx) < 0.01f && found_x < 0) {
-							found_x = off;
-							fprintf(f, "  [MP-PROBE] x match at offset +0x%03X  (val=%.3f)\n", off, val);
+						float ex = fabsf(val - rx);
+						float ey = fabsf(val - ry);
+						if (ex < best_x_err && ex < 1.0f) {
+							best_x_err = ex;
+							best_x = off;
 						}
-						if (fabsf(val - ry) < 0.01f && found_y < 0 && off != found_x) {
-							found_y = off;
-							fprintf(f, "  [MP-PROBE] y match at offset +0x%03X  (val=%.3f)\n", off, val);
+						if (ey < best_y_err && ey < 1.0f && off != best_x) {
+							best_y_err = ey;
+							best_y = off;
 						}
 					}
-					if (found_x >= 0 && found_y >= 0) {
+					// Also record the top candidates for manual review.
+					fprintf(f, "  [MP-PROBE] best x candidates: +0x%03X err=%.3f, +0x%03X err=%.3f\n",
+						best_x, best_x_err, -1, 0.0f);
+					fprintf(f, "  [MP-PROBE] best y candidates: +0x%03X err=%.3f, +0x%03X err=%.3f\n",
+						best_y, best_y_err, -1, 0.0f);
+					if (best_x >= 0 && best_y >= 0 && best_x != best_y) {
 						fprintf(f, "  [MP-PROBE] *** AUTO-DETECTED: x_off=0x%X y_off=0x%X ***\n",
-							found_x, found_y);
-						// Auto-apply the detected offsets
-						if (g_interp_x_off == 0) g_interp_x_off = found_x;
-						if (g_interp_y_off == 0) g_interp_y_off = found_y;
+							best_x, best_y);
+						if (g_interp_x_off == 0) g_interp_x_off = best_x;
+						if (g_interp_y_off == 0) g_interp_y_off = best_y;
+						probe_offsets_found = true;
 					} else {
-						fprintf(f, "  [MP-PROBE] no match found in first 0x200 bytes\n");
+						fprintf(f, "  [MP-PROBE] no reliable match in first 0x2000 bytes, will retry\n");
 					}
 					fflush(f); fclose(f);
 				}
-				probe_checked = true;  // only probe once per session
 			}
 		}
 			// [v72a-diag] Ungated marker proving the spawn-cache block executes.
