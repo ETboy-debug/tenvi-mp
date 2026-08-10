@@ -246,8 +246,8 @@ void MP_Pump() {
 					if (best_y >= 0) {
 						// Look for x within +/-0x40 of y; if not there, fall back
 						// to a full-range search for x.
-						int x_min = max(0, best_y - 0x40);
-						int x_max = min(SCAN_RANGE, best_y + 0x40);
+						int x_min = (best_y - 0x40 < 0) ? 0 : (best_y - 0x40);
+						int x_max = (best_y + 0x40 > SCAN_RANGE) ? SCAN_RANGE : (best_y + 0x40);
 						for (int off = x_min; off < x_max; off += 4) {
 							if (off == best_y) continue;
 							float val = 0;
@@ -279,7 +279,9 @@ void MP_Pump() {
 					// Dump the float neighbourhood around y so we can eyeball x.
 					if (best_y >= 0) {
 						fprintf(f, "  [MP-PROBE] floats around y (+/-0x40):\n");
-						for (int off = max(0, best_y - 0x40); off <= min(SCAN_RANGE - 4, best_y + 0x40); off += 4) {
+						int dump_min = (best_y - 0x40 < 0) ? 0 : (best_y - 0x40);
+						int dump_max = (best_y + 0x40 > SCAN_RANGE - 4) ? (SCAN_RANGE - 4) : (best_y + 0x40);
+						for (int off = dump_min; off <= dump_max; off += 4) {
 							float val = 0;
 							memcpy(&val, (void*)(char_ptr + off), 4);
 							if (isfinite(val)) {
