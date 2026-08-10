@@ -52,6 +52,9 @@ bool MP_WaitCtrlResult(BYTE expectCmd, int timeoutMs, BYTE &outByte) {
 	}
 }
 
+// [v80] Deployment sentinel string (grep-friendly binary marker).
+static const char *MP_VERSION_TAG = "MP_CLIENT_V80_TELEPORT_SPAWN";
+
 // [v61-diag] Per-process diagnostic log path. See MPClient.h for why a shared
 // filename made the v60 client logs unreadable.
 const char *MP_DiagPath() {
