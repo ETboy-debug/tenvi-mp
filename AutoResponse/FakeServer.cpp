@@ -364,7 +364,13 @@ void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, int tar
 	// ctx=0) is correct; the v50 ctx=0 failure was the ID-collision bug (now
 	// fixed - oids are distinct in mp_diag). Self spawn (target_sid<0) stays
 	// ctx=1 (CWvsContext) and remains correct.
-	else MP_BroadcastToSid(target_sid, sp, MP_RemoteCtx());
+	// [v77] Respect the caller-supplied `context` for remote targets as well.
+	// Initial cross-visibility spawns (default true) stay on CWvsContext where
+	// the client renders them. Movement updates explicitly pass false and are
+	// routed to CField so the receiving client can update the remote avatar
+	// position on the field layer. Previously this parameter was ignored and
+	// every remote 0x11 went through MP_RemoteCtx(), which defaulted to ctx=1.
+	else MP_BroadcastToSid(target_sid, sp, context);
 }
 
 // 0x12
@@ -985,9 +991,11 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			// client updates the remote avatar position on the field layer, while
 			// the initial join-time spawn stays on CWvsContext (ctx=1) where the
 			// client actually renders the character.
+			// [v77] CharacterSpawnPacket now respects the caller-supplied context
+			// for remote targets, so this false really routes through CField.
 			CharacterSpawnPacket(me, nx, ny, t.sid, false);
 		}
-		MP_MARK("MP-FWD move=0x11-only v76 smooth-10px");
+		MP_MARK("MP-FWD move=0x11-only v77 ctx-respect smooth-10px");
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
 			auto it = g_players.find(t_sid);
