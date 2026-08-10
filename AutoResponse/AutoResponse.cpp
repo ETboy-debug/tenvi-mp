@@ -226,6 +226,30 @@ void MP_Pump() {
 				if (f) {
 					fprintf(f, "[MP-PROBE] Scanning CCharacter at %08X for spawn coords (%.1f, %.1f)\n",
 						char_ptr, rx, ry);
+					// [v83-diag] Client snaps spawn coords to the platform foothold,
+					// so the stored value may differ from the packet coord. Dump
+					// plausible floats and report any field within 50.0 of either
+					// packet coord so the real x/y offset is visible.
+					static int g_probe_dump = 0;
+					if (g_probe_dump < 2) {
+						g_probe_dump++;
+						fprintf(f, "  [MP-PROBE-NEAR] fields within 50.0 of (%.1f,%.1f):\n", rx, ry);
+						for (int off = 0; off < 0x2000; off += 4) {
+							float val = 0;
+							memcpy(&val, (void*)(char_ptr + off), 4);
+							if (!isfinite(val)) continue;
+							if (fabsf(val - rx) < 50.0f || fabsf(val - ry) < 50.0f)
+								fprintf(f, "    +0x%04X = %14.4f\n", off, val);
+						}
+						fprintf(f, "  [MP-PROBE-DUMP] all floats |v| in [0.5,500000] (0x2000):\n");
+						for (int off = 0; off < 0x2000; off += 4) {
+							float val = 0;
+							memcpy(&val, (void*)(char_ptr + off), 4);
+							if (!isfinite(val)) continue;
+							if (fabsf(val) < 0.5f || fabsf(val) > 500000.0f) continue;
+							fprintf(f, "    +0x%04X = %14.4f\n", off, val);
+						}
+					}
 					int best_y = -1, best_x = -1;
 					float best_y_err = 1.0e9f, best_x_err = 1.0e9f;
 					// First pass: find y with tight tolerance. x/y are usually
@@ -333,6 +357,17 @@ void MP_Pump() {
 				fflush(f); fclose(f);
 			}
 		}
+		// [v83] Skip re-injecting a remote 0x11 whose CCharacter object already
+		// exists (a movement update); re-injecting the spawn for an existing oid
+		// crashes the client. Movement is driven by writing target coords into
+		// CCharacter memory in the interpolation block below. Initial spawns
+		// (object not yet tracked) are still injected so the avatar appears.
+		bool mp_skip_inject = false;
+		if (mp_op == 0x11 && oid != g_localObjectId) {
+			auto it = g_char_by_oid.find(oid);
+			if (it != g_char_by_oid.end() && it->second != 0) mp_skip_inject = true;
+		}
+		if (!mp_skip_inject) {
 		ProcessPacketExec(bp, mp_ctx);
 		{
 			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
@@ -340,6 +375,7 @@ void MP_Pump() {
 				fprintf(f, "<< done op=%02X\n", mp_op);
 				fflush(f); fclose(f);
 			}
+		}
 		}
 	}
 	{
