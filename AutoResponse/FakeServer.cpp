@@ -968,19 +968,18 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			return;
 		}
 		for (auto &t : targets) {
-			printf("[MP-FWD]   -> sid=%d respawn-only oid=%08X to (%.1f,%.1f)\n",
+			printf("[MP-FWD]   -> sid=%d move-0x11-only oid=%08X to (%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, nx, ny);
-			// [v73] Removed RemoveObjectPacket before respawn. The client
-			// updates the existing character object in-place when it receives
-			// another 0x11 spawn, so skipping the remove eliminates the
-			// "blink out then reappear" flash. Result: the avatar still
-			// jumps to the new position, but without the intermediate
-			// disappearance - much less jarring visually.
-			if (MP_RemoteSend3D()) AccountDataPacket(me, t.sid);
+			// [v74] MOVEMENT MUST NOT re-send 0x3D. The 0x3D (AccountData) handler
+			// (0x00498E4F) CREATES the character object; re-sending it on every step
+			// spawned a duplicate object per move -> "影分身" (shadow clones). The
+			// object already exists from the join-time 0x3D+0x11 pair, and 0x11
+			// updates it IN PLACE (oid looked up at 0x48DCEF, not re-created), so
+			// movement = 0x11 only. No per-move 0x3D and therefore no identity
+			// restore either (identity latches on the FIRST 0x11, see v62).
 			CharacterSpawnPacket(me, nx, ny, t.sid);
-			if (MP_RemoteSend3D() && MP_Restore3D())
-				AccountDataPacket(t.chr, t.sid);
 		}
+		MP_MARK("MP-FWD move=0x11-only v74 no-move-3d");
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
 			auto it = g_players.find(t_sid);
