@@ -14,7 +14,7 @@
 #define MP_MARK(msg) do { printf("[TenviServer] MARK %s\n", msg); } while(0)
 
 // [v84] Deployment sentinel string (grep-friendly binary marker).
-static const char *MP_SERVER_VERSION_TAG = "MP_SERVER_V85_RESPAWN_CACHE_FIX";
+static const char *MP_SERVER_VERSION_TAG = "MP_SERVER_V89_OID_REWRITE";
 #else
 #define MP_MARK(msg) do { } while(0)
 #endif
@@ -1024,10 +1024,25 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		return;
 	}
 
+	// [v89] Rewrite the mover's object id in the forwarded 0x0C so receivers
+	// apply the move to the correct remote character. The sender's local move
+	// packet carries its own internal self-oid (NOT the external oid that other
+	// clients assigned to it), so without this fix the receiver cannot locate
+	// the character and it stands still. me.id is the external oid every other
+	// client knows this player by - the same id used in the 0x11 spawn - so
+	// rewriting the 4 oid bytes (packet offset 1) makes the native 0x0C move
+	// land on the already-rendered remote character: smooth, no despawn, no
+	// flicker.
+	std::vector<BYTE> modpkt(pkt, pkt + len);
+	if (op == 0x0C && len >= 5) {
+		DWORD oid_le = me.id;
+		memcpy(&modpkt[1], &oid_le, 4);
+	}
 	ServerPacket sp;
-	sp.Raw(pkt, len);
+	sp.Raw(modpkt.data(), (DWORD)modpkt.size());
 	for (auto &t : targets) {
-		printf("[MP-FWD]   -> sid=%d verbatim ctx=%d\n", t.sid, MP_RemoteCtx() ? 1 : 0);
+		printf("[MP-FWD]   -> sid=%d verbatim ctx=%d oid=%08X\n",
+			t.sid, MP_RemoteCtx() ? 1 : 0, (unsigned)me.id);
 		MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
 	}
 }
