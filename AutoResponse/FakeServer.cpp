@@ -4,8 +4,8 @@
 #include <mutex>
 #include <map>
 #include <cmath>
-#include <thread>
-#include <chrono>
+#define NOMINMAX
+#include <windows.h>
 
 #ifdef MP_SERVER
 #include "../StandaloneServer/db.h"
@@ -993,9 +993,13 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			// client updates the remote avatar position on the field layer, while
 			// the initial join-time spawn stays on CWvsContext (ctx=1) where the
 			// client actually renders the character.
-			// [v77] CharacterSpawnPacket now respects the caller-supplied context
-			// for remote targets, so this false really routes through CField.
-			CharacterSpawnPacket(me, nx, ny, t.sid, false);
+			// [v78] Movement 0x11 goes back to CWvsContext (ctx=1, default).
+			// The client's native 0x11 handler updates an existing remote
+			// character IN PLACE by oid (no re-spawn, no shadow clones). CField (ctx=0)
+			// silently drops 0x11, which is why movement was invisible. The DLL
+			// still caches g_interp for later smoothing once the probe finds
+			// the CField x/y offsets.
+			CharacterSpawnPacket(me, nx, ny, t.sid);
 		}
 		MP_MARK("MP-FWD move=0x11-only v77 ctx-respect smooth-10px");
 		{
@@ -1132,38 +1136,31 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			// 0x3D would overwrite the receiver's own character identity.
 			// --- 方向A: 让已在场的 other_sid 看到我 ---
 			// 0x3D 先建对象(否则 0x11 在 0x0048DCEF 处查不到 oid 被丢弃),
-			// 0x11 再渲染, 然后立刻把 other_sid 的账户上下文还原成他自己,
-			// 否则他会被我的账户数据顶掉身份 -> 人看得见但自己动不了(v61b 实测).
+			// 0x11 to render, then immediately restore other_sid's own account
+			// context, or it gets overwritten by my account data and the viewer
+			// can see people but cannot move itself (v61b field report).
 			if (MP_RemoteSend3D()) AccountDataPacket(chr, other_sid);
-			CharacterSpawnPacket(chr, x, y, other_sid);          // 别人看到自己
+			CharacterSpawnPacket(chr, x, y, other_sid);          // other sees me
 			if (MP_RemoteSend3D() && MP_Restore3D())
-				AccountDataPacket(other.chr, other_sid);         // [v62] 还原对方身份
-			// --- 方向B: 让我(t_sid)看到已在场的 other ---
-			// [v78] DEFER this send. The CN client only renders a remote 0x11
-			// spawn while IT is settled; when the spawn arrives during the
-			// newcomer's own ChangeMap/login flow it is silently dropped
-			// (the classic "后进看不先进" asymmetry: A sees B, B sees nothing).
-			// A (already-settled) renders B fine because B's spawn reaches A
-			// after A's own ChangeMap closed. So we delay B's view of A by
-			// ~1.2s until B's client is settled, then push the exact same
-			// 0x3D+0x11+restore triple that works for A. If B left in the
-			// meantime, MP_BroadcastToSid simply logs MISSING and drops.
-			{
-				TenviCharacter other_copy = other.chr;
-				float ox = other.x, oy = other.y;
-				TenviCharacter self_copy = chr;
-				int delay_sid = t_sid;
-				std::thread([other_copy, ox, oy, self_copy, delay_sid]() {
-					std::this_thread::sleep_for(std::chrono::milliseconds(1200));
-					if (MP_RemoteSend3D()) AccountDataPacket(other_copy, delay_sid);
-					CharacterSpawnPacket(other_copy, ox, oy, delay_sid);  // 自己看到别人
-					if (MP_RemoteSend3D() && MP_Restore3D())
-						AccountDataPacket(self_copy, delay_sid);          // [v62] 还原自己身份
-					printf("[MP-XVIS] deferred 方向B v78-defer -> sid=%d other oid=%08X\n",
-						delay_sid, (unsigned)other_copy.id);
-					fflush(stdout);
-				}).detach();
-			}
+				AccountDataPacket(other.chr, other_sid);         // [v62] restore other identity
+			// --- dirB: let me (t_sid) see the already-present other ---
+			// [v78] DEFER this send with a synchronous Sleep. The CN client only
+			// renders a remote 0x11 spawn while IT is settled; when the spawn
+			// arrives during the newcomer's own ChangeMap/login flow it is
+			// silently dropped (classic asymmetry: A sees B, B sees nothing).
+			// A (already settled) renders B fine because B's spawn reaches A
+			// after A's own ChangeMap closed. Sleep ~1.2s until this client
+			// (t_sid) is settled, then push the same 0x3D+0x11+restore triple
+			// that works for A. Sleep blocks only this player's connection
+			// thread (1.2s), not the whole server.
+			Sleep(1200);
+			if (MP_RemoteSend3D()) AccountDataPacket(other.chr, t_sid);
+			CharacterSpawnPacket(other.chr, other.x, other.y, t_sid); // I see other
+			if (MP_RemoteSend3D() && MP_Restore3D())
+				AccountDataPacket(chr, t_sid);                        // [v62] restore my identity
+			printf("[MP-XVIS] deferred dirB v79-sleep -> sid=%d other oid=%08X\n",
+				t_sid, (unsigned)other.chr.id);
+			fflush(stdout);
 		}
 		printf("[MP-XVIS] leave t_sid=%d matched=%d\n", t_sid, xvis_matched);
 		fflush(stdout);
