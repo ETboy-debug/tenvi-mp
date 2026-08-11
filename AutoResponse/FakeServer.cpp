@@ -1166,7 +1166,7 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 	// ChangeMap 期间到达被静默丢弃). 0x3D/0x11 间留 50ms, 再补发一次
 	// (retry) 兜底更慢才稳定的客户端. 放在 self spawn 之后, 后进者先
 	// 看到自己, 不会被阻塞黑屏.
-	for (const auto &other : dirB_targets) {
+	for (auto &other : dirB_targets) {
 		Sleep(3000);
 		if (MP_RemoteSend3D()) AccountDataPacket(other.chr, t_sid);
 		Sleep(50);
