@@ -66,6 +66,7 @@ static float g_interp_speed = 0.15f;
 static bool g_probe_locked = false;
 static int  g_probe_round = 0;
 static float g_probe_last_x = 1.0e9f;     // last probed target x (dedupe)
+static float g_probe_last_y = 1.0e9f;     // last probed target y (dedupe)
 static const int   PROBE_SCAN_RANGE  = 0x2000;
 static const int   PROBE_LOCK_ROUNDS = 3;
 
@@ -94,16 +95,19 @@ static float g_interp_y_intc  = 0.0f;
 static bool g_suppress_active = false;
 static int  g_suppress_count = 0;
 
-// Returns true only if "mp_interp.cfg" (placed next to Tenvi.exe) contains
-// the line "interp=1". ASCII filename only - no Chinese in source per build rule.
+// [v93] Interpolation is now required for movement: bare 0x11 updates for an
+// existing remote object are ignored by the client, so the DLL must swallow
+// them and write coords itself. The cfg is still read for speed tuning and
+// can explicitly disable with "interp=0", but default is ON.
 static bool MP_InterpEnabled() {
 	FILE* f = NULL;
 	fopen_s(&f, "mp_interp.cfg", "r");
-	if (!f) return false;
+	if (!f) return true;
 	char line[128];
-	bool on = false;
+	bool on = true;
 	while (fgets(line, sizeof(line), f)) {
-		if (strncmp(line, "interp=1", 8) == 0) on = true;
+		if (strncmp(line, "interp=0", 8) == 0) on = false;
+		else if (strncmp(line, "interp=1", 8) == 0) on = true;
 		else if (strncmp(line, "speed=", 6) == 0) {
 			g_interp_speed = (float)atof(line + 6);
 		}
@@ -279,8 +283,13 @@ static void MP_ProbeCoordOffsets() {
 
 	// Require real displacement between rounds - resampling the same spot
 	// proves nothing about which field is tracking the position.
-	if (fabsf(tx - g_probe_last_x) < 8.0f) return;
+	// [v93] Use 2-D displacement so jumping / ladder / vertical-only motion
+	// also triggers probe samples, not just horizontal walking.
+	float dx = tx - g_probe_last_x;
+	float dy = ty - g_probe_last_y;
+	if (sqrtf(dx * dx + dy * dy) < 8.0f) return;
 	g_probe_last_x = tx;
+	g_probe_last_y = ty;
 	g_probe_round++;
 
 	// Collect (target, mem-as-float, mem-as-int32) for every 4-byte slot.
@@ -330,7 +339,7 @@ static void MP_ProbeCoordOffsets() {
 
 	if (!best_x.ok) {
 		// Could not lock x - restart probing (clears stale samples).
-		g_probe_round = 0; g_probe_last_x = 1.0e9f;
+		g_probe_round = 0; g_probe_last_x = 1.0e9f; g_probe_last_y = 1.0e9f;
 		g_probe_xsamp.clear(); g_probe_ysamp.clear();
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) { fprintf(f, "[MP-PROBE v87] x LOCK FAILED at round %d - see candidates above\n", PROBE_LOCK_ROUNDS); fflush(f); fclose(f); }
