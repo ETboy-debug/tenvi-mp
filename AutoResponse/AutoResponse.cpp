@@ -453,6 +453,24 @@ void MP_Pump() {
 		// (mp_ctx=true, ctx=1) - NOT CField - yet they render fine, so the old
 		// "!mp_ctx" gate was wrong and left g_interp empty (hook never fired).
 		// Drop the ctx requirement; identify remote purely by oid != self.
+		// [v90-diag] 0x11 包结构探测: 打印原始字节 + 多偏移解析, 定位 DLL 读坐标的真实偏移.
+		// 假设A (op 1字节): [0]=op [1..4]=oid [5..8]=x [9..12]=y
+		// 假设B (op 2字节): [0..1]=op [2..5]=oid [6..9]=x [10..13]=y
+		if (mp_op == 0x11 && oid != g_localObjectId) {
+			static int g_11dump = 0;
+			if (g_11dump < 12 && bp.size() >= 17) {
+				g_11dump++;
+				FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+				if (f) {
+					fprintf(f, "[MP-11DUMP %d] oid=%08X size=%d bytes=", g_11dump, oid, (int)bp.size());
+					for (int bi = 0; bi < 17 && bi < (int)bp.size(); bi++) fprintf(f, "%02X ", bp[bi]);
+					float a_x = *(float*)&bp[5], a_y = *(float*)&bp[9];
+					float b_x = *(float*)&bp[6], b_y = *(float*)&bp[10];
+					fprintf(f, " | A(x=%.1f y=%.1f) B(x=%.1f y=%.1f)\n", a_x, a_y, b_x, b_y);
+					fflush(f); fclose(f);
+				}
+			}
+		}
 		// 0x11 body: [0]=op, [1..4]=oid, [5..8]=x(float), [9..12]=y(float).
 		if (mp_op == 0x11 && oid != g_localObjectId && bp.size() >= 13) {
 			float rx = *(float*)&bp[5];
