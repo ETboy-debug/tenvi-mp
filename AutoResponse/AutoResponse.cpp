@@ -111,6 +111,12 @@ static bool MP_InterpEnabled() {
 		else if (strncmp(line, "speed=", 6) == 0) {
 			g_interp_speed = (float)atof(line + 6);
 		}
+		else if (strncmp(line, "x_off=", 6) == 0) {
+			g_interp_x_off = (int)strtol(line + 6, NULL, 0);
+		}
+		else if (strncmp(line, "y_off=", 6) == 0) {
+			g_interp_y_off = (int)strtol(line + 6, NULL, 0);
+		}
 	}
 	fclose(f);
 	return on;
@@ -394,8 +400,72 @@ static void MP_ProbeCoordOffsets() {
 	}
 }
 
+// [v96] Per-frame movement interpolation - runs unconditionally every frame
+// so the remote avatar keeps sliding between server packets.
+static void MP_ApplyInterpolation() {
+	bool have_offsets = (g_interp_x_off != 0 || g_interp_y_off != 0);
+	static int dbg = 0;
+	if (++dbg % 60 == 0) {
+		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+		if (f) { fprintf(f, "[MP-INTERP] ENABLED tracked=%d offsets=(%04X,%04X) speed=%.3f\n",
+			(int)g_interp.size(), g_interp_x_off, g_interp_y_off, g_interp_speed);
+			fflush(f); fclose(f); }
+	}
+	// [v73] Resolve live CCharacter* for every tracked remote oid each frame.
+	DWORD cfield = MP_GetCFieldPtr();
+	if (cfield && _GetCharacterByOID) {
+		std::vector<DWORD> dead_oids;
+		for (auto &kv : g_interp) {
+			DWORD ptr = _GetCharacterByOID((void*)cfield, kv.first);
+			if (ptr) g_char_by_oid[kv.first] = ptr;
+			else dead_oids.push_back(kv.first);
+		}
+		for (size_t d = 0; d < dead_oids.size(); d++)
+			g_char_by_oid.erase(dead_oids[d]);
+	}
+	if (have_offsets && !g_interp.empty()) {
+		int applied = 0;
+		for (auto &kv : g_interp) {
+			RemoteInterp &ri = kv.second;
+			ri.stale++;
+			auto it = g_char_by_oid.find(ri.oid);
+			if (it == g_char_by_oid.end() || it->second == 0) continue;
+			DWORD char_ptr = it->second;
+			float cur_cx = MP_ReadCoord(char_ptr, g_interp_x_off, g_interp_x_is_int);
+			float cur_cy = MP_ReadCoord(char_ptr, g_interp_y_off, g_interp_y_is_int);
+			float cur_px = (g_interp_x_scale != 0.0f) ? (cur_cx - g_interp_x_intc) / g_interp_x_scale : cur_cx;
+			float nxt_px = cur_px + (ri.tx - cur_px) * g_interp_speed;
+			if (fabsf(nxt_px - ri.tx) < 0.5f) nxt_px = ri.tx;
+			float nxt_cx = (g_interp_x_scale != 0.0f) ? (nxt_px * g_interp_x_scale + g_interp_x_intc) : nxt_px;
+			MP_WriteCoord(char_ptr, g_interp_x_off, g_interp_x_is_int, nxt_cx);
+			ri.cx = nxt_cx;
+
+			float cur_py = (g_interp_y_scale != 0.0f) ? (cur_cy - g_interp_y_intc) / g_interp_y_scale : cur_cy;
+			float nxt_py = cur_py + (ri.ty - cur_py) * g_interp_speed;
+			if (fabsf(nxt_py - ri.ty) < 0.5f) nxt_py = ri.ty;
+			float nxt_cy = (g_interp_y_scale != 0.0f) ? (nxt_py * g_interp_y_scale + g_interp_y_intc) : nxt_py;
+			MP_WriteCoord(char_ptr, g_interp_y_off, g_interp_y_is_int, nxt_cy);
+			ri.cy = nxt_cy;
+			applied++;
+		}
+		if (applied > 0) {
+			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+			if (f) { fprintf(f, "[MP-INTERP] applied lerp to %d/%d tracked (x_off=%04X y_off=%04X)\n",
+				applied, (int)g_interp.size(), g_interp_x_off, g_interp_y_off);
+				fflush(f); fclose(f); }
+		}
+	} else {
+		for (auto &kv : g_interp) kv.second.stale++;
+	}
+}
+
 void MP_Pump() {
 	mp_frame_count++;
+	// [v96] Interpolation must run every frame, even when the server has
+	// nothing to send this frame. Otherwise the remote avatar only moves on
+	// the exact frames a packet arrives and looks frozen/stuttery.
+	if (MP_InterpEnabled()) MP_ApplyInterpolation();
+
 	// [v50] Each entry carries the dispatch context supplied by the server
 	// (frame type 0 = CWvsContext, type 2 = CField). No more guessing.
 	std::vector<std::pair<std::vector<BYTE>, bool>> batch;
@@ -601,7 +671,11 @@ void MP_Pump() {
 			// so swallowing would freeze the remote avatar. Until then, let
 			// the client process the 0x11 natively (it relocates the existing
 			// object; the server no longer sends a 0x12 delete, so no strobe).
-			if (g_probe_locked) mp_skip_inject = true;
+			// [v96] With bare 0x11 updates from the server we only skip the
+			// rebuild 0x11 inside a 0x12->0x3D->0x11 suppress sequence. A lone
+			// 0x11 is forwarded to the client so native movement still works
+			// even when the probe has not locked or has locked the wrong offset.
+			if (g_probe_locked && mp_suppress[i]) mp_skip_inject = true;
 		} else {
 			g_char_by_oid.erase(oid);
 		}
@@ -631,81 +705,6 @@ void MP_Pump() {
 	// 0x11 has rebuilt the CCharacter, so GetCharacterByOID actually resolves.
 	// Cheap no-op once locked.
 	if (MP_InterpEnabled()) MP_ProbeCoordOffsets();
-	// [v73] Per-frame movement interpolation - REAL implementation.
-	// For each tracked remote player:
-	//   1. Look up the live CCharacter* via g_char_by_oid (populated each frame
-	//      by a direct call to CField::GetCharacterByOID at 0x42ACDD).
-	//   2. Read current x/y from the client object at the configured offsets.
-	//   3. Lerp current toward target (tx/ty) by g_interp_speed.
-	//   4. Write the smoothed coords back.
-	// Result: the remote avatar slides smoothly instead of teleporting.
-	// If offsets are not configured (both 0), we fall back to the old
-	// no-op behavior so a missing cfg does not crash anything.
-	if (MP_InterpEnabled()) {
-		bool have_offsets = (g_interp_x_off != 0 || g_interp_y_off != 0);
-		static int dbg = 0;
-		if (++dbg % 60 == 0) {
-			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-			if (f) { fprintf(f, "[MP-INTERP] ENABLED tracked=%d offsets=(%04X,%04X) speed=%.3f\n",
-				(int)g_interp.size(), g_interp_x_off, g_interp_y_off, g_interp_speed);
-				fflush(f); fclose(f); }
-		}
-		// [v73] Resolve live CCharacter* for every tracked remote oid each frame.
-		// The 0x11 handler uses an internal sibling (0x42AC5C) so we cannot rely on
-		// a hook; we call the clean exported function 0x42ACDD directly instead.
-		DWORD cfield = MP_GetCFieldPtr();
-		if (cfield && _GetCharacterByOID) {
-			// [v85] Also EVICT entries whose object no longer exists. The old
-			// code only ever wrote non-null pointers, so a removed character
-			// left a dangling pointer in the cache forever - which is what let
-			// the v83 skip test believe a despawned avatar was still alive.
-			std::vector<DWORD> dead_oids;
-			for (auto &kv : g_interp) {
-				DWORD ptr = _GetCharacterByOID((void*)cfield, kv.first);
-				if (ptr) g_char_by_oid[kv.first] = ptr;
-				else dead_oids.push_back(kv.first);
-			}
-			for (size_t d = 0; d < dead_oids.size(); d++)
-				g_char_by_oid.erase(dead_oids[d]);
-		}
-		if (have_offsets && !g_interp.empty()) {
-			int applied = 0;
-			for (auto &kv : g_interp) {
-				RemoteInterp &ri = kv.second;
-				ri.stale++;
-				auto it = g_char_by_oid.find(ri.oid);
-				if (it == g_char_by_oid.end() || it->second == 0) continue;
-				DWORD char_ptr = it->second;
-				// Read current client-side coords
-			// Read current client-space coords (type/scale aware).
-			float cur_cx = MP_ReadCoord(char_ptr, g_interp_x_off, g_interp_x_is_int);
-			float cur_cy = MP_ReadCoord(char_ptr, g_interp_y_off, g_interp_y_is_int);
-			// Inverse to packet space, lerp, forward back to client space.
-			float cur_px = (g_interp_x_scale != 0.0f) ? (cur_cx - g_interp_x_intc) / g_interp_x_scale : cur_cx;
-			float nxt_px = cur_px + (ri.tx - cur_px) * g_interp_speed;
-			if (fabsf(nxt_px - ri.tx) < 0.5f) nxt_px = ri.tx;
-			float nxt_cx = (g_interp_x_scale != 0.0f) ? (nxt_px * g_interp_x_scale + g_interp_x_intc) : nxt_px;
-			MP_WriteCoord(char_ptr, g_interp_x_off, g_interp_x_is_int, nxt_cx);
-			ri.cx = nxt_cx;
-
-			float cur_py = (g_interp_y_scale != 0.0f) ? (cur_cy - g_interp_y_intc) / g_interp_y_scale : cur_cy;
-			float nxt_py = cur_py + (ri.ty - cur_py) * g_interp_speed;
-			if (fabsf(nxt_py - ri.ty) < 0.5f) nxt_py = ri.ty;
-			float nxt_cy = (g_interp_y_scale != 0.0f) ? (nxt_py * g_interp_y_scale + g_interp_y_intc) : nxt_py;
-			MP_WriteCoord(char_ptr, g_interp_y_off, g_interp_y_is_int, nxt_cy);
-			ri.cy = nxt_cy;
-			applied++;
-			}
-			if (applied > 0 && (dbg % 60) == 0) {
-				FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-				if (f) { fprintf(f, "[MP-INTERP] applied lerp to %d/%d tracked\n",
-					applied, (int)g_interp.size()); fflush(f); fclose(f); }
-			}
-		} else {
-			// No offsets configured - just age the entries like before
-			for (auto &kv : g_interp) kv.second.stale++;
-		}
-	}
 	// [v71] Drop stale entries so the map does not grow forever if a remote
 	// player leaves and we never get a 0x12 remove. 600 frames ~ 10s @60fps.
 	for (auto it = g_interp.begin(); it != g_interp.end(); ) {
