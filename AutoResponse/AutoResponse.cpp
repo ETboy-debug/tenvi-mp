@@ -554,12 +554,17 @@ void MP_Pump() {
 			DWORD cfield_chk = MP_GetCFieldPtr();
 			DWORD live_ptr = (cfield_chk && _GetCharacterByOID)
 				? _GetCharacterByOID((void*)cfield_chk, oid) : 0;
-			if (live_ptr != 0) {
-				g_char_by_oid[oid] = live_ptr;
-				mp_skip_inject = true;
-			} else {
-				g_char_by_oid.erase(oid);
-			}
+		if (live_ptr != 0) {
+			g_char_by_oid[oid] = live_ptr;
+			// [v90] Only swallow the 0x11 once the coordinate probe has
+			// locked. Before lock the lerp cannot write the new position,
+			// so swallowing would freeze the remote avatar. Until then, let
+			// the client process the 0x11 natively (it relocates the existing
+			// object; the server no longer sends a 0x12 delete, so no strobe).
+			if (g_probe_locked) mp_skip_inject = true;
+		} else {
+			g_char_by_oid.erase(oid);
+		}
 			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 			if (f) {
 				fprintf(f, "[MP-RESPAWN MP_DLL_V85_RESPAWN_CACHE_FIX] op=11 oid=%08X live=%08X skip=%d\n",
