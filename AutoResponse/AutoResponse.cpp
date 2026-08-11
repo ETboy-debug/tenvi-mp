@@ -671,12 +671,15 @@ void MP_Pump() {
 			// so swallowing would freeze the remote avatar. Until then, let
 			// the client process the 0x11 natively (it relocates the existing
 			// object; the server no longer sends a 0x12 delete, so no strobe).
-			// [v97] The CN client's 0x11 handler does NOT update an already-rendered
-			// remote character's position; it only places the object on spawn.
-			// Once the probe has locked and the live object exists, swallow every
-			// remote 0x11 and let the per-frame lerp write the new coords directly
-			// into memory. This is what produces smooth movement.
-			if (g_probe_locked) mp_skip_inject = true;
+			// [v98] v97 swallowed every remote 0x11 and wrote coords at the
+			// hard-coded offsets (0x11A4/0x11A8). This caused an access-violation
+			// crash inside Tenvi.exe (c0000005 at 0x001bcdc1) because the offsets
+			// are not safe / wrong for this client build. Revert to the v96
+			// behaviour: only suppress the respawn sequence (0x12->0x3D->0x11)
+			// to avoid the strobe, and let the client handle bare 0x11 updates
+			// natively. Interpolation stays disabled until we have a verified
+			// safe coordinate offset.
+			if (g_probe_locked && mp_suppress[i]) mp_skip_inject = true;
 		} else {
 			g_char_by_oid.erase(oid);
 		}
