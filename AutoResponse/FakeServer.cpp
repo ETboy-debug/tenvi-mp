@@ -968,11 +968,13 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// position updates without the "teleport" look. This tightens position
 		// sync and lets the lerp do the visual smoothing.
 		// [v84] Threshold history: 100->30->10->60px across versions.
-		// [v90] Movement is now a BARE 0x11 (see loop below). The threshold
-		// only gates how often the lerp target refreshes; the DLL lerp-smooths
-		// between updates, so 60px is fine and no object is torn down.
-		// 60px is a compromise: clearly visible tracking, smooth via lerp.
-		const float MOVE_THRESHOLD = 60.0f;
+		// [v90] Movement is now a BARE 0x11 (see loop below). No object is
+		// ever torn down on move, so there is no strobe. The previous 60px
+		// threshold caused visible teleport jumps because the DLL coordinate
+		// probe was not reliably locked (lerp could not smooth between
+		// updates). Drop the threshold to 2px so the client refreshes the
+		// remote position on essentially every frame - continuous, no jump.
+		const float MOVE_THRESHOLD = 2.0f;
 		bool do_update = false;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
@@ -1018,27 +1020,6 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		return;
 	}
 
-	// [v89] Rewrite the mover's object id in the forwarded 0x0C so receivers
-	// apply the move to the correct remote character. The sender's local move
-	// packet carries its own internal self-oid (NOT the external oid that other
-	// clients assigned to it), so without this fix the receiver cannot locate
-	// the character and it stands still. me.id is the external oid every other
-	// client knows this player by - the same id used in the 0x11 spawn - so
-	// rewriting the 4 oid bytes (packet offset 1) makes the native 0x0C move
-	// land on the already-rendered remote character: smooth, no despawn, no
-	// flicker.
-	std::vector<BYTE> modpkt(pkt, pkt + len);
-	if (op == 0x0C && len >= 5) {
-		DWORD oid_le = me.id;
-		memcpy(&modpkt[1], &oid_le, 4);
-	}
-	ServerPacket sp;
-	sp.Raw(modpkt.data(), (DWORD)modpkt.size());
-	for (auto &t : targets) {
-		printf("[MP-FWD]   -> sid=%d verbatim ctx=%d oid=%08X\n",
-			t.sid, MP_RemoteCtx() ? 1 : 0, (unsigned)me.id);
-		MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
-	}
 }
 #else
 void MP_ForwardToSameMap(const BYTE *, DWORD) {}
