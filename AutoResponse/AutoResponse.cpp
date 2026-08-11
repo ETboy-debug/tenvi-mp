@@ -17,7 +17,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_DLL_V87_FITPROBE";
+static const char* MP_INTERP_TAG = "MP_DLL_V97_SWALLOW_REMOTE_0x11";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -671,11 +671,12 @@ void MP_Pump() {
 			// so swallowing would freeze the remote avatar. Until then, let
 			// the client process the 0x11 natively (it relocates the existing
 			// object; the server no longer sends a 0x12 delete, so no strobe).
-			// [v96] With bare 0x11 updates from the server we only skip the
-			// rebuild 0x11 inside a 0x12->0x3D->0x11 suppress sequence. A lone
-			// 0x11 is forwarded to the client so native movement still works
-			// even when the probe has not locked or has locked the wrong offset.
-			if (g_probe_locked && mp_suppress[i]) mp_skip_inject = true;
+			// [v97] The CN client's 0x11 handler does NOT update an already-rendered
+			// remote character's position; it only places the object on spawn.
+			// Once the probe has locked and the live object exists, swallow every
+			// remote 0x11 and let the per-frame lerp write the new coords directly
+			// into memory. This is what produces smooth movement.
+			if (g_probe_locked) mp_skip_inject = true;
 		} else {
 			g_char_by_oid.erase(oid);
 		}
