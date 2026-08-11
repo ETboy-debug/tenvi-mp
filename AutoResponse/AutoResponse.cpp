@@ -346,6 +346,37 @@ static void MP_ProbeCoordOffsets() {
 		return;
 	}
 
+	// [v95] y-static fallback: when the remote avatar walks on flat ground
+	// ty never changes, so slope fitting has zero information. Find the slot
+	// whose current memory value equals the known target y (prefer offsets
+	// close to x_off, since x/y are normally adjacent in the struct).
+	if (!best_y.ok && ty != 0.0f) {
+		float best_err = 1.0e9f;
+		for (std::map<int, std::vector<ProbeSample>>::iterator c = g_probe_ysamp.begin(); c != g_probe_ysamp.end(); ++c) {
+			if (c->second.empty()) continue;
+			// Give nearby offsets a head-start so x/y adjacency wins ties.
+			float near_bonus = (fabsf((float)(c->first - x_off)) <= 32.0f) ? 0.5f : 0.0f;
+			float v = c->second.back().memf;
+			float err = fabsf(v - ty) - near_bonus;
+			// Also accept int32-stored coordinates.
+			if (!isfinite(v) || err >= best_err) {
+				int iv = c->second.back().memi;
+				float verr = fabsf((float)iv - ty) - near_bonus;
+				if (verr >= best_err) continue;
+				v = (float)iv; err = verr;
+			}
+			if (err < 1.0f && err < best_err) {
+				best_err = err;
+				y_off = c->first;
+				best_y.ok = true;
+				best_y.is_int = (v == (float)c->second.back().memi);
+				best_y.slope = 1.0f;
+				best_y.intc = 0.0f;
+				best_y.resid = err;
+			}
+		}
+	}
+
 	g_interp_x_off = x_off;
 	g_interp_y_off = y_off;   // 0 is valid: x-only writes still kill the flicker
 	g_interp_x_is_int = best_x.is_int; g_interp_x_scale = best_x.slope; g_interp_x_intc = best_x.intc;
