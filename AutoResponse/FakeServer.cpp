@@ -4,6 +4,7 @@
 #include <mutex>
 #include <map>
 #include <cmath>
+#include <vector>
 #define NOMINMAX
 #include <windows.h>
 
@@ -1100,6 +1101,10 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 		self_spawned = true;
 		MP_MARK("ChangeMap self spawn (v62 early, before xvis loop)");
 	}
+	// [v94] Collect dirB (后进者看先进者) targets inside the lock, then send
+	// the deferred spawns OUTSIDE the lock so the Sleep no longer holds
+	// g_playersMtx (which froze other players' movement sync while blocked).
+	std::vector<RemotePlayer> dirB_targets;
 	{
 		std::lock_guard<std::mutex> lk(g_playersMtx);
 		// [v61-diag] prove whether this loop actually matches anybody.
@@ -1145,24 +1150,8 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			CharacterSpawnPacket(chr, x, y, other_sid, MP_RemoteCtx()); // other sees me
 			if (MP_RemoteSend3D() && MP_Restore3D())
 				AccountDataPacket(other.chr, other_sid);         // [v62] restore other identity
-			// --- dirB: let me (t_sid) see the already-present other ---
-			// [v78] DEFER this send with a synchronous Sleep. The CN client only
-			// renders a remote 0x11 spawn while IT is settled; when the spawn
-			// arrives during the newcomer's own ChangeMap/login flow it is
-			// silently dropped (classic asymmetry: A sees B, B sees nothing).
-			// A (already settled) renders B fine because B's spawn reaches A
-			// after A's own ChangeMap closed. Sleep ~1.2s until this client
-			// (t_sid) is settled, then push the same 0x3D+0x11+restore triple
-			// that works for A. Sleep blocks only this player's connection
-			// thread (1.2s), not the whole server.
-			Sleep(1200);
-			if (MP_RemoteSend3D()) AccountDataPacket(other.chr, t_sid);
-			CharacterSpawnPacket(other.chr, other.x, other.y, t_sid, MP_RemoteCtx()); // I see other
-			if (MP_RemoteSend3D() && MP_Restore3D())
-				AccountDataPacket(chr, t_sid);                        // [v62] restore my identity
-			printf("[MP-XVIS] deferred dirB v82 ctx=%d -> sid=%d other oid=%08X\n",
-				MP_RemoteCtx() ? 1 : 0, t_sid, (unsigned)other.chr.id);
-			fflush(stdout);
+			// [v94] collect for dirB (deferred, sent OUTSIDE the lock below)
+			dirB_targets.push_back(other);
 		}
 		printf("[MP-XVIS] leave t_sid=%d matched=%d\n", t_sid, xvis_matched);
 		fflush(stdout);
@@ -1171,6 +1160,30 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 	// [v62] 只有在 selffirst 关闭(回退对照)时才在这里补发自我出生包,
 	// 否则会发两次 0x11, 客户端会把自己重建一遍.
 	if (!self_spawned) CharacterSpawnPacket(chr, x, y);
+	// [v94] dirB deferred: 让后进者(t_sid)看到已在场的 other.
+	// Sleep 移到锁外; 延迟 3.0s 等 CN 客户端 ChangeMap 流程彻底关闭
+	// (经典非对称: A 看得到 B, B 看不到 A, 因 B 的出生包在其自身
+	// ChangeMap 期间到达被静默丢弃). 0x3D/0x11 间留 50ms, 再补发一次
+	// (retry) 兜底更慢才稳定的客户端. 放在 self spawn 之后, 后进者先
+	// 看到自己, 不会被阻塞黑屏.
+	for (const auto &other : dirB_targets) {
+		Sleep(3000);
+		if (MP_RemoteSend3D()) AccountDataPacket(other.chr, t_sid);
+		Sleep(50);
+		CharacterSpawnPacket(other.chr, other.x, other.y, t_sid, MP_RemoteCtx());
+		if (MP_RemoteSend3D() && MP_Restore3D())
+			AccountDataPacket(chr, t_sid); // [v62] restore my identity
+		// retry once: 1.5s 后再补一发, 覆盖更慢稳定的客户端
+		Sleep(1500);
+		if (MP_RemoteSend3D()) AccountDataPacket(other.chr, t_sid);
+		Sleep(50);
+		CharacterSpawnPacket(other.chr, other.x, other.y, t_sid, MP_RemoteCtx());
+		if (MP_RemoteSend3D() && MP_Restore3D())
+			AccountDataPacket(chr, t_sid);
+		printf("[MP-XVIS] deferred dirB v94 ctx=%d -> sid=%d other oid=%08X (retry x2)\n",
+			MP_RemoteCtx() ? 1 : 0, t_sid, (unsigned)other.chr.id);
+		fflush(stdout);
+	}
 #else
 	CharacterSpawnPacket(chr, x, y);
 #endif
