@@ -17,7 +17,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_DLL_V97_SWALLOW_REMOTE_0x11";
+static const char* MP_INTERP_TAG = "MP_DLL_V99_SAFE_NO_INTERP";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -461,10 +461,12 @@ static void MP_ApplyInterpolation() {
 
 void MP_Pump() {
 	mp_frame_count++;
-	// [v96] Interpolation must run every frame, even when the server has
-	// nothing to send this frame. Otherwise the remote avatar only moves on
-	// the exact frames a packet arrives and looks frozen/stuttery.
-	if (MP_InterpEnabled()) MP_ApplyInterpolation();
+	// [v99] Interpolation / probe are completely DISABLED. They caused
+	// repeatable access-violation crashes inside Tenvi.exe when the probe
+	// locked the wrong CCharacter offsets (0x11A4/0x11A8). Until offsets
+	// are verified with a memory dump, the DLL must not write any client
+	// memory. Movement is driven solely by the native 0x11 handler.
+	// if (MP_InterpEnabled()) MP_ApplyInterpolation();
 
 	// [v50] Each entry carries the dispatch context supplied by the server
 	// (frame type 0 = CWvsContext, type 2 = CField). No more guessing.
@@ -705,10 +707,10 @@ void MP_Pump() {
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) { fprintf(f, "=== BATCH END (%d) ===\n", (int)batch.size()); fflush(f); fclose(f); }
 	}
-	// [v86] Probe AFTER injection - this is the whole point. At this moment the
-	// 0x11 has rebuilt the CCharacter, so GetCharacterByOID actually resolves.
-	// Cheap no-op once locked.
-	if (MP_InterpEnabled()) MP_ProbeCoordOffsets();
+	// [v99] Coordinate probe DISABLED. The probe was auto-locking offsets that
+	// later caused access-violation crashes when lerp wrote to them. Do not
+	// run any memory discovery until we can validate offsets offline.
+	// if (MP_InterpEnabled()) MP_ProbeCoordOffsets();
 	// [v71] Drop stale entries so the map does not grow forever if a remote
 	// player leaves and we never get a 0x12 remove. 600 frames ~ 10s @60fps.
 	for (auto it = g_interp.begin(); it != g_interp.end(); ) {
