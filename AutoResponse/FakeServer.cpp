@@ -967,10 +967,11 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// DLL now lerp-smoothes each remote spawn, so we can send more frequent
 		// position updates without the "teleport" look. This tightens position
 		// sync and lets the lerp do the visual smoothing.
-		// [v84] Movement is now despawn+respawn (not a bare 0x11), so each
-		// update tears down and rebuilds the remote object. A larger threshold
-		// reduces that churn (less strobing, fewer identity-restore windows).
-		// 60px is a compromise: clearly visible tracking, not nauseating flicker.
+		// [v84] Threshold history: 100->30->10->60px across versions.
+		// [v90] Movement is now a BARE 0x11 (see loop below). The threshold
+		// only gates how often the lerp target refreshes; the DLL lerp-smooths
+		// between updates, so 60px is fine and no object is torn down.
+		// 60px is a compromise: clearly visible tracking, smooth via lerp.
 		const float MOVE_THRESHOLD = 60.0f;
 		bool do_update = false;
 		{
@@ -991,27 +992,20 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			return;
 		}
 	for (auto &t : targets) {
-		// [v84] MOVEMENT = despawn + respawn. Re-sending 0x11 alone for an
-		// existing oid is ignored by the client (no position update); 0x3C
-		// IN_MAP_TELEPORT crashes for a remote id. The only packet path that
-		// actually relocates an already-rendered remote character is to remove
-		// its object and recreate it at the new position with a fresh
-		// 0x3D+0x11 pair - the same sequence used for initial cross-visibility
-		// (which is known crash-free). 0x12 must use the SAME layer as the
-		// spawn (ctx), or the object lingers after removal.
-		// The 0x3D re-send temporarily overwrites the viewer's own account
-		// context, so we restore the viewer's 0x3D immediately after (matching
-		// the v62 identity-restore dance used at join time).
-		RemoveObjectPacket(me.id, t.sid);
-		if (MP_RemoteSend3D())
-			AccountDataPacket(me, t.sid);
+		// [v90] MOVEMENT = bare 0x11 update, NO despawn. The DLL's
+		// skip-inject path swallows this 0x11 for an already-rendered remote
+		// oid: GetCharacterByOID finds the live CCharacter (the object is never
+		// deleted on move), so the packet is NOT injected into the client - the
+		// DLL lerp-smooths the existing object in memory instead. This removes
+		// the per-step 0x12-remove + 0x3D-account-data churn that caused the
+		// strobing/teleport flicker. The full 0x12+0x3D+0x11 respawn stays in
+		// the ChangeMap cross-visibility loop, used only when the object does
+		// not yet exist.
 		CharacterSpawnPacket(me, nx, ny, t.sid, MP_RemoteCtx());
-		if (MP_RemoteSend3D() && MP_Restore3D())
-			AccountDataPacket(t.chr, t.sid);
-		printf("[MP-FWD]   -> sid=%d move-respawn v84 ctx=%d oid=%08X to (%.1f,%.1f)\n",
+		printf("[MP-FWD]   -> sid=%d move-update v90 ctx=%d oid=%08X to (%.1f,%.1f)\n",
 			t.sid, MP_RemoteCtx() ? 1 : 0, (unsigned)me.id, nx, ny);
 	}
-	MP_MARK("MP-FWD move=despawn-respawn v84");
+	MP_MARK("MP-FWD move=bare-0x11-update v90");
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
 			auto it = g_players.find(t_sid);
