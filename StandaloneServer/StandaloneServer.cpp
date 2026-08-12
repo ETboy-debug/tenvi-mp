@@ -226,7 +226,11 @@ static void MP_LoadCtxCfg(int &ctx, int &send3d, int &restore3d, int &selffirst,
 	selffirst = 1;
 	moveaspawn = 1;
 	rebuild = 1;
-	smoothmove = 0;   // [v106] OFF by default - keeps v102 rebuild as the safe baseline
+	// [v107] ON by default. v106 shipped with this OFF, so a 6-char legacy
+	// mp_ctx.cfg silently ran the old v102 staircase and the user tested the
+	// wrong build ("jumps top-down"). Defaulting ON means an outdated cfg can
+	// no longer mask the smooth path; write '0' as the 7th char to force rebuild.
+	smoothmove = 1;
 	FILE *f = NULL;
 	if (fopen_s(&f, "mp_ctx.cfg", "r") == 0 && f) {
 		int c0 = fgetc(f);
@@ -253,7 +257,7 @@ static void MP_Cfg(int &ctx, int &send3d, int &restore3d, int &selffirst,
 	static int s_ctx = -1, s_3d = -1, s_rst = -1, s_first = -1, s_move = -1, s_rebuild = -1, s_smooth = -1;
 	if (s_ctx < 0) {
 		MP_LoadCtxCfg(s_ctx, s_3d, s_rst, s_first, s_move, s_rebuild, s_smooth);
-		Log("[MP-CFG] v106 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d moveAsSpawn=%d rebuildMove=%d smoothMove=%d",
+		Log("[MP-CFG] v107 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d moveAsSpawn=%d rebuildMove=%d smoothMove=%d",
 			s_ctx, s_ctx ? "CWvsContext" : "CField", s_3d, s_rst, s_first, s_move, s_rebuild, s_smooth);
 	}
 	ctx = s_ctx;
