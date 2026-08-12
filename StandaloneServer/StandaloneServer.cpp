@@ -257,7 +257,7 @@ static void MP_Cfg(int &ctx, int &send3d, int &restore3d, int &selffirst,
 	static int s_ctx = -1, s_3d = -1, s_rst = -1, s_first = -1, s_move = -1, s_rebuild = -1, s_smooth = -1;
 	if (s_ctx < 0) {
 		MP_LoadCtxCfg(s_ctx, s_3d, s_rst, s_first, s_move, s_rebuild, s_smooth);
-		Log("[MP-CFG] v109 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d moveAsSpawn=%d rebuildMove=%d smoothMove=%d",
+		Log("[MP-CFG] v110 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d moveAsSpawn=%d rebuildMove=%d smoothMove=%d",
 			s_ctx, s_ctx ? "CWvsContext" : "CField", s_3d, s_rst, s_first, s_move, s_rebuild, s_smooth);
 	}
 	ctx = s_ctx;
@@ -305,15 +305,58 @@ bool MP_RebuildMove() {
 	return rebuild != 0;
 }
 
-// [v106] B-route smooth movement: synthesize the client's native REMOTE-player
-// SP move packet (CWvsContext opcode 0x0D, handler 0x4881d1: decodes oid@1..4
-// then movement path, applies via 0x45806d/0x458388) instead of tearing down /
-// rebuilding the avatar. 0x0C is the LOCAL move handler and cannot drive a peer.
-// When OFF, MP_ForwardToSameMap falls back to the v102 rebuild path.
+// [v110] SMOOTH remote movement, now aimed at the CORRECT opcode.
+// Full disassembly of the client dispatch table (0x49391C) settles it:
+//   opcode 0x0C -> thunk 0x4937A0 -> handler 0x48D4EA
+//       call 0x4033D0   read oid   (-> 0x403290, 4-byte LE dword)
+//       call 0x45CB52   decode movement path
+//       call 0x40336B   read 1 byte -> stance
+//       call 0x42ACDD   GetCharacterByOID(oid)     ; bail out when not found
+//       call 0x45806D(1)  character->SetMoving(1)
+//       call 0x45C9A7     character->ApplyPath
+//       call 0x458081     character->SetStance
+//       call 0x458388     character->ApplyMove
+//   opcode 0x0D -> handler 0x4881D1: reads oid, then SetMoving(0) only. It
+//       never touches the path or the position - it can only STOP an avatar.
+//       That is why the v106/v107 "smooth" packets could never move anyone.
+// So the DOWNSTREAM move packet is 0x0C, and its wire format is:
+//       [0x0C][oid:4 LE][count:1][int16 * count][stance:1]
+// The path block length rule comes from 0x45CAEE (`lea esi,[eax+eax+1]`, i.e.
+// 2*count+1 bytes, throw 0x26 when short), and 0x40793B copies the elements
+// verbatim (`push 2` element size + memcpy at 0x401059) - the client does NOT
+// reinterpret them in the decoder, so the semantics live in the movement tick.
+// Crucially this path NEVER sends 0x11/0x12/0x3D, so it cannot retrigger the
+// client "entered map" event that froze the avatar in v102..v109.
 bool MP_SmoothMove() {
 	int ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove;
 	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove);
 	return smoothmove != 0;
+}
+
+// [v110] Path element encoding, read from the 8th char of mp_ctx.cfg.
+// The decoder copies the 2-byte elements raw, so their meaning is only
+// observable from client behaviour. Instead of burning one cloud build per
+// hypothesis, make it a runtime knob: edit one character, restart, retest.
+//   0 = absolute int16 pairs (x,y) per path point   <- most likely
+//   1 = absolute int16 x only, one per point
+//   2 = int16 deltas (dx,dy) chained from the last reported position
+//   3 = endpoint only, count=2 (smallest possible valid packet)
+// Any mode is safe to try: a wrong guess makes the peer stand still, it can
+// never drag the client back into the map-entry state.
+int MP_PathMode() {
+	static int s_mode = -1;
+	if (s_mode < 0) {
+		s_mode = 0;
+		FILE *f = NULL;
+		if (fopen_s(&f, "mp_ctx.cfg", "r") == 0 && f) {
+			char buf[16] = { 0 };
+			size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+			fclose(f);
+			if (n >= 8 && buf[7] >= '0' && buf[7] <= '9') s_mode = buf[7] - '0';
+		}
+		Log("[MP-CFG] v110 pathMode=%d (8th char of mp_ctx.cfg)", s_mode);
+	}
+	return s_mode;
 }
 
 // [MP] 把包发给指定 sid 的连接(供 FakeServer 做跨玩家广播)
