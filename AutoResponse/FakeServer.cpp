@@ -912,6 +912,14 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		if (nx > -1.0e5f && nx < 1.0e5f && ny > -1.0e5f && ny < 1.0e5f) {
 			has_pos = true;
 		}
+		// [v103-diag] raw hex dump of the movement packet so we can reverse the
+		// real x/y layout offline (the float-tail assumption breaks x -> -0.1).
+		{
+			char hb[256]; int hi = 0; hi += snprintf(hb + hi, sizeof(hb) - hi, "[MP-RAW v103] op=%02X len=%d:", (unsigned)op, (int)len);
+			DWORD dump = len > 48 ? 48 : len;
+			for (DWORD i = 0; i < dump; i++) hi += snprintf(hb + hi, sizeof(hb) - hi, " %02X", pkt[i]);
+			printf("%s\n", hb);
+		}
 	}
 
 	WORD my_map = 0;
@@ -981,7 +989,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			// 2) rebuild object (0x3D) then render at new position (0x11)
 			AccountDataPacket(me, t.sid);
 			CharacterSpawnPacket(me, nx, ny, t.sid, MP_RemoteCtx());
-			printf("[MP-FWD] v102 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
+			printf("[MP-FWD] v103 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, nx, ny);
 		}
 		MP_MARK("MP-FWD v102 rebuild-move");
