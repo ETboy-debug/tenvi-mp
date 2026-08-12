@@ -953,6 +953,35 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		has_pos ? 1 : 0, nx, ny);
 	if (targets.empty()) return;
 
+	// [v104] B-route SMOOTH movement (pure network, NO memory writes, native
+	// client animation). The client's CWvsContext dispatch table (0x49391C)
+	// has 0x0C = remote-player-move handler (0x4937A0), which shares the
+	// movement-path decoder 0x488D40 with 0x14 monster move. So the SP packet
+	// the client already knows how to animate is:
+	//     [0x0C][oid little-endian 4 bytes][movement path]
+	// The local client sends CP_PLAYER_MOVEMENT (0x0C) carrying ONLY the
+	// movement path (no id - it knows who it is). We prepend the known oid
+	// and forward the verbatim movement body to every other client on the map;
+	// the receiver looks the avatar up by oid and walks it smoothly. This
+	// replaces the v102 destroy-rebuild staircase with true interpolation.
+	// Falls back to rebuild below when smoothMove is OFF (cfg 7th char).
+	if (MP_SmoothMove() && op == 0x0C && len >= 6) {
+		for (auto &t : targets) {
+			ServerPacket sp;
+			sp.Encode1(0x0C);
+			sp.Encode4(me.id);                 // oid, LE, 4 bytes
+			{
+				auto &v = sp.get();
+				v.insert(v.end(), pkt + 1, pkt + len); // movement path = client body
+			}
+			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
+			printf("[MP-FWD] v104 smooth -> sid=%d oid=%08X len=%d\n",
+				t.sid, (unsigned)me.id, (int)len);
+		}
+		MP_MARK("MP-FWD v104 smooth-move");
+		return;
+	}
+
 	// [v102] Destroy-rebuild movement (pure network, NO memory writes).
 	// CN v126 SP table has NO dedicated "remote player moved" opcode, and the
 	// client ignores repeated 0x11 for an already-rendered avatar (freezes).
