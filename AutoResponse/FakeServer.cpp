@@ -898,20 +898,87 @@ void MP_RemovePlayer(int) {}
 // stepped ("teleporting") movement rather than a smooth walk, but the remote
 // character finally tracks its owner. Set the 5th char of mp_ctx.cfg to '0'
 // to fall back to the old verbatim relay for comparison.
+// ---------------------------------------------------------------------------
+// [v108] Structured CP 0x0C parser - replaces the fragile "last 9 bytes" guess.
+//
+// Layout verified against 19/19 complete raw dumps in _srv_v106.log (0 misses):
+//
+//   [0x0C] [segment A] [segment B] [tail:1]
+//   segment = [flag:1]  and, when flag != 0, [count:1][element * count]
+//   element = 18 bytes:
+//       [0..1]   u16 tick     [2..3]   u16 b       [4..5]   i16 delta
+//       [6]      u8  d        [7]      u8  stance  [8]      u8  0x16 (constant)
+//       [9]      u8  z        [10..13] f32 x       [14..17] f32 y
+//
+// Why this matters: the old code read x/y from pkt+len-9 unconditionally. That
+// offset only lands on the coordinates when segment B carries elements. When
+// segment B is empty (flag=0, i.e. a single 0x00 byte) the read slides one byte
+// into the middle of x and yields garbage - typically (0,0). Those were the
+// "poison packets" that teleported peers to the map origin and produced the
+// user-visible "runs a few steps then freezes". Parsing the real structure
+// eliminates the entire failure class instead of filtering its symptom.
+// ---------------------------------------------------------------------------
+struct MPMovePoint { float x; float y; BYTE stance; };
+
+static bool MP_ParseCP0C(const BYTE *pkt, DWORD len, std::vector<MPMovePoint> &pts) {
+	pts.clear();
+	if (len < 4 || pkt[0] != 0x0C) return false;
+	DWORD p = 1;
+	for (int seg = 0; seg < 2; seg++) {
+		if (p >= len) return false;
+		BYTE flag = pkt[p++];
+		if (flag == 0) continue;               // empty segment: flag byte only
+		if (p >= len) return false;
+		BYTE count = pkt[p++];
+		if (count == 0) continue;
+		if (p + (DWORD)count * 18u > len) return false;
+		for (BYTE i = 0; i < count; i++) {
+			const BYTE *e = pkt + p + (DWORD)i * 18u;
+			if (e[8] != 0x16) return false;    // structure self-check
+			MPMovePoint mp;
+			memcpy(&mp.x, e + 10, 4);
+			memcpy(&mp.y, e + 14, 4);
+			mp.stance = e[7];
+			pts.push_back(mp);
+		}
+		p += (DWORD)count * 18u;
+	}
+	if (len - p != 1) return false;            // exactly one tail byte remains
+	return !pts.empty();
+}
+
 void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	BYTE op = (len > 0) ? pkt[0] : 0;
 
-	// Destination coords live in the last 9 bytes: [float x][float y][tail].
+	// [v108] Destination comes from the LAST element of the parsed path.
 	bool has_pos = false;
 	float nx = 0.0f, ny = 0.0f;
+	BYTE mv_stance = 0;
+	int mv_points = 0;
+	bool mv_struct = false;
 	if (op == 0x0C && len >= 10) {
-		memcpy(&nx, pkt + len - 9, 4);
-		memcpy(&ny, pkt + len - 5, 4);
-		// Tenvi world coordinates stay well inside this box; anything outside
-		// means we mis-parsed a variant packet layout, so skip the rewrite.
-		if (nx > -1.0e5f && nx < 1.0e5f && ny > -1.0e5f && ny < 1.0e5f) {
+		std::vector<MPMovePoint> pts;
+		if (MP_ParseCP0C(pkt, len, pts)) {
+			mv_struct = true;
+			mv_points = (int)pts.size();
+			nx = pts.back().x;
+			ny = pts.back().y;
+			mv_stance = pts.back().stance;
+			has_pos = true;
+		} else {
+			// Fallback to the legacy tail guess so an unknown packet variant
+			// still yields movement rather than nothing at all.
+			memcpy(&nx, pkt + len - 9, 4);
+			memcpy(&ny, pkt + len - 5, 4);
 			has_pos = true;
 		}
+		// Tenvi world coordinates stay well inside this box; anything outside
+		// means we mis-parsed a variant packet layout, so skip the rewrite.
+		if (!(nx > -1.0e5f && nx < 1.0e5f && ny > -1.0e5f && ny < 1.0e5f)) {
+			has_pos = false;
+		}
+		printf("[MP-PARSE v108] struct=%d pts=%d last=(%.1f,%.1f) stance=%d len=%d\n",
+			mv_struct ? 1 : 0, mv_points, nx, ny, (int)mv_stance, (int)len);
 		// [v103-diag] raw hex dump of the movement packet so we can reverse the
 		// real x/y layout offline (the float-tail assumption breaks x -> -0.1).
 		{
@@ -1012,11 +1079,17 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// down and recreated at the MAP ORIGIN, off-screen / under the floor. That
 		// is the user-reported "runs a few steps then freezes / vanishes". The
 		// MoveAsSpawn branch already had this filter; rebuild never did.
+		// [v108] Kept as a second line of defence only. MP_ParseCP0C now derives
+		// the coordinate from the real last path element, so genuine (0,0) reads
+		// should no longer occur; this guard only catches unknown packet variants
+		// that fell through to the legacy tail-guess path.
 		if (fabsf(nx) < 0.001f && fabsf(ny) < 0.001f) {
-			printf("[MP-FWD]   v107 skip poison (0,0) pos\n");
+			printf("[MP-FWD]   v108 skip poison (0,0) pos\n");
 			return;
 		}
-		const float MOVE_THRESHOLD = 40.0f; // larger = less strobe, more teleporty
+		// [v108] 40px produced very long teleport hops ("jumping"). With the
+		// coordinate now parsed correctly we can afford denser updates.
+		const float MOVE_THRESHOLD = 20.0f; // larger = less strobe, more teleporty
 		bool do_update = false;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
