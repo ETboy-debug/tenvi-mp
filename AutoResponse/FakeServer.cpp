@@ -945,24 +945,55 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		has_pos ? 1 : 0, nx, ny);
 	if (targets.empty()) return;
 
-	// [v100] Raw relay branch (moveAsSpawn OFF). Instead of synthesizing a
-	// 0x11 spawn from parsed coords (which the CN client ignores for an
-	// already-rendered remote avatar -> it freezes in place), forward the
-	// client's OWN native movement packet verbatim to the other players in
-	// the same map. The receiving client's own movement animation system
-	// then drives the remote character -> smooth, no memory writes, no crash.
-	// The real movement packet from CN v126 is op=0x0C (v65 already parsed its
-	// trailing floats here). Relay on the same layer it arrived on
-	// (MP_TYPE_GAME / CWvsContext == MP_RemoteCtx()).
-	if (!MP_MoveAsSpawn() && op == 0x0C) {
-		for (auto &t : targets) {
-			ServerPacket sp;
-			sp.Raw(pkt, len);
-			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
+	// [v102] Destroy-rebuild movement (pure network, NO memory writes).
+	// CN v126 SP table has NO dedicated "remote player moved" opcode, and the
+	// client ignores repeated 0x11 for an already-rendered avatar (freezes).
+	// So the only network-only way to move a remote avatar is to tear it down
+	// (0x12 remove) and recreate it (0x3D build object + 0x11 render) at the
+	// new position. Triggered by MP_RebuildMove() (6th cfg bit). Movement
+	// looks staircase/teleporty and may strobe, but it MOVES and is fully
+	// publishable (identical for every player, no per-machine memory offsets).
+	// Smoothing via a real remote-move recv opcode is deferred until IDA
+	// yields the correct handler.
+	if (MP_RebuildMove() && has_pos) {
+		const float MOVE_THRESHOLD = 40.0f; // larger = less strobe, more teleporty
+		bool do_update = false;
+		{
+			std::lock_guard<std::mutex> lk(g_playersMtx);
+			auto it = g_players.find(t_sid);
+			if (it == g_players.end()) return;
+			if (it->second.has_last_move) {
+				float ddx = nx - it->second.last_move_x;
+				float ddy = ny - it->second.last_move_y;
+				if (ddx * ddx + ddy * ddy >= MOVE_THRESHOLD * MOVE_THRESHOLD)
+					do_update = true;
+			} else {
+				do_update = true; // first movement in this session
+			}
 		}
-		MP_MARK("MP-FWD v100 raw-relay move=raw(0x0C)");
-		printf("[MP-FWD] v100 raw-relay op=%02X len=%u -> %zu targets (ctx=%d)\n",
-			(unsigned)op, (unsigned)len, targets.size(), MP_RemoteCtx() ? 1 : 0);
+		if (!do_update) {
+			printf("[MP-FWD]   skip rebuild (under %.0fpx)\n", MOVE_THRESHOLD);
+			return;
+		}
+		for (auto &t : targets) {
+			// 1) remove existing remote avatar at old position
+			RemoveObjectPacket(me.id, t.sid);
+			// 2) rebuild object (0x3D) then render at new position (0x11)
+			AccountDataPacket(me, t.sid);
+			CharacterSpawnPacket(me, nx, ny, t.sid, MP_RemoteCtx());
+			printf("[MP-FWD] v102 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
+				t.sid, (unsigned)me.id, nx, ny);
+		}
+		MP_MARK("MP-FWD v102 rebuild-move");
+		{
+			std::lock_guard<std::mutex> lk(g_playersMtx);
+			auto it = g_players.find(t_sid);
+			if (it != g_players.end()) {
+				it->second.last_move_x = nx;
+				it->second.last_move_y = ny;
+				it->second.has_last_move = true;
+			}
+		}
 		return;
 	}
 
