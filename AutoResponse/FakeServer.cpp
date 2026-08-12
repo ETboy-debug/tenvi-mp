@@ -264,12 +264,12 @@ void ChangeMapPacket(WORD mapid, float x = 0, float y = 0, int target_sid = -1) 
 }
 
 // 0x11
-void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, int target_sid = -1, bool context = true) {
+void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, BYTE dir = 0, int target_sid = -1, bool context = true) {
 	ServerPacket sp(SP_CHARACTER_SPAWN);
 	sp.Encode4(chr.id); // 0048DB9B id, where checks id?
 	sp.EncodeFloat(x); // 0048DBA5, coordinate x
 	sp.EncodeFloat(y); // 0048DBAF, corrdinate y
-	sp.Encode1(0); // 0048DBB9, direction 0 = left, 1 = right
+	sp.Encode1(dir); // 0048DBB9, direction 0 = left, 1 = right
 	sp.Encode1(1); // 0048DBC6, guardian, 0 = guardian off, 1 = guardian on
 	sp.Encode1(1); // 0048DBD3, death, 0 = death, 1 = alive
 	sp.Encode1(0); // 0048DBE0, battle, 0 = change channel OK, 1 = change channel NG
@@ -907,7 +907,7 @@ void MP_RemovePlayer(int) {}
 //   segment = [flag:1]  and, when flag != 0, [count:1][element * count]
 //   element = 18 bytes:
 //       [0..1]   u16 tick     [2..3]   u16 b       [4..5]   i16 delta
-//       [6]      u8  d        [7]      u8  stance  [8]      u8  0x16 (constant)
+//       [6]      u8  d        [7]      u8  stance  [8]      u8  layer  (0x15/0x16)
 //       [9]      u8  z        [10..13] f32 x       [14..17] f32 y
 //
 // Why this matters: the old code read x/y from pkt+len-9 unconditionally. That
@@ -934,7 +934,6 @@ static bool MP_ParseCP0C(const BYTE *pkt, DWORD len, std::vector<MPMovePoint> &p
 		if (p + (DWORD)count * 18u > len) return false;
 		for (BYTE i = 0; i < count; i++) {
 			const BYTE *e = pkt + p + (DWORD)i * 18u;
-			if (e[8] != 0x16) return false;    // structure self-check
 			MPMovePoint mp;
 			memcpy(&mp.x, e + 10, 4);
 			memcpy(&mp.y, e + 14, 4);
@@ -954,6 +953,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	bool has_pos = false;
 	float nx = 0.0f, ny = 0.0f;
 	BYTE mv_stance = 0;
+	BYTE mv_dir = 0;        // facing: 0 = left, 1 = right (derived from dx)
 	int mv_points = 0;
 	bool mv_struct = false;
 	if (op == 0x0C && len >= 10) {
@@ -977,8 +977,8 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		if (!(nx > -1.0e5f && nx < 1.0e5f && ny > -1.0e5f && ny < 1.0e5f)) {
 			has_pos = false;
 		}
-		printf("[MP-PARSE v108] struct=%d pts=%d last=(%.1f,%.1f) stance=%d len=%d\n",
-			mv_struct ? 1 : 0, mv_points, nx, ny, (int)mv_stance, (int)len);
+	printf("[MP-PARSE v109] struct=%d pts=%d last=(%.1f,%.1f) stance=%d len=%d dir=%d\n",
+		mv_struct ? 1 : 0, mv_points, nx, ny, (int)mv_stance, (int)len, (int)mv_dir);
 		// [v103-diag] raw hex dump of the movement packet so we can reverse the
 		// real x/y layout offline (the float-tail assumption breaks x -> -0.1).
 		{
@@ -1098,10 +1098,12 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			if (it->second.has_last_move) {
 				float ddx = nx - it->second.last_move_x;
 				float ddy = ny - it->second.last_move_y;
+				mv_dir = (ddx < 0.0f) ? 0 : 1;   // moving left -> face left
 				if (ddx * ddx + ddy * ddy >= MOVE_THRESHOLD * MOVE_THRESHOLD)
 					do_update = true;
 			} else {
 				do_update = true; // first movement in this session
+				mv_dir = 0;
 			}
 		}
 		if (!do_update) {
@@ -1113,7 +1115,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			RemoveObjectPacket(me.id, t.sid);
 			// 2) rebuild object (0x3D) then render at new position (0x11)
 			AccountDataPacket(me, t.sid);
-			CharacterSpawnPacket(me, nx, ny, t.sid, MP_RemoteCtx());
+			CharacterSpawnPacket(me, nx, ny, mv_dir, t.sid, MP_RemoteCtx());
 			printf("[MP-FWD] v103 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, nx, ny);
 		}
@@ -1169,10 +1171,12 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			if (it->second.has_last_move) {
 				float ddx = nx - it->second.last_move_x;
 				float ddy = ny - it->second.last_move_y;
+				mv_dir = (ddx < 0.0f) ? 0 : 1;   // moving left -> face left
 				if (ddx * ddx + ddy * ddy >= MOVE_THRESHOLD * MOVE_THRESHOLD)
 					do_update = true;
 			} else {
 				do_update = true; // first movement in this session
+				mv_dir = 0;
 			}
 		}
 		if (!do_update) {
@@ -1189,7 +1193,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// strobing/teleport flicker. The full 0x12+0x3D+0x11 respawn stays in
 		// the ChangeMap cross-visibility loop, used only when the object does
 		// not yet exist.
-		CharacterSpawnPacket(me, nx, ny, t.sid, MP_RemoteCtx());
+		CharacterSpawnPacket(me, nx, ny, mv_dir, t.sid, MP_RemoteCtx());
 		printf("[MP-FWD]   -> sid=%d move-update v90 ctx=%d oid=%08X to (%.1f,%.1f)\n",
 			t.sid, MP_RemoteCtx() ? 1 : 0, (unsigned)me.id, nx, ny);
 	}
@@ -1332,7 +1336,7 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			// [v82] 0x11 now uses the same layer as 0x3D (MP_RemoteCtx) so the
 			// object is created and rendered on the same client layer.
 			if (MP_RemoteSend3D()) AccountDataPacket(chr, other_sid);
-			CharacterSpawnPacket(chr, x, y, other_sid, MP_RemoteCtx()); // other sees me
+			CharacterSpawnPacket(chr, x, y, 0, other_sid, MP_RemoteCtx()); // other sees me
 			if (MP_RemoteSend3D() && MP_Restore3D())
 				AccountDataPacket(other.chr, other_sid);         // [v62] restore other identity
 			// [v94] collect for dirB (deferred, sent OUTSIDE the lock below)
@@ -1355,14 +1359,14 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 		Sleep(3000);
 		if (MP_RemoteSend3D()) AccountDataPacket(other.chr, t_sid);
 		Sleep(50);
-		CharacterSpawnPacket(other.chr, other.x, other.y, t_sid, MP_RemoteCtx());
+		CharacterSpawnPacket(other.chr, other.x, other.y, 0, t_sid, MP_RemoteCtx());
 		if (MP_RemoteSend3D() && MP_Restore3D())
 			AccountDataPacket(chr, t_sid); // [v62] restore my identity
 		// retry once: 1.5s 后再补一发, 覆盖更慢稳定的客户端
 		Sleep(1500);
 		if (MP_RemoteSend3D()) AccountDataPacket(other.chr, t_sid);
 		Sleep(50);
-		CharacterSpawnPacket(other.chr, other.x, other.y, t_sid, MP_RemoteCtx());
+		CharacterSpawnPacket(other.chr, other.x, other.y, 0, t_sid, MP_RemoteCtx());
 		if (MP_RemoteSend3D() && MP_Restore3D())
 			AccountDataPacket(chr, t_sid);
 		printf("[MP-XVIS] deferred dirB v94 ctx=%d -> sid=%d other oid=%08X (retry x2)\n",
