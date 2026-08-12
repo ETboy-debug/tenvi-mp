@@ -956,8 +956,11 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	BYTE mv_dir = 0;        // facing: 0 = left, 1 = right (derived from dx)
 	int mv_points = 0;
 	bool mv_struct = false;
+	// [v110] Hoisted to function scope: the downstream 0x0C builder below needs
+	// the whole path, not just its last point.
+	std::vector<MPMovePoint> mv_pts;
 	if (op == 0x0C && len >= 10) {
-		std::vector<MPMovePoint> pts;
+		std::vector<MPMovePoint> &pts = mv_pts;
 		if (MP_ParseCP0C(pkt, len, pts)) {
 			mv_struct = true;
 			mv_points = (int)pts.size();
@@ -977,7 +980,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		if (!(nx > -1.0e5f && nx < 1.0e5f && ny > -1.0e5f && ny < 1.0e5f)) {
 			has_pos = false;
 		}
-	printf("[MP-PARSE v109] struct=%d pts=%d last=(%.1f,%.1f) stance=%d len=%d dir=%d\n",
+	printf("[MP-PARSE v110] struct=%d pts=%d last=(%.1f,%.1f) stance=%d len=%d dir=%d\n",
 		mv_struct ? 1 : 0, mv_points, nx, ny, (int)mv_stance, (int)len, (int)mv_dir);
 		// [v103-diag] raw hex dump of the movement packet so we can reverse the
 		// real x/y layout offline (the float-tail assumption breaks x -> -0.1).
@@ -1044,21 +1047,99 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	// avatar frozen (exactly the v104 failure). Forward from pkt+5: skip
 	// 1 opcode byte + 4 sender-oid bytes, keep only the movement path.
 	// Falls back to rebuild below when smoothMove is OFF (cfg 7th char).
-	if (MP_SmoothMove() && op == 0x0C && len >= 6) {
+	// [v110] ---------------------------------------------------------------
+	// The v107 code above was wrong on BOTH counts and is replaced wholesale:
+	//   1) It sent opcode 0x0D. Handler 0x4881D1 reads an oid then calls
+	//      0x45806D(0) = SetMoving(FALSE) and nothing else - it can only STOP
+	//      an avatar. No path is read, no coordinate is written. Peers could
+	//      never move, no matter what payload followed.
+	//   2) It appended `pkt+5`, assuming the client's CP 0x0C carried its own
+	//      oid at [1..4]. It does not: the [MP-HDL] "oid" printed a different
+	//      value every packet because those bytes are path data (flag, count,
+	//      tick). So the relay also truncated 4 bytes of real path.
+	// The verified downstream mover is opcode 0x0C -> handler 0x48D4EA:
+	//      read oid (0x4033D0 -> 0x403290, 4-byte LE)
+	//      decode path (0x45CB52 -> 0x45CAEE: [count:1][int16 * count])
+	//      read stance (0x40336B, 1 byte)
+	//      GetCharacterByOID (0x42ACDD) -> SetMoving(1) -> ApplyPath
+	//      -> SetStance -> ApplyMove (0x458388)
+	// Wire format we emit: [0x0C][oid:4 LE][count:1][int16 * count][stance:1]
+	// This sends NO 0x11/0x12/0x3D, so unlike the rebuild/moveAsSpawn paths it
+	// cannot retrigger the client's map-entry event - the exact mechanism that
+	// froze the player's own avatar from v102 through v109.
+	// ---------------------------------------------------------------------
+	if (MP_SmoothMove() && op == 0x0C && has_pos && !mv_pts.empty()) {
+		const int mode = MP_PathMode();
+		std::vector<short> elems;
+		float lx = 0.0f, ly = 0.0f;
+		bool have_last = false;
+		{
+			std::lock_guard<std::mutex> lk(g_playersMtx);
+			auto it = g_players.find(t_sid);
+			if (it != g_players.end() && it->second.has_last_move) {
+				lx = it->second.last_move_x;
+				ly = it->second.last_move_y;
+				have_last = true;
+			}
+		}
+		switch (mode) {
+		case 1: // one absolute int16 per point, x only
+			for (size_t i = 0; i < mv_pts.size(); i++)
+				elems.push_back((short)mv_pts[i].x);
+			break;
+		case 2: // chained (dx,dy) deltas from the last reported position
+		{
+			float px = have_last ? lx : mv_pts[0].x;
+			float py = have_last ? ly : mv_pts[0].y;
+			for (size_t i = 0; i < mv_pts.size(); i++) {
+				elems.push_back((short)(mv_pts[i].x - px));
+				elems.push_back((short)(mv_pts[i].y - py));
+				px = mv_pts[i].x;
+				py = mv_pts[i].y;
+			}
+			break;
+		}
+		case 3: // endpoint only - the smallest packet the decoder accepts
+			elems.push_back((short)nx);
+			elems.push_back((short)ny);
+			break;
+		case 0:
+		default: // absolute (x,y) pair per path point
+			for (size_t i = 0; i < mv_pts.size(); i++) {
+				elems.push_back((short)mv_pts[i].x);
+				elems.push_back((short)mv_pts[i].y);
+			}
+			break;
+		}
+		// count is a single byte in the wire format (0x45CAEE reads byte[0]).
+		if (elems.size() > 255) elems.resize(255);
+		if (elems.empty()) {
+			printf("[MP-FWD] v110 sp0x0C skip: empty path (mode=%d)\n", mode);
+			return;
+		}
 		for (auto &t : targets) {
 			ServerPacket sp;
-			sp.Encode1(0x0D);
-			sp.Encode4(me.id);                 // remote oid (LE, 4 bytes) as seen by target (0x0D reads oid@1..4)
-			{
-				auto &v = sp.get();
-				// CP 0x0C body = [oid 4 LE][movement path]. Skip opcode + sender oid.
-				v.insert(v.end(), pkt + 5, pkt + len); // movement path only
-			}
+			sp.Encode1(0x0C);
+			sp.Encode4(me.id);                       // oid, 4-byte LE
+			sp.Encode1((BYTE)elems.size());          // count
+			for (size_t i = 0; i < elems.size(); i++)
+				sp.Encode2((WORD)(unsigned short)elems[i]);
+			sp.Encode1(mv_stance);                   // stance
 			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
-			printf("[MP-FWD] v107 smooth -> sid=%d oid=%08X pathlen=%d\n",
-				t.sid, (unsigned)me.id, (int)(len - 5));
+			printf("[MP-FWD] v110 sp0x0C -> sid=%d oid=%08X mode=%d count=%d stance=%d dst=(%.1f,%.1f)\n",
+				t.sid, (unsigned)me.id, mode, (int)elems.size(),
+				(int)mv_stance, nx, ny);
 		}
-		MP_MARK("MP-FWD v107 smooth-move");
+		{
+			std::lock_guard<std::mutex> lk(g_playersMtx);
+			auto it = g_players.find(t_sid);
+			if (it != g_players.end()) {
+				it->second.last_move_x = nx;
+				it->second.last_move_y = ny;
+				it->second.has_last_move = true;
+			}
+		}
+		MP_MARK("MP-FWD v110 sp-0x0C-path");
 		return;
 	}
 
@@ -1225,6 +1306,9 @@ bool MP_RemoteSend3D() { return false; }
 bool MP_Restore3D() { return false; }
 bool MP_SelfSpawnFirst() { return false; }
 bool MP_MoveAsSpawn() { return false; }
+// [v110] The dll side never relays peer movement; default encoding is fine.
+// Present only so the linker resolves the symbol.
+int MP_PathMode() { return 0; }
 #endif
 
 // go to map
