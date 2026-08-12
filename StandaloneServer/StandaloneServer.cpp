@@ -219,13 +219,14 @@ static void SendPacketTo(SOCKET s, ServerPacket &sp, BYTE frameType = MP_TYPE_GA
 //    locked onto the wrong character and drove a ghost - it could not move and
 //    could not see anyone. Knob [3] sends self spawn first to lock identity.
 static void MP_LoadCtxCfg(int &ctx, int &send3d, int &restore3d, int &selffirst,
-		int &moveaspawn, int &rebuild) {
+		int &moveaspawn, int &rebuild, int &smoothmove) {
 	ctx = 1;
 	send3d = 1;
 	restore3d = 1;
 	selffirst = 1;
 	moveaspawn = 1;
 	rebuild = 1;
+	smoothmove = 0;   // [v104] OFF by default - keeps v102 rebuild as the safe baseline
 	FILE *f = NULL;
 	if (fopen_s(&f, "mp_ctx.cfg", "r") == 0 && f) {
 		int c0 = fgetc(f);
@@ -240,18 +241,20 @@ static void MP_LoadCtxCfg(int &ctx, int &send3d, int &restore3d, int &selffirst,
 		if (c4 == '0') moveaspawn = 0;
 		int c5 = fgetc(f);
 		if (c5 == '0') rebuild = 0;
+		int c6 = fgetc(f);
+		if (c6 == '0') smoothmove = 0; else if (c6 != EOF) smoothmove = 1;
 		fclose(f);
 	}
 }
 
 // One lazy load shared by every knob, so the config line is logged exactly once.
 static void MP_Cfg(int &ctx, int &send3d, int &restore3d, int &selffirst,
-		int &moveaspawn, int &rebuild) {
-	static int s_ctx = -1, s_3d = -1, s_rst = -1, s_first = -1, s_move = -1, s_rebuild = -1;
+		int &moveaspawn, int &rebuild, int &smoothmove) {
+	static int s_ctx = -1, s_3d = -1, s_rst = -1, s_first = -1, s_move = -1, s_rebuild = -1, s_smooth = -1;
 	if (s_ctx < 0) {
-		MP_LoadCtxCfg(s_ctx, s_3d, s_rst, s_first, s_move, s_rebuild);
-		Log("[MP-CFG] v102 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d moveAsSpawn=%d rebuildMove=%d",
-			s_ctx, s_ctx ? "CWvsContext" : "CField", s_3d, s_rst, s_first, s_move, s_rebuild);
+		MP_LoadCtxCfg(s_ctx, s_3d, s_rst, s_first, s_move, s_rebuild, s_smooth);
+		Log("[MP-CFG] v104 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d moveAsSpawn=%d rebuildMove=%d smoothMove=%d",
+			s_ctx, s_ctx ? "CWvsContext" : "CField", s_3d, s_rst, s_first, s_move, s_rebuild, s_smooth);
 	}
 	ctx = s_ctx;
 	send3d = s_3d;
@@ -259,42 +262,54 @@ static void MP_Cfg(int &ctx, int &send3d, int &restore3d, int &selffirst,
 	selffirst = s_first;
 	moveaspawn = s_move;
 	rebuild = s_rebuild;
+	smoothmove = s_smooth;
 }
 
 bool MP_RemoteCtx() {
-	int ctx, send3d, restore3d, selffirst, moveaspawn, rebuild;
-	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn, rebuild);
+	int ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove;
+	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove);
 	return ctx != 0;
 }
 
 bool MP_RemoteSend3D() {
-	int ctx, send3d, restore3d, selffirst, moveaspawn, rebuild;
-	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn, rebuild);
+	int ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove;
+	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove);
 	return send3d != 0;
 }
 
 bool MP_Restore3D() {
-	int ctx, send3d, restore3d, selffirst, moveaspawn, rebuild;
-	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn, rebuild);
+	int ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove;
+	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove);
 	return restore3d != 0;
 }
 
 bool MP_SelfSpawnFirst() {
-	int ctx, send3d, restore3d, selffirst, moveaspawn, rebuild;
-	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn, rebuild);
+	int ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove;
+	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove);
 	return selffirst != 0;
 }
 
 bool MP_MoveAsSpawn() {
-	int ctx, send3d, restore3d, selffirst, moveaspawn, rebuild;
-	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn, rebuild);
+	int ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove;
+	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove);
 	return moveaspawn != 0;
 }
 
 bool MP_RebuildMove() {
-	int ctx, send3d, restore3d, selffirst, moveaspawn, rebuild;
-	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn, rebuild);
+	int ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove;
+	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove);
 	return rebuild != 0;
+}
+
+// [v104] B-route smooth movement: synthesize the client's own native
+// SP remote-player-move packet (CWvsContext opcode 0x0C, handler 0x4937A0,
+// shares the movement decoder 0x488D40 with 0x14 monster move) instead of
+// tearing down / rebuilding the avatar. When OFF, MP_ForwardToSameMap falls
+// back to the v102 rebuild path.
+bool MP_SmoothMove() {
+	int ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove;
+	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove);
+	return smoothmove != 0;
 }
 
 // [MP] 把包发给指定 sid 的连接(供 FakeServer 做跨玩家广播)
