@@ -951,15 +951,16 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	// client's OWN native movement packet verbatim to the other players in
 	// the same map. The receiving client's own movement animation system
 	// then drives the remote character -> smooth, no memory writes, no crash.
-	// op=0x52 is the native walk-path packet (219B). Relay on the same layer
-	// it arrived on (MP_TYPE_GAME / CWvsContext == MP_RemoteCtx()).
-	if (!MP_MoveAsSpawn() && op == 0x52) {
+	// The real movement packet from CN v126 is op=0x0C (v65 already parsed its
+	// trailing floats here). Relay on the same layer it arrived on
+	// (MP_TYPE_GAME / CWvsContext == MP_RemoteCtx()).
+	if (!MP_MoveAsSpawn() && op == 0x0C) {
 		for (auto &t : targets) {
 			ServerPacket sp;
 			sp.Raw(pkt, len);
 			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
 		}
-		MP_MARK("MP-FWD v100 raw-relay move=raw(0x52)");
+		MP_MARK("MP-FWD v100 raw-relay move=raw(0x0C)");
 		printf("[MP-FWD] v100 raw-relay op=%02X len=%u -> %zu targets (ctx=%d)\n",
 			(unsigned)op, (unsigned)len, targets.size(), MP_RemoteCtx() ? 1 : 0);
 		return;
