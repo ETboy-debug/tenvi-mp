@@ -226,7 +226,7 @@ static void MP_LoadCtxCfg(int &ctx, int &send3d, int &restore3d, int &selffirst,
 	selffirst = 1;
 	moveaspawn = 1;
 	rebuild = 1;
-	smoothmove = 0;   // [v105] OFF by default - keeps v102 rebuild as the safe baseline
+	smoothmove = 0;   // [v106] OFF by default - keeps v102 rebuild as the safe baseline
 	FILE *f = NULL;
 	if (fopen_s(&f, "mp_ctx.cfg", "r") == 0 && f) {
 		int c0 = fgetc(f);
@@ -253,7 +253,7 @@ static void MP_Cfg(int &ctx, int &send3d, int &restore3d, int &selffirst,
 	static int s_ctx = -1, s_3d = -1, s_rst = -1, s_first = -1, s_move = -1, s_rebuild = -1, s_smooth = -1;
 	if (s_ctx < 0) {
 		MP_LoadCtxCfg(s_ctx, s_3d, s_rst, s_first, s_move, s_rebuild, s_smooth);
-		Log("[MP-CFG] v105 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d moveAsSpawn=%d rebuildMove=%d smoothMove=%d",
+		Log("[MP-CFG] v106 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d moveAsSpawn=%d rebuildMove=%d smoothMove=%d",
 			s_ctx, s_ctx ? "CWvsContext" : "CField", s_3d, s_rst, s_first, s_move, s_rebuild, s_smooth);
 	}
 	ctx = s_ctx;
@@ -301,11 +301,11 @@ bool MP_RebuildMove() {
 	return rebuild != 0;
 }
 
-// [v105] B-route smooth movement: synthesize the client's own native
-// SP remote-player-move packet (CWvsContext opcode 0x0C, handler 0x4937A0,
-// shares the movement decoder 0x488D40 with 0x14 monster move) instead of
-// tearing down / rebuilding the avatar. When OFF, MP_ForwardToSameMap falls
-// back to the v102 rebuild path.
+// [v106] B-route smooth movement: synthesize the client's native REMOTE-player
+// SP move packet (CWvsContext opcode 0x0D, handler 0x4881d1: decodes oid@1..4
+// then movement path, applies via 0x45806d/0x458388) instead of tearing down /
+// rebuilding the avatar. 0x0C is the LOCAL move handler and cannot drive a peer.
+// When OFF, MP_ForwardToSameMap falls back to the v102 rebuild path.
 bool MP_SmoothMove() {
 	int ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove;
 	MP_Cfg(ctx, send3d, restore3d, selffirst, moveaspawn, rebuild, smoothmove);
