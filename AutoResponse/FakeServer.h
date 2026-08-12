@@ -65,7 +65,16 @@ bool MP_RebuildMove();
 // own CWvsContext handler 0x4937A0 already animates it natively) instead of
 // rebuilding. movement path is forwarded verbatim from the client's CP 0x0C body.
 // Default OFF so the v102 rebuild stays the safe baseline until verified.
+// [v110] Retargeted at the verified DOWNSTREAM move opcode. Handler 0x48D4EA
+// (dispatch table 0x49391C entry 0x0C) reads a 4-byte oid, decodes a path,
+// reads a stance byte, looks the character up by oid and applies the move.
+// Wire format: [0x0C][oid:4 LE][count:1][int16 * count][stance:1].
 bool MP_SmoothMove();
+// [v110] Encoding of the 2-byte path elements, 8th char of mp_ctx.cfg.
+// 0 = abs (x,y) pairs, 1 = abs x only, 2 = (dx,dy) deltas, 3 = endpoint only.
+// The client copies these bytes verbatim (0x40793B), so the only way to pin the
+// semantics down is observation - hence a runtime knob instead of a rebuild.
+int MP_PathMode();
 // [v55] 把客户端发出的游戏包(移动 0x0C 等)原样转发给同图其他玩家
 void MP_ForwardToSameMap(const BYTE *pkt, DWORD len);
 
