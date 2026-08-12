@@ -60,6 +60,12 @@ bool MP_MoveAsSpawn();
 // object) + 0x11 (spawn at new position). Stepped/flashing but guaranteed to
 // move without any client memory writes. Default ON (the only working option).
 bool MP_RebuildMove();
+// [v104] B-route smooth movement. When ON, MP_ForwardToSameMap synthesizes the
+// real SP remote-player-move packet [0x0C][oid LE4][movement path] (the client's
+// own CWvsContext handler 0x4937A0 already animates it natively) instead of
+// rebuilding. movement path is forwarded verbatim from the client's CP 0x0C body.
+// Default OFF so the v102 rebuild stays the safe baseline until verified.
+bool MP_SmoothMove();
 // [v55] 把客户端发出的游戏包(移动 0x0C 等)原样转发给同图其他玩家
 void MP_ForwardToSameMap(const BYTE *pkt, DWORD len);
 
