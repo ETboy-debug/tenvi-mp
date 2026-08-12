@@ -53,6 +53,13 @@ bool MP_SelfSpawnFirst();
 // (CHARACTER_SPAWN) with the new position - the one packet already proven to
 // place a remote character at an exact coordinate. Default ON.
 bool MP_MoveAsSpawn();
+// [v102] Movement relay fallback (pure-network, publishable). When moveAsSpawn
+// is OFF, the SP table has no "remote player moved" opcode, so we cannot move
+// an already-spawned remote avatar with a single packet. This mode destroys and
+// rebuilds the remote character each step: 0x12 (remove old oid) + 0x3D (rebuild
+// object) + 0x11 (spawn at new position). Stepped/flashing but guaranteed to
+// move without any client memory writes. Default ON (the only working option).
+bool MP_RebuildMove();
 // [v55] 把客户端发出的游戏包(移动 0x0C 等)原样转发给同图其他玩家
 void MP_ForwardToSameMap(const BYTE *pkt, DWORD len);
 
