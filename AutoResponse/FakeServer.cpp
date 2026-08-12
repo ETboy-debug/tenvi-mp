@@ -945,6 +945,26 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		has_pos ? 1 : 0, nx, ny);
 	if (targets.empty()) return;
 
+	// [v100] Raw relay branch (moveAsSpawn OFF). Instead of synthesizing a
+	// 0x11 spawn from parsed coords (which the CN client ignores for an
+	// already-rendered remote avatar -> it freezes in place), forward the
+	// client's OWN native movement packet verbatim to the other players in
+	// the same map. The receiving client's own movement animation system
+	// then drives the remote character -> smooth, no memory writes, no crash.
+	// op=0x52 is the native walk-path packet (219B). Relay on the same layer
+	// it arrived on (MP_TYPE_GAME / CWvsContext == MP_RemoteCtx()).
+	if (!MP_MoveAsSpawn() && op == 0x52) {
+		for (auto &t : targets) {
+			ServerPacket sp;
+			sp.Raw(pkt, len);
+			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
+		}
+		MP_MARK("MP-FWD v100 raw-relay move=raw(0x52)");
+		printf("[MP-FWD] v100 raw-relay op=%02X len=%u -> %zu targets (ctx=%d)\n",
+			(unsigned)op, (unsigned)len, targets.size(), MP_RemoteCtx() ? 1 : 0);
+		return;
+	}
+
 	if (MP_MoveAsSpawn() && has_pos) {
 		// [v70] Filter out the (0,0) poison packets that v69 logged by the
 		// hundreds. The 0x0C parser reads the last 8 bytes as floats, but not
