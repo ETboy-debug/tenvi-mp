@@ -967,9 +967,15 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	//     packet the client already knows how to animate for other players.
 	// Correct server->peer packet:
 	//     [0x0D][remote oid 4 LE][movement path from sender CP byte[1]]
-	// The sender's CP 0x0C carries [0x0C][path]; we drop the leading opcode and
-	// prepend the peer-visible oid, sending 0x0D. Replaces the v102
-	// destroy-rebuild staircase with true interpolation.
+	// [v107] PROVEN BY LIVE HEX (v106 log line 134):
+	//   0C | 01 02 C6 11 | 79 04 D6 FF 00 | 09 16 00 | 5E 8A 8E C3 | 00 00 A6 43 ...
+	//   ^op  ^sender oid   ^path nodes...              ^x float LE   ^y float LE
+	// [MP-HDL] printed oid=11C60201 == bytes[1..4] read little-endian, so the
+	// client's CP 0x0C DOES carry its own oid at [1..4] (the v106 comment claiming
+	// "CP has no oid" was wrong). Appending from pkt+1 duplicates that oid after
+	// the one we already wrote -> path shifted 4 bytes -> client misparses ->
+	// avatar frozen (exactly the v104 failure). Forward from pkt+5: skip
+	// 1 opcode byte + 4 sender-oid bytes, keep only the movement path.
 	// Falls back to rebuild below when smoothMove is OFF (cfg 7th char).
 	if (MP_SmoothMove() && op == 0x0C && len >= 6) {
 		for (auto &t : targets) {
@@ -978,19 +984,14 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			sp.Encode4(me.id);                 // remote oid (LE, 4 bytes) as seen by target (0x0D reads oid@1..4)
 			{
 				auto &v = sp.get();
-				// Client CP_PLAYER_MOVEMENT (0x0C) body is [oid 4 LE][movement path];
-				// it carries the SENDER's local oid, which the target does not know.
-				// We already wrote the target-visible oid above, so forward only the
-				// movement path starting at pkt[5] (skip 1 opcode + 4 sender-oid bytes).
-				// Appending from pkt[1] duplicates the sender oid and shifts the path
-				// by 4 bytes, so the client misparses it and the avatar stays frozen.
-				v.insert(v.end(), pkt + 1, pkt + len); // movement path only (CP has no oid; 0x0D reads oid@1..4 then path)
+				// CP 0x0C body = [oid 4 LE][movement path]. Skip opcode + sender oid.
+				v.insert(v.end(), pkt + 5, pkt + len); // movement path only
 			}
 			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
-			printf("[MP-FWD] v106 smooth -> sid=%d oid=%08X len=%d\n",
-				t.sid, (unsigned)me.id, (int)len);
+			printf("[MP-FWD] v107 smooth -> sid=%d oid=%08X pathlen=%d\n",
+				t.sid, (unsigned)me.id, (int)(len - 5));
 		}
-		MP_MARK("MP-FWD v106 smooth-move");
+		MP_MARK("MP-FWD v107 smooth-move");
 		return;
 	}
 
@@ -1005,6 +1006,16 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	// Smoothing via a real remote-move recv opcode is deferred until IDA
 	// yields the correct handler.
 	if (MP_RebuildMove() && has_pos) {
+		// [v107] Poison-packet guard. The v106 log shows 11 CP 0x0C packets parsed
+		// as x=0.0 y=0.0 (not every 0x0C sub-packet carries coordinates in its last
+		// 8 bytes), and 6 of them were rebuilt anyway -> the peer avatar was torn
+		// down and recreated at the MAP ORIGIN, off-screen / under the floor. That
+		// is the user-reported "runs a few steps then freezes / vanishes". The
+		// MoveAsSpawn branch already had this filter; rebuild never did.
+		if (fabsf(nx) < 0.001f && fabsf(ny) < 0.001f) {
+			printf("[MP-FWD]   v107 skip poison (0,0) pos\n");
+			return;
+		}
 		const float MOVE_THRESHOLD = 40.0f; // larger = less strobe, more teleporty
 		bool do_update = false;
 		{
