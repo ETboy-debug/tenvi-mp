@@ -980,7 +980,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		if (!(nx > -1.0e5f && nx < 1.0e5f && ny > -1.0e5f && ny < 1.0e5f)) {
 			has_pos = false;
 		}
-	printf("[MP-PARSE v114] struct=%d pts=%d last=(%.1f,%.1f) stance=%d len=%d dir=%d\n",
+	printf("[MP-PARSE v115] struct=%d pts=%d last=(%.1f,%.1f) stance=%d len=%d dir=%d\n",
 		mv_struct ? 1 : 0, mv_points, nx, ny, (int)mv_stance, (int)len, (int)mv_dir);
 		// [v103-diag] raw hex dump of the movement packet so we can reverse the
 		// real x/y layout offline (the float-tail assumption breaks x -> -0.1).
@@ -1057,27 +1057,63 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	//      oid at [1..4]. It does not: the [MP-HDL] "oid" printed a different
 	//      value every packet because those bytes are path data (flag, count,
 	//      tick). So the relay also truncated 4 bytes of real path.
-	// [v114] Relay client local-move CP 0x0C as remote-move SP 0x0D VERBATIM.
-	// ROOT CAUSE of "remote avatar never moves": opcode 0x0C is the LOCAL-move
-	// packet (handler 0x48D4EA drives the *receiving* client's own avatar). Only
-	// 0x0D (handler 0x4881D1) looks the remote avatar up by oid and applies the
-	// path. We also must NOT re-encode the path: MapleStory path elements carry
-	// more than x/y (move action, foothold, duration...), so the old int16-pair
-	// re-encode (mode 0..4) yielded a packet 0x0D could not decode -> frozen.
-	// Fix: emit [0x0D][oid:4 LE][raw CP 0x0C body from pkt[1]] and forward as-is.
-	if (MP_SmoothMove() && op == 0x0C && len >= 6) {
-		for (auto &t : targets) {
-			ServerPacket sp;
-			sp.Encode1(0x0D);
-			sp.Encode4(me.id);                 // remote oid, 4-byte LE
-			for (DWORD i = 1; i < len; i++)     // raw path body (flag,count,elements,tail)
-				sp.Encode1(pkt[i]);
-			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
-			printf("[MP-FWD] v114 sp0x0D -> sid=%d oid=%08X rawlen=%d\n",
-				t.sid, (unsigned)me.id, (int)(len - 1));
+	// [v115] Relay local-move CP 0x0C as remote-move SP 0x0C WITH explicit oid.
+	// Verified by disasm: 0x0C handler 0x48D4EA decodes oid from packet byte[1..4]
+	// (4-byte LE, via 0x4033D0) -> GetCharacterByOID(0x6FAF6C, oid) ->
+	// SetMoving(char,1) + ApplyPath (0x45806D pushes 1, NOT 0). So [0x0C][oid]
+	// drives the REMOTE avatar (oid = sender id, which the peer spawned as a
+	// remote char). The 0x0D opcode is the STOP packet (isMoving=0) -> never use.
+	// Path decode (0x45CB52 -> 0x45CAEE) reads count=ptr[0] then int16 pairs that
+	// are RELATIVE deltas accumulated onto the avatar's CURRENT position. So we
+	// must re-encode as chained (dx,dy) deltas from the last synced point, NOT
+	// absolute coords (absolute would teleport the avatar).
+	if (MP_SmoothMove() && op == 0x0C && !mv_pts.empty()) {
+		float lx = 0.0f, ly = 0.0f;
+		bool have_last = false;
+		{
+			std::lock_guard<std::mutex> lk(g_playersMtx);
+			auto it = g_players.find(t_sid);
+			if (it != g_players.end() && it->second.has_last_move) {
+				lx = it->second.last_move_x;
+				ly = it->second.last_move_y;
+				have_last = true;
+			}
 		}
-		MP_MARK("MP-FWD v114 sp-0x0D-raw");
-		return;
+		std::vector<short> elems;
+		float px = have_last ? lx : mv_pts[0].x;
+		float py = have_last ? ly : mv_pts[0].y;
+		for (size_t i = 0; i < mv_pts.size(); i++) {
+			elems.push_back((short)(mv_pts[i].x - px));
+			elems.push_back((short)(mv_pts[i].y - py));
+			px = mv_pts[i].x;
+			py = mv_pts[i].y;
+		}
+		if (elems.size() > 255) elems.resize(255);
+		if (!elems.empty()) {
+			for (auto &t : targets) {
+				ServerPacket sp;
+				sp.Encode1(0x0C);
+				sp.Encode4(me.id);                  // remote oid, 4-byte LE
+				sp.Encode1((BYTE)elems.size());     // count of int16 elements
+				for (size_t i = 0; i < elems.size(); i++)
+					sp.Encode2((WORD)(unsigned short)elems[i]);
+				sp.Encode1(mv_stance);              // tail byte (stance)
+				MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
+				printf("[MP-FWD] v115 sp0x0C -> sid=%d oid=%08X count=%d stance=%d\n",
+					t.sid, (unsigned)me.id, (int)elems.size(), (int)mv_stance);
+			}
+			{
+				std::lock_guard<std::mutex> lk(g_playersMtx);
+				auto it = g_players.find(t_sid);
+				if (it != g_players.end()) {
+					it->second.last_move_x = mv_pts.back().x;
+					it->second.last_move_y = mv_pts.back().y;
+					it->second.has_last_move = true;
+				}
+			}
+			MP_MARK("MP-FWD v115 sp-0x0C-delta");
+			return;
+		}
 	}
 
 	// [v102] Destroy-rebuild movement (pure network, NO memory writes).
