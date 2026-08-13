@@ -1057,50 +1057,40 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	//      oid at [1..4]. It does not: the [MP-HDL] "oid" printed a different
 	//      value every packet because those bytes are path data (flag, count,
 	//      tick). So the relay also truncated 4 bytes of real path.
-// [v118] Relay local-move CP 0x0C as remote-move SP 0x0C WITH explicit oid.
-// Verified by disasm: 0x0C handler 0x48D4EA decodes oid from packet byte[1..4]
-// (4-byte LE, via 0x4033D0) -> GetCharacterByOID(0x6FAF6C, oid) ->
-// SetMoving(char,1) + ApplyPath (0x45806D pushes 1, NOT 0). So [0x0C][oid]
-// drives the REMOTE avatar (oid = sender id, which the peer spawned as a
-// remote char). The 0x0D opcode is the STOP packet (isMoving=0) -> never use.
-// Path decode (0x45CB52 -> 0x45CAEE) reads count=ptr[0] then int16 pairs that
-// are RELATIVE deltas accumulated onto the avatar's CURRENT position. So we
-// must re-encode as chained (dx,dy) deltas from the last synced point, NOT
-// absolute coords (absolute would teleport the avatar).
-// [v118] LAYER FIX: 0x0C lives in the CWvsContext dispatch table (0x49391C, same
-// table as 0x11/0x3D). Sending it with context=false (CField) makes the client
-// silently drop it. Must use context=true (CWvsContext) -> MP_RemoteCtx().
-	if (MP_SmoothMove() && op == 0x0C && len >= 10 && !mv_pts.empty()) {
-		// [v118] Relay CP 0x0C as SP 0x0C WITH re-encoded relative-delta path.
-		// 0x0C lives in the CWvsContext dispatch table (0x49391C) -> context=true.
-		// Up-link CP 0x0C body uses 18-byte elements (f32 x/y); down-link SP 0x0C
-		// path decoder (0x45CAEE) expects chained int16 *relative* deltas added to
-		// the avatar's current position. Re-encode:
-		//   delta[0] = (0,0);  delta[i] = pt[i] - pt[i-1]  (per-waypoint displacement)
-		// oid = me.id (== CharacterSpawnPacket's first Encode4(chr.id)).
-		float prevx = mv_pts[0].x, prevy = mv_pts[0].y;
-		std::vector<short> deltas;
-		deltas.push_back(0); deltas.push_back(0);
-		for (size_t i = 1; i < mv_pts.size(); i++) {
-			deltas.push_back((short)(mv_pts[i].x - prevx));
-			deltas.push_back((short)(mv_pts[i].y - prevy));
-			prevx = mv_pts[i].x; prevy = mv_pts[i].y;
+// [v119] Restore V110 golden movement relay. Confirmed via git-history recovery of
+// the build the user verified working ("互相旺"): opcode 0x0C + explicit oid +
+// absolute (x,y) int16 pairs (path mode 0), broadcast on CField (ctx=false).
+// The disasm notes that misled v114-v118 were WRONG for this client: the 0x0C
+// mover (handler 0x48D4EA) is reached on the in-game CField/type-2 dispatch path,
+// and the path decoder (0x45CAEE) consumes [count:1][int16*count] as ABSOLUTE
+// coords here (delta teleports, absolute walks) -- V110 proved it live.
+	if (MP_SmoothMove() && op == 0x0C && has_pos && !mv_pts.empty()) {
+		std::vector<short> elems;
+		for (size_t i = 0; i < mv_pts.size(); i++) {
+			elems.push_back((short)mv_pts[i].x);
+			elems.push_back((short)mv_pts[i].y);
+		}
+		if (elems.size() > 255) elems.resize(255);
+		if (elems.empty()) {
+			printf("[MP-FWD] v119 sp0x0C skip: empty path\n");
+			return;
 		}
 		for (auto &t : targets) {
 			ServerPacket sp;
 			sp.Encode1(0x0C);
 			sp.Encode4(me.id);                 // remote oid, 4-byte LE
-			sp.Encode1((BYTE)mv_pts.size());
-			for (size_t k = 0; k < deltas.size(); k++)
-				sp.Encode2((WORD)(short)deltas[k]);
-			sp.Encode1(mv_pts.back().stance);
-			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());  // ctx=1 (CWvsContext)
-			printf("[MP-FWD] v118 sp0x0C reenc -> sid=%d oid=%08X npts=%d ctx=GAME\n",
-				t.sid, (unsigned)me.id, (int)mv_pts.size());
+			sp.Encode1((BYTE)elems.size());    // count = number of int16 values
+			for (size_t k = 0; k < elems.size(); k++)
+				sp.Encode2((WORD)(unsigned short)elems[k]);
+			sp.Encode1(mv_stance);             // stance
+			MP_BroadcastToSid(t.sid, sp, false);  // ctx=0 (CField) - V110 golden
+			printf("[MP-FWD] v119 sp0x0C -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
+				t.sid, (unsigned)me.id, (int)elems.size(), (int)mv_stance, nx, ny);
 		}
-		MP_MARK("MP-FWD v118 sp-0x0C-reenc");
+		MP_MARK("MP-FWD v119 sp-0x0C-path");
 		return;
 	}
+
 
 	// [v102] Destroy-rebuild movement (pure network, NO memory writes).
 	// CN v126 SP table has NO dedicated "remote player moved" opcode, and the
