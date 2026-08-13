@@ -1081,7 +1081,6 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		MP_MARK("MP-FWD v116 sp-0x0C-raw");
 		return;
 	}
-	}
 
 	// [v102] Destroy-rebuild movement (pure network, NO memory writes).
 	// CN v126 SP table has NO dedicated "remote player moved" opcode, and the
