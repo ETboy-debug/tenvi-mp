@@ -971,9 +971,15 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		} else {
 			// Fallback to the legacy tail guess so an unknown packet variant
 			// still yields movement rather than nothing at all.
-			memcpy(&nx, pkt + len - 9, 4);
-			memcpy(&ny, pkt + len - 5, 4);
-			has_pos = true;
+			// [v121] Guard against short packets: a length under 9 makes the
+			// pkt+len-9 / pkt+len-5 reads go out of bounds and raise an access
+			// violation that drops the sender's connection (seen on mount/rider
+			// packets). Only guess when there is room for the 8 coordinate bytes.
+			if (len >= 9) {
+				memcpy(&nx, pkt + len - 9, 4);
+				memcpy(&ny, pkt + len - 5, 4);
+				has_pos = true;
+			}
 		}
 		// Tenvi world coordinates stay well inside this box; anything outside
 		// means we mis-parsed a variant packet layout, so skip the rewrite.
@@ -1083,8 +1089,8 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			for (size_t k = 0; k < elems.size(); k++)
 				sp.Encode2((WORD)(unsigned short)elems[k]);
 			sp.Encode1(mv_stance);             // stance
-			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());  // ctx follows cfg bit1 - V120: birth+move same layer (CWvsContext)
-			printf("[MP-FWD] v119 sp0x0C -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
+			MP_BroadcastToSid(t.sid, sp, false);  // [v121] CField (ctx=false): remote-move receiver is the CField 0x0C handler. V110-proven (birth=CWvsContext, move=CField).
+			printf("[MP-FWD] v121 sp0x0C -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, (int)elems.size(), (int)mv_stance, nx, ny);
 		}
 		MP_MARK("MP-FWD v119 sp-0x0C-path");
