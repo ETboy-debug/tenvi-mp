@@ -684,7 +684,17 @@ static void ServeClient() {
 			if (buf.size() < 4 + len) {
 				break;
 			}
-			HandlePayload(&buf[4], len);
+			// [v121] SEH guard: a single malformed/unexpected packet (e.g. the
+			// mount/rider packet) must never crash the process or drop the
+			// sender's connection. Catch the access violation, log it, and clear
+			// the buffer so the recv loop continues for THIS client.
+			__try {
+				HandlePayload(&buf[4], len);
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				Log("!! SEH exception in HandlePayload sid=%d op=0x%02X len=%u, clearing buffer",
+					t_sid, (unsigned)(len > 0 ? buf[4] : 0), len);
+				buf.clear();
+			}
 			buf.erase(buf.begin(), buf.begin() + 4 + len);
 		}
 	}
