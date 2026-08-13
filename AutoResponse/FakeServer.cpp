@@ -1089,8 +1089,8 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			for (size_t k = 0; k < elems.size(); k++)
 				sp.Encode2((WORD)(unsigned short)elems[k]);
 			sp.Encode1(mv_stance);             // stance
-			MP_BroadcastToSid(t.sid, sp, false);  // [v121] CField (ctx=false): remote-move receiver is the CField 0x0C handler. V110-proven (birth=CWvsContext, move=CField).
-			printf("[MP-FWD] v122 sp0x0C -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
+			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());  // [v123] ctx=1 (CWvsContext) - V110 GOLDEN PROOF from _srv_v110.log: birth op=11 ctx=1 AND move op=0C ctx=1. v119-v122 sent move to CField(ctx=0) which is why peer never moved.
+			printf("[MP-FWD] v123 sp0x0C -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, (int)elems.size(), (int)mv_stance, nx, ny);
 		}
 		MP_MARK("MP-FWD v119 sp-0x0C-path");
