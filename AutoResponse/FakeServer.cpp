@@ -980,7 +980,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		if (!(nx > -1.0e5f && nx < 1.0e5f && ny > -1.0e5f && ny < 1.0e5f)) {
 			has_pos = false;
 		}
-	printf("[MP-PARSE v116] struct=%d pts=%d last=(%.1f,%.1f) stance=%d len=%d dir=%d\n",
+	printf("[MP-PARSE v117] struct=%d pts=%d last=(%.1f,%.1f) stance=%d len=%d dir=%d\n",
 		mv_struct ? 1 : 0, mv_points, nx, ny, (int)mv_stance, (int)len, (int)mv_dir);
 		// [v103-diag] raw hex dump of the movement packet so we can reverse the
 		// real x/y layout offline (the float-tail assumption breaks x -> -0.1).
@@ -1057,7 +1057,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	//      oid at [1..4]. It does not: the [MP-HDL] "oid" printed a different
 	//      value every packet because those bytes are path data (flag, count,
 	//      tick). So the relay also truncated 4 bytes of real path.
-	// [v116] Relay local-move CP 0x0C as remote-move SP 0x0C WITH explicit oid.
+	// [v117] Relay local-move CP 0x0C as remote-move SP 0x0C WITH explicit oid.
 	// Verified by disasm: 0x0C handler 0x48D4EA decodes oid from packet byte[1..4]
 	// (4-byte LE, via 0x4033D0) -> GetCharacterByOID(0x6FAF6C, oid) ->
 	// SetMoving(char,1) + ApplyPath (0x45806D pushes 1, NOT 0). So [0x0C][oid]
@@ -1074,11 +1074,15 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			sp.Encode4(me.id);                 // remote oid, 4-byte LE
 			for (DWORD i = 1; i < len; i++)    // verbatim CP 0x0C path body (no re-encode)
 				sp.Encode1(pkt[i]);
-			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
-			printf("[MP-FWD] v116 sp0x0C raw -> sid=%d oid=%08X rawlen=%d\n",
+			// [v117] MovePlayer opcode 0x0C is a CField-layer packet (handler
+			// 0x48D4EA lives in the CField dispatch, NOT CWvsContext). Sending it
+			// with context=true makes the client silently drop it (CWvsContext
+			// has no 0x0C handler) -> remote avatar never moves. Must go CField.
+			MP_BroadcastToSid(t.sid, sp, false);
+			printf("[MP-FWD] v117 sp0x0C raw -> sid=%d oid=%08X rawlen=%d ctx=FIELD\n",
 				t.sid, (unsigned)me.id, (int)(len - 1));
 		}
-		MP_MARK("MP-FWD v116 sp-0x0C-raw");
+		MP_MARK("MP-FWD v117 sp-0x0C-raw");
 		return;
 	}
 
