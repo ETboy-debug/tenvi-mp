@@ -1090,7 +1090,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 				sp.Encode2((WORD)(unsigned short)elems[k]);
 			sp.Encode1(mv_stance);             // stance
 			MP_BroadcastToSid(t.sid, sp, false);  // [v121] CField (ctx=false): remote-move receiver is the CField 0x0C handler. V110-proven (birth=CWvsContext, move=CField).
-			printf("[MP-FWD] v121 sp0x0C -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
+			printf("[MP-FWD] v122 sp0x0C -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, (int)elems.size(), (int)mv_stance, nx, ny);
 		}
 		MP_MARK("MP-FWD v119 sp-0x0C-path");
@@ -1600,7 +1600,11 @@ bool FakeServer(ClientPacket &cp) {
 		return true;
 	}
 	case CP_GUARDIAN_RIDE: {
-		cp.Decode1(); // on off
+		BYTE onoff = cp.Decode1(); // on off
+		printf("[GUARDIAN-RIDE] sid=%d onoff=%d\n", (int)t_sid, (int)onoff);
+		fflush(stdout);
+		// [V121-FIX] broadcast ride state so other players see the rider; local ride is client-side
+		GuardianSummonPacket(TA.GetOnline(), onoff ? true : false);
 		return true;
 	}
 	case CP_USE_AP: {
@@ -1750,7 +1754,11 @@ bool FakeServer(ClientPacket &cp) {
 	}
 	case CP_PARK: {
 		BYTE flag = cp.Decode1();
-		Park(TA.GetOnline(), flag ? true : false);
+		printf("[PARK] sid=%d flag=%d\n", (int)t_sid, (int)flag);
+		fflush(stdout);
+		// [V121-FIX] was teleporting to MAPID_PARK (debug hack that hijacked the mount
+		// button and crashed the sender's connection). Now routed to guardian summon/ride.
+		GuardianSummonPacket(TA.GetOnline(), flag ? true : false);
 		return true;
 	}
 	case CP_PARK_BATTLE_FIELD: // ???
