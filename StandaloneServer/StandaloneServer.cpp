@@ -656,6 +656,18 @@ static void HandlePayload(const BYTE *p, DWORD n) {
 	}
 }
 
+// [v122] The SEH guard must live in its OWN function. MSVC rejects __try inside
+// a function that also requires C++ object unwinding (error C2712 - ServeClient
+// holds std::vector / lock_guard). This tiny wrapper has no unwindable locals.
+static bool SafeHandlePayload(const BYTE *p, DWORD n) {
+	__try {
+		HandlePayload(p, n);
+		return true;
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
 static void ServeClient() {
 	vector<BYTE> buf;
 	char tmp[16384];
@@ -688,12 +700,10 @@ static void ServeClient() {
 			// mount/rider packet) must never crash the process or drop the
 			// sender's connection. Catch the access violation, log it, and clear
 			// the buffer so the recv loop continues for THIS client.
-			__try {
-				HandlePayload(&buf[4], len);
-			} __except (EXCEPTION_EXECUTE_HANDLER) {
-				Log("!! SEH exception in HandlePayload sid=%d op=0x%02X len=%u, clearing buffer",
-					t_sid, (unsigned)(len > 0 ? buf[4] : 0), len);
-				buf.clear();
+			BYTE guard_op = buf[4];
+			if (!SafeHandlePayload(&buf[4], len)) {
+				Log("!! SEH exception in HandlePayload sid=%d op=0x%02X len=%u, dropping frame",
+					t_sid, (unsigned)guard_op, len);
 			}
 			buf.erase(buf.begin(), buf.begin() + 4 + len);
 		}
