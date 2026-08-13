@@ -31,6 +31,7 @@ void SetServerPacketHeader_CN_v126() {
 	header[SP_PLAYER_STAT_SP] = 0x45;
 	header[SP_PLAYER_STAT_AP] = 0x46;
 	header[SP_PLAYER_STAT_ALL] = 0x47;
+	header[SP_GUARDIAN_SUMMON] = 0x4A; // [V121-FIX] CN v126 was missing this -> opcode 0 -> guardian/mount never renders
 	header[SP_EMOTION] = 0x4B;
 	header[SP_WORLD_MAP_UPDATE] = 0x54;
 	header[SP_ITEM_SHOP_ERROR] = 0x5C;
