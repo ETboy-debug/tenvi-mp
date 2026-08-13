@@ -980,7 +980,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		if (!(nx > -1.0e5f && nx < 1.0e5f && ny > -1.0e5f && ny < 1.0e5f)) {
 			has_pos = false;
 		}
-	printf("[MP-PARSE v117] struct=%d pts=%d last=(%.1f,%.1f) stance=%d len=%d dir=%d\n",
+	printf("[MP-PARSE v118] struct=%d pts=%d last=(%.1f,%.1f) stance=%d len=%d dir=%d\n",
 		mv_struct ? 1 : 0, mv_points, nx, ny, (int)mv_stance, (int)len, (int)mv_dir);
 		// [v103-diag] raw hex dump of the movement packet so we can reverse the
 		// real x/y layout offline (the float-tail assumption breaks x -> -0.1).
@@ -1057,32 +1057,48 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	//      oid at [1..4]. It does not: the [MP-HDL] "oid" printed a different
 	//      value every packet because those bytes are path data (flag, count,
 	//      tick). So the relay also truncated 4 bytes of real path.
-	// [v117] Relay local-move CP 0x0C as remote-move SP 0x0C WITH explicit oid.
-	// Verified by disasm: 0x0C handler 0x48D4EA decodes oid from packet byte[1..4]
-	// (4-byte LE, via 0x4033D0) -> GetCharacterByOID(0x6FAF6C, oid) ->
-	// SetMoving(char,1) + ApplyPath (0x45806D pushes 1, NOT 0). So [0x0C][oid]
-	// drives the REMOTE avatar (oid = sender id, which the peer spawned as a
-	// remote char). The 0x0D opcode is the STOP packet (isMoving=0) -> never use.
-	// Path decode (0x45CB52 -> 0x45CAEE) reads count=ptr[0] then int16 pairs that
-	// are RELATIVE deltas accumulated onto the avatar's CURRENT position. So we
-	// must re-encode as chained (dx,dy) deltas from the last synced point, NOT
-	// absolute coords (absolute would teleport the avatar).
-	if (MP_SmoothMove() && op == 0x0C && len >= 2) {
+// [v118] Relay local-move CP 0x0C as remote-move SP 0x0C WITH explicit oid.
+// Verified by disasm: 0x0C handler 0x48D4EA decodes oid from packet byte[1..4]
+// (4-byte LE, via 0x4033D0) -> GetCharacterByOID(0x6FAF6C, oid) ->
+// SetMoving(char,1) + ApplyPath (0x45806D pushes 1, NOT 0). So [0x0C][oid]
+// drives the REMOTE avatar (oid = sender id, which the peer spawned as a
+// remote char). The 0x0D opcode is the STOP packet (isMoving=0) -> never use.
+// Path decode (0x45CB52 -> 0x45CAEE) reads count=ptr[0] then int16 pairs that
+// are RELATIVE deltas accumulated onto the avatar's CURRENT position. So we
+// must re-encode as chained (dx,dy) deltas from the last synced point, NOT
+// absolute coords (absolute would teleport the avatar).
+// [v118] LAYER FIX: 0x0C lives in the CWvsContext dispatch table (0x49391C, same
+// table as 0x11/0x3D). Sending it with context=false (CField) makes the client
+// silently drop it. Must use context=true (CWvsContext) -> MP_RemoteCtx().
+	if (MP_SmoothMove() && op == 0x0C && len >= 10 && !mv_pts.empty()) {
+		// [v118] Relay CP 0x0C as SP 0x0C WITH re-encoded relative-delta path.
+		// 0x0C lives in the CWvsContext dispatch table (0x49391C) -> context=true.
+		// Up-link CP 0x0C body uses 18-byte elements (f32 x/y); down-link SP 0x0C
+		// path decoder (0x45CAEE) expects chained int16 *relative* deltas added to
+		// the avatar's current position. Re-encode:
+		//   delta[0] = (0,0);  delta[i] = pt[i] - pt[i-1]  (per-waypoint displacement)
+		// oid = me.id (== CharacterSpawnPacket's first Encode4(chr.id)).
+		float prevx = mv_pts[0].x, prevy = mv_pts[0].y;
+		std::vector<short> deltas;
+		deltas.push_back(0); deltas.push_back(0);
+		for (size_t i = 1; i < mv_pts.size(); i++) {
+			deltas.push_back((short)(mv_pts[i].x - prevx));
+			deltas.push_back((short)(mv_pts[i].y - prevy));
+			prevx = mv_pts[i].x; prevy = mv_pts[i].y;
+		}
 		for (auto &t : targets) {
 			ServerPacket sp;
 			sp.Encode1(0x0C);
 			sp.Encode4(me.id);                 // remote oid, 4-byte LE
-			for (DWORD i = 1; i < len; i++)    // verbatim CP 0x0C path body (no re-encode)
-				sp.Encode1(pkt[i]);
-			// [v117] MovePlayer opcode 0x0C is a CField-layer packet (handler
-			// 0x48D4EA lives in the CField dispatch, NOT CWvsContext). Sending it
-			// with context=true makes the client silently drop it (CWvsContext
-			// has no 0x0C handler) -> remote avatar never moves. Must go CField.
-			MP_BroadcastToSid(t.sid, sp, false);
-			printf("[MP-FWD] v117 sp0x0C raw -> sid=%d oid=%08X rawlen=%d ctx=FIELD\n",
-				t.sid, (unsigned)me.id, (int)(len - 1));
+			sp.Encode1((BYTE)mv_pts.size());
+			for (size_t k = 0; k < deltas.size(); k++)
+				sp.Encode2((WORD)(short)deltas[k]);
+			sp.Encode1(mv_pts.back().stance);
+			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());  // ctx=1 (CWvsContext)
+			printf("[MP-FWD] v118 sp0x0C reenc -> sid=%d oid=%08X npts=%d ctx=GAME\n",
+				t.sid, (unsigned)me.id, (int)mv_pts.size());
 		}
-		MP_MARK("MP-FWD v117 sp-0x0C-raw");
+		MP_MARK("MP-FWD v118 sp-0x0C-reenc");
 		return;
 	}
 
