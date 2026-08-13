@@ -1083,7 +1083,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			for (size_t k = 0; k < elems.size(); k++)
 				sp.Encode2((WORD)(unsigned short)elems[k]);
 			sp.Encode1(mv_stance);             // stance
-			MP_BroadcastToSid(t.sid, sp, false);  // ctx=0 (CField) - V110 golden
+			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());  // ctx follows cfg bit1 - V120: birth+move same layer (CWvsContext)
 			printf("[MP-FWD] v119 sp0x0C -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, (int)elems.size(), (int)mv_stance, nx, ny);
 		}
