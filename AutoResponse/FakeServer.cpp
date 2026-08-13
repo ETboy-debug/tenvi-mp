@@ -1601,8 +1601,6 @@ bool FakeServer(ClientPacket &cp) {
 	}
 	case CP_GUARDIAN_RIDE: {
 		BYTE onoff = cp.Decode1(); // on off
-		printf("[GUARDIAN-RIDE] sid=%d onoff=%d\n", (int)t_sid, (int)onoff);
-		fflush(stdout);
 		// [V121-FIX] broadcast ride state so other players see the rider; local ride is client-side
 		GuardianSummonPacket(TA.GetOnline(), onoff ? true : false);
 		return true;
@@ -1754,8 +1752,6 @@ bool FakeServer(ClientPacket &cp) {
 	}
 	case CP_PARK: {
 		BYTE flag = cp.Decode1();
-		printf("[PARK] sid=%d flag=%d\n", (int)t_sid, (int)flag);
-		fflush(stdout);
 		// [V121-FIX] was teleporting to MAPID_PARK (debug hack that hijacked the mount
 		// button and crashed the sender's connection). Now routed to guardian summon/ride.
 		GuardianSummonPacket(TA.GetOnline(), flag ? true : false);
