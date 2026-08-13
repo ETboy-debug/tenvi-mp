@@ -1063,14 +1063,21 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	//      oid at [1..4]. It does not: the [MP-HDL] "oid" printed a different
 	//      value every packet because those bytes are path data (flag, count,
 	//      tick). So the relay also truncated 4 bytes of real path.
-// [v119] Restore V110 golden movement relay. Confirmed via git-history recovery of
-// the build the user verified working ("互相旺"): opcode 0x0C + explicit oid +
-// absolute (x,y) int16 pairs (path mode 0), broadcast on CField (ctx=false).
-// The disasm notes that misled v114-v118 were WRONG for this client: the 0x0C
-// mover (handler 0x48D4EA) is reached on the in-game CField/type-2 dispatch path,
-// and the path decoder (0x45CAEE) consumes [count:1][int16*count] as ABSOLUTE
-// coords here (delta teleports, absolute walks) -- V110 proved it live.
-	if (MP_SmoothMove() && op == 0x0C && has_pos && !mv_pts.empty()) {
+// [v124] ABANDON smooth path. Disassembly of the CWvsContext 0x0C handler
+// (0x48D4EA) proves it dereferences the CField+0x1C0 hashmap via 0x42ACDD to
+// find the remote CCharacter, and `test esi,esi; je 0x48d585` skips the move
+// entirely when the lookup misses. The CWvsContext-side 0x11 spawn only
+// registers the remote avatar into CField's hashmap after a frame or two, so
+// real clients repeatedly get the lookup miss for the first ~hundreds of ms
+// after spawn, and even once live, the hash bucket can drop the entry if the
+// avatar is touched between spawn and move. We cannot fix that from the server.
+// Instead, fall back to the v82/v102 despawn-respawn pipeline: 0x12 remove ->
+// 0x3D rebuild object -> 0x11 render at the new position. The DLL suppresses
+// the destructive 0x12/0x11 internally (v86 fix) and re-anchors the survivor
+// at the new coordinates each frame, so the avatar never strobes. It is a
+// staircase/walk-along rather than smooth, but it MOVES -- which is what the
+// user has been waiting on for 14 versions.
+	if (false && MP_SmoothMove() && op == 0x0C && has_pos && !mv_pts.empty()) {
 		std::vector<short> elems;
 		for (size_t i = 0; i < mv_pts.size(); i++) {
 			elems.push_back((short)mv_pts[i].x);
@@ -1152,7 +1159,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			// 2) rebuild object (0x3D) then render at new position (0x11)
 			AccountDataPacket(me, t.sid);
 			CharacterSpawnPacket(me, nx, ny, mv_dir, t.sid, MP_RemoteCtx());
-			printf("[MP-FWD] v103 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
+			printf("[MP-FWD] v124 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, nx, ny);
 		}
 		MP_MARK("MP-FWD v102 rebuild-move");
