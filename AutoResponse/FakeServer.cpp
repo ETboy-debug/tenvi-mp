@@ -980,7 +980,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		if (!(nx > -1.0e5f && nx < 1.0e5f && ny > -1.0e5f && ny < 1.0e5f)) {
 			has_pos = false;
 		}
-	printf("[MP-PARSE v110] struct=%d pts=%d last=(%.1f,%.1f) stance=%d len=%d dir=%d\n",
+	printf("[MP-PARSE v113] struct=%d pts=%d last=(%.1f,%.1f) stance=%d len=%d dir=%d\n",
 		mv_struct ? 1 : 0, mv_points, nx, ny, (int)mv_stance, (int)len, (int)mv_dir);
 		// [v103-diag] raw hex dump of the movement packet so we can reverse the
 		// real x/y layout offline (the float-tail assumption breaks x -> -0.1).
@@ -1103,6 +1103,16 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			elems.push_back((short)nx);
 			elems.push_back((short)ny);
 			break;
+		case 4: // two-point segment: last reported -> current endpoint (pet-like smooth follow)
+		{
+			float sx = have_last ? lx : mv_pts[0].x;
+			float sy = have_last ? ly : mv_pts[0].y;
+			elems.push_back((short)sx);
+			elems.push_back((short)sy);
+			elems.push_back((short)nx);
+			elems.push_back((short)ny);
+			break;
+		}
 		case 0:
 		default: // absolute (x,y) pair per path point
 			for (size_t i = 0; i < mv_pts.size(); i++) {
@@ -1114,7 +1124,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// count is a single byte in the wire format (0x45CAEE reads byte[0]).
 		if (elems.size() > 255) elems.resize(255);
 		if (elems.empty()) {
-			printf("[MP-FWD] v110 sp0x0C skip: empty path (mode=%d)\n", mode);
+			printf("[MP-FWD] v113 sp0x0C skip: empty path (mode=%d)\n", mode);
 			return;
 		}
 		for (auto &t : targets) {
@@ -1126,7 +1136,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 				sp.Encode2((WORD)(unsigned short)elems[i]);
 			sp.Encode1(mv_stance);                   // stance
 			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
-			printf("[MP-FWD] v110 sp0x0C -> sid=%d oid=%08X mode=%d count=%d stance=%d dst=(%.1f,%.1f)\n",
+			printf("[MP-FWD] v113 sp0x0C -> sid=%d oid=%08X mode=%d count=%d stance=%d dst=(%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, mode, (int)elems.size(),
 				(int)mv_stance, nx, ny);
 		}
@@ -1139,7 +1149,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 				it->second.has_last_move = true;
 			}
 		}
-		MP_MARK("MP-FWD v110 sp-0x0C-path");
+		MP_MARK("MP-FWD v113 sp-0x0C-path");
 		return;
 	}
 
