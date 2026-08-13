@@ -980,7 +980,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		if (!(nx > -1.0e5f && nx < 1.0e5f && ny > -1.0e5f && ny < 1.0e5f)) {
 			has_pos = false;
 		}
-	printf("[MP-PARSE v113] struct=%d pts=%d last=(%.1f,%.1f) stance=%d len=%d dir=%d\n",
+	printf("[MP-PARSE v114] struct=%d pts=%d last=(%.1f,%.1f) stance=%d len=%d dir=%d\n",
 		mv_struct ? 1 : 0, mv_points, nx, ny, (int)mv_stance, (int)len, (int)mv_dir);
 		// [v103-diag] raw hex dump of the movement packet so we can reverse the
 		// real x/y layout offline (the float-tail assumption breaks x -> -0.1).
@@ -1057,99 +1057,26 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	//      oid at [1..4]. It does not: the [MP-HDL] "oid" printed a different
 	//      value every packet because those bytes are path data (flag, count,
 	//      tick). So the relay also truncated 4 bytes of real path.
-	// The verified downstream mover is opcode 0x0C -> handler 0x48D4EA:
-	//      read oid (0x4033D0 -> 0x403290, 4-byte LE)
-	//      decode path (0x45CB52 -> 0x45CAEE: [count:1][int16 * count])
-	//      read stance (0x40336B, 1 byte)
-	//      GetCharacterByOID (0x42ACDD) -> SetMoving(1) -> ApplyPath
-	//      -> SetStance -> ApplyMove (0x458388)
-	// Wire format we emit: [0x0C][oid:4 LE][count:1][int16 * count][stance:1]
-	// This sends NO 0x11/0x12/0x3D, so unlike the rebuild/moveAsSpawn paths it
-	// cannot retrigger the client's map-entry event - the exact mechanism that
-	// froze the player's own avatar from v102 through v109.
-	// ---------------------------------------------------------------------
-	if (MP_SmoothMove() && op == 0x0C && has_pos && !mv_pts.empty()) {
-		const int mode = MP_PathMode();
-		std::vector<short> elems;
-		float lx = 0.0f, ly = 0.0f;
-		bool have_last = false;
-		{
-			std::lock_guard<std::mutex> lk(g_playersMtx);
-			auto it = g_players.find(t_sid);
-			if (it != g_players.end() && it->second.has_last_move) {
-				lx = it->second.last_move_x;
-				ly = it->second.last_move_y;
-				have_last = true;
-			}
-		}
-		switch (mode) {
-		case 1: // one absolute int16 per point, x only
-			for (size_t i = 0; i < mv_pts.size(); i++)
-				elems.push_back((short)mv_pts[i].x);
-			break;
-		case 2: // chained (dx,dy) deltas from the last reported position
-		{
-			float px = have_last ? lx : mv_pts[0].x;
-			float py = have_last ? ly : mv_pts[0].y;
-			for (size_t i = 0; i < mv_pts.size(); i++) {
-				elems.push_back((short)(mv_pts[i].x - px));
-				elems.push_back((short)(mv_pts[i].y - py));
-				px = mv_pts[i].x;
-				py = mv_pts[i].y;
-			}
-			break;
-		}
-		case 3: // endpoint only - the smallest packet the decoder accepts
-			elems.push_back((short)nx);
-			elems.push_back((short)ny);
-			break;
-		case 4: // two-point segment: last reported -> current endpoint (pet-like smooth follow)
-		{
-			float sx = have_last ? lx : mv_pts[0].x;
-			float sy = have_last ? ly : mv_pts[0].y;
-			elems.push_back((short)sx);
-			elems.push_back((short)sy);
-			elems.push_back((short)nx);
-			elems.push_back((short)ny);
-			break;
-		}
-		case 0:
-		default: // absolute (x,y) pair per path point
-			for (size_t i = 0; i < mv_pts.size(); i++) {
-				elems.push_back((short)mv_pts[i].x);
-				elems.push_back((short)mv_pts[i].y);
-			}
-			break;
-		}
-		// count is a single byte in the wire format (0x45CAEE reads byte[0]).
-		if (elems.size() > 255) elems.resize(255);
-		if (elems.empty()) {
-			printf("[MP-FWD] v113 sp0x0C skip: empty path (mode=%d)\n", mode);
-			return;
-		}
+	// [v114] Relay client local-move CP 0x0C as remote-move SP 0x0D VERBATIM.
+	// ROOT CAUSE of "remote avatar never moves": opcode 0x0C is the LOCAL-move
+	// packet (handler 0x48D4EA drives the *receiving* client's own avatar). Only
+	// 0x0D (handler 0x4881D1) looks the remote avatar up by oid and applies the
+	// path. We also must NOT re-encode the path: MapleStory path elements carry
+	// more than x/y (move action, foothold, duration...), so the old int16-pair
+	// re-encode (mode 0..4) yielded a packet 0x0D could not decode -> frozen.
+	// Fix: emit [0x0D][oid:4 LE][raw CP 0x0C body from pkt[1]] and forward as-is.
+	if (MP_SmoothMove() && op == 0x0C && len >= 6) {
 		for (auto &t : targets) {
 			ServerPacket sp;
-			sp.Encode1(0x0C);
-			sp.Encode4(me.id);                       // oid, 4-byte LE
-			sp.Encode1((BYTE)elems.size());          // count
-			for (size_t i = 0; i < elems.size(); i++)
-				sp.Encode2((WORD)(unsigned short)elems[i]);
-			sp.Encode1(mv_stance);                   // stance
+			sp.Encode1(0x0D);
+			sp.Encode4(me.id);                 // remote oid, 4-byte LE
+			for (DWORD i = 1; i < len; i++)     // raw path body (flag,count,elements,tail)
+				sp.Encode1(pkt[i]);
 			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
-			printf("[MP-FWD] v113 sp0x0C -> sid=%d oid=%08X mode=%d count=%d stance=%d dst=(%.1f,%.1f)\n",
-				t.sid, (unsigned)me.id, mode, (int)elems.size(),
-				(int)mv_stance, nx, ny);
+			printf("[MP-FWD] v114 sp0x0D -> sid=%d oid=%08X rawlen=%d\n",
+				t.sid, (unsigned)me.id, (int)(len - 1));
 		}
-		{
-			std::lock_guard<std::mutex> lk(g_playersMtx);
-			auto it = g_players.find(t_sid);
-			if (it != g_players.end()) {
-				it->second.last_move_x = nx;
-				it->second.last_move_y = ny;
-				it->second.has_last_move = true;
-			}
-		}
-		MP_MARK("MP-FWD v113 sp-0x0C-path");
+		MP_MARK("MP-FWD v114 sp-0x0D-raw");
 		return;
 	}
 
