@@ -1150,7 +1150,10 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 				mv_dir = (ddx < 0.0f) ? 0 : 1;   // moving left -> face left
 				bool far_enough = (ddx * ddx + ddy * ddy >= MOVE_THRESHOLD * MOVE_THRESHOLD);
 				bool old_enough = (GetTickCount64() / 1000.0 - it->second.last_rebuild_t >= REBUILD_MIN_INTERVAL);
-				if (far_enough || old_enough)
+				// [v126] MUST be AND: OR fired rebuilds every 350ms even when the
+				// peer stood still (logged identical coords), which is exactly
+				// the "runs a few steps then sticks" freeze. Distance AND age.
+				if (far_enough && old_enough)
 					do_update = true;
 			} else {
 				do_update = true; // first movement in this session
@@ -1167,7 +1170,12 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			// 2) rebuild object (0x3D) then render at new position (0x11)
 			AccountDataPacket(me, t.sid);
 			CharacterSpawnPacket(me, nx, ny, mv_dir, t.sid, MP_RemoteCtx());
-			printf("[MP-FWD] v125 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
+			// [v126] restore the RECEIVER's own identity. Without this the
+			// peer's client treats our 0x3D as its own account data and the
+			// second character morphs into the first ("2号变成1号"). Mirrors
+			// the v62 birth path: AccountDataPacket(other.chr, other_sid).
+			AccountDataPacket(t.chr, t.sid);
+			printf("[MP-FWD] v126 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, nx, ny);
 		}
 		MP_MARK("MP-FWD v102 rebuild-move");
