@@ -461,12 +461,13 @@ static void MP_ApplyInterpolation() {
 
 void MP_Pump() {
 	mp_frame_count++;
-	// [v99] Interpolation / probe are completely DISABLED. They caused
-	// repeatable access-violation crashes inside Tenvi.exe when the probe
-	// locked the wrong CCharacter offsets (0x11A4/0x11A8). Until offsets
-	// are verified with a memory dump, the DLL must not write any client
-	// memory. Movement is driven solely by the native 0x11 handler.
-	// if (MP_InterpEnabled()) MP_ApplyInterpolation();
+	// [v129] Interpolation + probe RE-ENABLED. v99 disabled them after the
+	// probe locked hardcoded offsets 0x11A4/0x11A8 and crashed; the current
+	// probe is v87 multi-round linear fit with residual gates (x<=4, y<=40)
+	// and writes only after g_probe_locked. MP_WriteCoord no-ops on off==0.
+	// Remote rebuild is suppressed once locked; the lerp writes coords each
+	// frame, which is the only path to true smooth movement.
+	if (MP_InterpEnabled()) MP_ApplyInterpolation();
 
 	// [v50] Each entry carries the dispatch context supplied by the server
 	// (frame type 0 = CWvsContext, type 2 = CField). No more guessing.
@@ -710,7 +711,7 @@ void MP_Pump() {
 	// [v99] Coordinate probe DISABLED. The probe was auto-locking offsets that
 	// later caused access-violation crashes when lerp wrote to them. Do not
 	// run any memory discovery until we can validate offsets offline.
-	// if (MP_InterpEnabled()) MP_ProbeCoordOffsets();
+	if (MP_InterpEnabled()) MP_ProbeCoordOffsets();
 	// [v71] Drop stale entries so the map does not grow forever if a remote
 	// player leaves and we never get a 0x12 remove. 600 frames ~ 10s @60fps.
 	for (auto it = g_interp.begin(); it != g_interp.end(); ) {
