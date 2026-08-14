@@ -529,8 +529,13 @@ static void MP_ProbeCoordOffsets() {
 
 // [v96] Per-frame movement interpolation - runs unconditionally every frame
 // so the remote avatar keeps sliding between server packets.
+// [v139] Safety gate: never write client memory unless suppression has
+// actually activated (g_suppress_active). Writing without suppression means
+// the avatar is still being rebuilt, so any locked address goes stale or was
+// a static/incorrect one -> crash (V138: "<9" gate disabled suppression, the
+// mem-write still ran and killed the client).
 static void MP_ApplyInterpolation() {
-	if (g_mem_locked && g_mem_x_addr) {
+	if (g_mem_locked && g_mem_x_addr && g_suppress_active) {
 		for (std::map<DWORD, RemoteInterp>::iterator it = g_interp.begin(); it != g_interp.end(); ++it) {
 			RemoteInterp &ri = it->second;
 			float cur = *(float*)g_mem_x_addr;
@@ -684,8 +689,14 @@ void MP_Pump() {
 		// through. 0x3D oid lives at offset 5: [0]=op [1..4]=0 [5..8]=chr.id.
 		DWORD now_ms = (DWORD)GetTickCount();
 		for (size_t i = 0; i < batch.size(); i++) {
-			if (batch[i].first.size() < 9) continue;   // need oid at [1] and [5]
+			// [v139] op-dependent length gate. 0x12/0x11 only carry the 4-byte
+			// oid at [1..4] (5 bytes total); 0x3D additionally has chr.id at
+			// [5..8] (>=9). The old uniform "<9" gate filtered out EVERY 0x12
+			// (5 bytes) so suppression never activated while the mem-write
+			// still ran -> wrote a stale/static address -> client crashed.
+			if (batch[i].first.size() < 5) continue;
 			BYTE op = batch[i].first[0];
+			if (op == 0x3D && batch[i].first.size() < 9) continue;
 			DWORD roid = *(DWORD*)&batch[i].first[1];
 			if (roid == 0) continue;
 			if (op == 0x12) {
