@@ -1135,9 +1135,13 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// coordinate now parsed correctly we can afford denser updates.
 		// [v125] Distance alone fired dozens of rebuilds/sec during fast walk
 		// (each rebuild = 0x12+0x3D+0x11 "enter map" burst; the peer froze with
-		// "runs a few steps then sticks"). Dual gate: >=60px OR >=350ms since
+		// "runs a few steps then sticks"). Dual gate: distance AND age since
 		// last rebuild -> caps rebuilds at ~3/s, client survives, still follows.
-		const float MOVE_THRESHOLD = 60.0f;
+		// [v126] MUST be AND (OR rebuilt every 350ms even when standing still).
+		// [v127] With AND the rate is capped at ~3/s regardless of distance, so
+		// the hop size can shrink: 60px hops looked like teleporting ("瞬移"),
+		// 25px hops read as a continuous walk while staying at 3/s.
+		const float MOVE_THRESHOLD = 25.0f;
 		const double REBUILD_MIN_INTERVAL = 0.35;
 		bool do_update = false;
 		{
@@ -1175,7 +1179,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			// second character morphs into the first ("2号变成1号"). Mirrors
 			// the v62 birth path: AccountDataPacket(other.chr, other_sid).
 			AccountDataPacket(t.chr, t.sid);
-			printf("[MP-FWD] v126 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
+			printf("[MP-FWD] v127 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, nx, ny);
 		}
 		MP_MARK("MP-FWD v102 rebuild-move");
