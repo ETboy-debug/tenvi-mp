@@ -280,6 +280,86 @@ static void MP_WriteCoord(DWORD base, int off, bool is_int, float client_val) {
 	if (is_int) { int iv = (int)roundf(client_val); memcpy((void*)(base + off), &iv, 4); }
 	else { memcpy((void*)(base + off), &client_val, 4); }
 }
+// [v133] Memory-scan coordinate finder. _GetCharacterByOID (CField hashmap)
+// is unreliable on this client (V124 rule: 0x11 spawns land there only
+// sometimes), so probing offsets inside the object always failed. Instead we
+// scan OUR OWN process memory for a float equal to the last 0x11 target x
+// with a float equal to target y within +-64 bytes. Once the absolute
+// addresses survive two distinct coordinate samples we lock them and lerp
+// directly into them each frame (suppression keeps the avatar alive, so the
+// addresses stay valid).
+static DWORD  g_mem_x_addr = 0, g_mem_y_addr = 0;
+static bool   g_mem_locked = false;
+static std::map<unsigned long long, int> g_mem_cand;
+static float  g_mem_last_tx = 1.0e9f, g_mem_last_ty = 1.0e9f;
+
+static bool MP_MemScanForPair(float tx, float ty, DWORD &out_x, DWORD &out_y) {
+	MEMORY_BASIC_INFORMATION mbi;
+	unsigned char *base = (unsigned char*)0x00010000;
+	while ((DWORD)base < 0x7FFF0000) {
+		if (!VirtualQuery(base, &mbi, sizeof(mbi))) break;
+		DWORD sz = (DWORD)mbi.RegionSize;
+		if (sz && mbi.State == MEM_COMMIT &&
+			(mbi.Protect & 0xFF) && !(mbi.Protect & PAGE_GUARD)) {
+			unsigned char *p = base;
+			unsigned char *end = base + sz;
+			for (; p + 4 <= end; p += 4) {
+				float fx = *(float*)p;
+				if (fabsf(fx - tx) <= 2.0f) {
+					unsigned char *q0 = p - 64; if (q0 < base) q0 = base;
+					unsigned char *q1 = p + 64; if (q1 > end - 4) q1 = end - 4;
+					for (unsigned char *q = q0; q <= q1; q += 4) {
+						float fy = *(float*)q;
+						if (fabsf(fy - ty) <= 2.0f) {
+							out_x = (DWORD)p; out_y = (DWORD)q;
+							return true;
+						}
+					}
+				}
+			}
+		}
+		base += sz ? sz : 0x1000;
+	}
+	return false;
+}
+
+static void MP_MemSearchCoords() {
+	if (g_mem_locked || g_interp.empty()) return;
+	float tx = 0.0f, ty = 0.0f;
+	{
+		std::map<DWORD, RemoteInterp>::iterator it = g_interp.begin();
+		if (it == g_interp.end()) return;
+		tx = it->second.tx; ty = it->second.ty;
+	}
+	float dx = tx - g_mem_last_tx, dy = ty - g_mem_last_ty;
+	if (sqrtf(dx * dx + dy * dy) < 30.0f) return;   // need displacement
+	g_mem_last_tx = tx; g_mem_last_ty = ty;
+	DWORD xa = 0, ya = 0;
+	if (!MP_MemScanForPair(tx, ty, xa, ya)) {
+		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+		if (f) { fprintf(f, "[MP-MEM v133] no pair for (%.1f,%.1f)
+", tx, ty); fflush(f); fclose(f); }
+		return;
+	}
+	unsigned long long key = ((unsigned long long)xa << 32) | ya;
+	g_mem_cand[key]++;
+	if (g_mem_cand.size() > 64) g_mem_cand.clear();
+	FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+	if (f) { fprintf(f, "[MP-MEM v133] cand x=0x%08X y=0x%08X for (%.1f,%.1f)
+", xa, ya, tx, ty); fflush(f); fclose(f); }
+	for (std::map<unsigned long long, int>::iterator c = g_mem_cand.begin(); c != g_mem_cand.end(); ++c) {
+		if (c->second >= 2) {
+			g_mem_x_addr = (DWORD)(c->first >> 32);
+			g_mem_y_addr = (DWORD)(c->first & 0xFFFFFFFF);
+			g_mem_locked = true;
+			FILE *ff = NULL; fopen_s(&ff, MP_DiagPath(), "a");
+			if (ff) { fprintf(ff, "[MP-MEM v133] *** LOCKED x=0x%08X y=0x%08X samples=%d ***
+", g_mem_x_addr, g_mem_y_addr, c->second); fflush(ff); fclose(ff); }
+			return;
+		}
+	}
+}
+
 static void MP_ProbeCoordOffsets() {
 	if (g_probe_locked || g_interp.empty()) return;
 	DWORD cfield = MP_GetCFieldPtr();
@@ -425,6 +505,29 @@ static void MP_ProbeCoordOffsets() {
 // [v96] Per-frame movement interpolation - runs unconditionally every frame
 // so the remote avatar keeps sliding between server packets.
 static void MP_ApplyInterpolation() {
+	if (g_mem_locked && g_mem_x_addr) {
+		for (std::map<DWORD, RemoteInterp>::iterator it = g_interp.begin(); it != g_interp.end(); ++it) {
+			RemoteInterp &ri = it->second;
+			float cur = *(float*)g_mem_x_addr;
+			// [v133] sanity: if the locked address stopped tracking the target
+			// (avatar was rebuilt and the address is stale) stop writing.
+			if (ri.tx != 0.0f && fabsf(cur - ri.tx) > 800.0f) {
+				g_mem_locked = false; g_mem_x_addr = 0; g_mem_y_addr = 0;
+				return;
+			}
+			float nxt = cur + (ri.tx - cur) * g_interp_speed;
+			if (fabsf(nxt - ri.tx) < 0.5f) nxt = ri.tx;
+			*(float*)g_mem_x_addr = nxt;
+			if (g_mem_y_addr) {
+				float cury = *(float*)g_mem_y_addr;
+				float nxty = cury + (ri.ty - cury) * g_interp_speed;
+				if (fabsf(nxty - ri.ty) < 0.5f) nxty = ri.ty;
+				*(float*)g_mem_y_addr = nxty;
+			}
+			ri.cx = nxt;
+		}
+		return;
+	}
 	bool have_offsets = (g_interp_x_off != 0 || g_interp_y_off != 0);
 	static int dbg = 0;
 	if (++dbg % 60 == 0) {
@@ -541,7 +644,7 @@ void MP_Pump() {
 	// always forwarded. If offsets are not locked yet, nothing is suppressed and
 	// behaviour is byte-for-byte identical to v85.
 	std::vector<char> mp_suppress(batch.size(), 0);
-	if (g_probe_locked && g_interp_x_off != 0) {
+	if (g_probe_locked) {   // [v133] locked=1 (cfg) forces suppression even before offsets are known
 		DWORD cf = MP_GetCFieldPtr();
 		for (size_t i = 0; i + 1 < batch.size(); i++) {
 			if (batch[i].first.size() < 5 || batch[i].first[0] != 0x12) continue;
@@ -733,7 +836,10 @@ void MP_Pump() {
 	// [v99] Coordinate probe DISABLED. The probe was auto-locking offsets that
 	// later caused access-violation crashes when lerp wrote to them. Do not
 	// run any memory discovery until we can validate offsets offline.
-	if (MP_InterpEnabled()) MP_ProbeCoordOffsets();
+	if (MP_InterpEnabled()) {
+		if (!g_mem_locked) MP_MemSearchCoords();
+		if (!g_mem_locked) MP_ProbeCoordOffsets();
+	}
 	// [v71] Drop stale entries so the map does not grow forever if a remote
 	// player leaves and we never get a 0x12 remove. 600 frames ~ 10s @60fps.
 	for (auto it = g_interp.begin(); it != g_interp.end(); ) {
