@@ -1141,11 +1141,14 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// [v127] With AND the rate is capped at ~3/s regardless of distance, so
 		// the hop size can shrink: 60px hops looked like teleporting ("瞬移"),
 		// 25px hops read as a continuous walk while staying at 3/s.
-		// [v128] 60px/0.6s cut flicker but still not smooth (user wants 顺滑).
-		// [v129] DLL now suppresses 0x12/0x11 (once offsets locked) and lerp-writes
-		// coords each frame - flicker is gone, so we return to DENSE samples
-		// (25px/0.35s) to feed the lerp: remote avatar slides continuously.
-		const float MOVE_THRESHOLD = 25.0f;
+		// [v129] DLL lerp plan: probe never locks on this client (mp_diag: every
+		// PROBE round gets a different CCharacter ptr - 0x11 spawns land in the
+		// CField hashmap unreliably, V124 rule) so suppression never activates
+		// and it degrades to rebuild. mp_interp.cfg=interp=0 disables the probe.
+		// [v130] Back to the best user-tested rebuild params (V126: "好多了"):
+		// 60px hop / 0.35s - few, tolerable blinks; smooth requires verified
+		// memory offsets, parked as future work.
+		const float MOVE_THRESHOLD = 60.0f;
 		const double REBUILD_MIN_INTERVAL = 0.35;
 		bool do_update = false;
 		{
@@ -1183,7 +1186,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			// second character morphs into the first ("2号变成1号"). Mirrors
 			// the v62 birth path: AccountDataPacket(other.chr, other_sid).
 			AccountDataPacket(t.chr, t.sid);
-			printf("[MP-FWD] v129 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
+			printf("[MP-FWD] v130 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, nx, ny);
 		}
 		MP_MARK("MP-FWD v102 rebuild-move");
