@@ -65,6 +65,11 @@ static float g_interp_speed = 0.15f;
 // round. An offset that survives PROBE_LOCK_ROUNDS distinct positions is the
 // real x field - a coincidental match cannot track a moving value.
 static bool g_probe_locked = false;
+// [v136] Absolute addresses for the memory-write lerp (set by mp_interp.cfg
+// mem_x=/mem_y=/mem_lock=1, or found by MP_MemScanForPair). Declared here so
+// the cfg parser in MP_InterpEnabled (line ~125) can reference them.
+static DWORD  g_mem_x_addr = 0, g_mem_y_addr = 0;
+static bool   g_mem_locked = false;
 static int  g_probe_round = 0;
 static float g_probe_last_x = 1.0e9f;     // last probed target x (dedupe)
 static float g_probe_last_y = 1.0e9f;     // last probed target y (dedupe)
@@ -303,8 +308,6 @@ static void MP_WriteCoord(DWORD base, int off, bool is_int, float client_val) {
 // addresses survive two distinct coordinate samples we lock them and lerp
 // directly into them each frame (suppression keeps the avatar alive, so the
 // addresses stay valid).
-static DWORD  g_mem_x_addr = 0, g_mem_y_addr = 0;
-static bool   g_mem_locked = false;
 static std::map<unsigned long long, int> g_mem_cand;
 static float  g_mem_last_tx = 1.0e9f, g_mem_last_ty = 1.0e9f;
 
