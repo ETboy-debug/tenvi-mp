@@ -672,53 +672,71 @@ void MP_Pump() {
 	// behaviour is byte-for-byte identical to v85.
 	std::vector<char> mp_suppress(batch.size(), 0);
 	if (g_probe_locked) {   // [v133] locked=1 forces suppression even before offsets are known
-		// [v137] Pair-based suppression: record every 0x12 (remove) oid; a
-		// 0x11 (respawn) for the same oid within 500ms is a rebuild step, so
-		// swallow BOTH - the avatar is never destroyed and the per-frame
-		// memory-write lerp below moves it smoothly. A lone 0x12 (no 0x11 in
-		// 500ms) is a real departure and is let through on the next pass via
-		// g_remove_tick expiry. No self/peer identity guessing, no CField
-		// hashmap lookup, works across batches.
+		// [v138] Full-staircase suppression. The rebuild staircase is
+		//   0x12(remove oid) -> 0x3D(account data oid) -> 0x11(spawn oid)
+		//   -> 0x3D(restore RECEIVER's own account data).
+		// v137 swallowed only 0x12+0x11: the middle 0x3D still injected the
+		// mover's account data into an avatar that no longer existed ->
+		// client crashed. Here we swallow the WHOLE staircase (0x12 + the
+		// 0x3D whose char id == removed oid + the 0x11) so the avatar never
+		// flickers and the memory-write lerp owns the position. The
+		// trailing 0x3D (different oid = the receiver's own data) is let
+		// through. 0x3D oid lives at offset 5: [0]=op [1..4]=0 [5..8]=chr.id.
 		DWORD now_ms = (DWORD)GetTickCount();
 		for (size_t i = 0; i < batch.size(); i++) {
-			if (batch[i].first.size() < 5) continue;
+			if (batch[i].first.size() < 9) continue;   // need oid at [1] and [5]
 			BYTE op = batch[i].first[0];
 			DWORD roid = *(DWORD*)&batch[i].first[1];
 			if (roid == 0) continue;
 			if (op == 0x12) {
-				g_remove_tick[roid] = now_ms;   // mark as freshly removed
-				mp_suppress[i] = 1;             // swallow the remove (keep avatar alive)
+				g_remove_tick[roid] = now_ms;
+				mp_suppress[i] = 1;
 				g_suppress_active = true;
 				g_suppress_count++;
 				if (g_suppress_count <= 8 || (g_suppress_count % 50) == 0) {
 					FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 					if (f) {
-						fprintf(f, "[MP-SUPPRESS v137] swallowed 0x12 #%d oid=%08X\n", g_suppress_count, roid);
+						fprintf(f, "[MP-SUPPRESS v138] swallowed 0x12 #%d oid=%08X\n", g_suppress_count, roid);
 						fflush(f); fclose(f);
 					}
 				}
-			} else if (op == 0x11) {
-				std::map<DWORD, DWORD>::iterator rt = g_remove_tick.find(roid);
-				if (rt != g_remove_tick.end() && (now_ms - rt->second) < 500) {
-					mp_suppress[i] = 1;          // rebuild respawn - swallow it too
+			} else if (op == 0x3D) {
+				// account-data oid at [5..8]; swallow only if it belongs to a
+				// freshly removed avatar (the middle step of the staircase).
+				DWORD data_oid = *(DWORD*)&batch[i].first[5];
+				std::map<DWORD, DWORD>::iterator rt = g_remove_tick.find(data_oid);
+				if (rt != g_remove_tick.end() && (now_ms - rt->second) < 800) {
+					mp_suppress[i] = 1;
 					g_suppress_active = true;
 					g_suppress_count++;
 					if (g_suppress_count <= 8 || (g_suppress_count % 50) == 0) {
 						FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 						if (f) {
-							fprintf(f, "[MP-SUPPRESS v137] swallowed 0x11 #%d oid=%08X\n", g_suppress_count, roid);
+							fprintf(f, "[MP-SUPPRESS v138] swallowed 0x3D(oid=%08X) #%d\n", data_oid, g_suppress_count);
+							fflush(f); fclose(f);
+						}
+					}
+				}
+			} else if (op == 0x11) {
+				std::map<DWORD, DWORD>::iterator rt = g_remove_tick.find(roid);
+				if (rt != g_remove_tick.end() && (now_ms - rt->second) < 800) {
+					mp_suppress[i] = 1;
+					g_suppress_active = true;
+					g_suppress_count++;
+					if (g_suppress_count <= 8 || (g_suppress_count % 50) == 0) {
+						FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+						if (f) {
+							fprintf(f, "[MP-SUPPRESS v138] swallowed 0x11 #%d oid=%08X\n", g_suppress_count, roid);
 							fflush(f); fclose(f);
 						}
 					}
 				} else {
-					// first spawn / real new avatar - let it through
 					g_remove_tick.erase(roid);
 				}
 			}
 		}
-		// prune stale remove marks (>500ms, no respawn followed = real leave)
 		for (std::map<DWORD, DWORD>::iterator it = g_remove_tick.begin(); it != g_remove_tick.end(); ) {
-			if (now_ms - it->second > 500) g_remove_tick.erase(it++);
+			if (now_ms - it->second > 800) g_remove_tick.erase(it++);
 			else ++it;
 		}
 	}
