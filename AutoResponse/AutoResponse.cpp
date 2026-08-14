@@ -124,6 +124,20 @@ static bool MP_InterpEnabled() {
 		else if (strncmp(line, "locked=", 7) == 0) {
 			if (strtol(line + 7, NULL, 0) != 0) g_probe_locked = true;
 		}
+		// [v136] mem_x=/mem_y= hard-code the absolute addresses found by
+		// scan_coords.py (heap, not the exe static segment the old in-DLL
+		// scan kept locking). Locking a static address wrote nothing that
+		// moves the avatar, so the sanity check unlocked and re-locked in a
+		// loop (samples kept climbing) while rebuild flicker continued.
+		else if (strncmp(line, "mem_x=", 6) == 0) {
+			g_mem_x_addr = (DWORD)strtoul(line + 6, NULL, 0);
+		}
+		else if (strncmp(line, "mem_y=", 6) == 0) {
+			g_mem_y_addr = (DWORD)strtoul(line + 6, NULL, 0);
+		}
+		else if (strncmp(line, "mem_lock=1", 10) == 0) {
+			g_mem_locked = true;
+		}
 	}
 	fclose(f);
 	return on;
@@ -300,7 +314,7 @@ static bool MP_MemScanForPair(float tx, float ty, DWORD &out_x, DWORD &out_y) {
 	while ((DWORD)base < 0x7FFF0000) {
 		if (!VirtualQuery(base, &mbi, sizeof(mbi))) break;
 		DWORD sz = (DWORD)mbi.RegionSize;
-		if (sz && mbi.State == MEM_COMMIT &&
+		if (sz && mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE &&
 			(mbi.Protect & 0xFF) && !(mbi.Protect & PAGE_GUARD)) {
 			unsigned char *p = base;
 			unsigned char *end = base + sz;
