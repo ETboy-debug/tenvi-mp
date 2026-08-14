@@ -1,6 +1,7 @@
 #include"AutoResponse.h"
 #include"MPClient.h"
 #include <map>
+#include <set>
 #include <vector>
 #include <cstring>
 #include <cmath>
