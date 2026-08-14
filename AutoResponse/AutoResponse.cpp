@@ -676,6 +676,21 @@ void MP_Pump() {
 	// always forwarded. If offsets are not locked yet, nothing is suppressed and
 	// behaviour is byte-for-byte identical to v85.
 	std::vector<char> mp_suppress(batch.size(), 0);
+	// [v140] diag: log suppression gate state once per batch so we can see
+	// why suppression does/doesn't activate (g_probe_locked from cfg locked=1,
+	// batch composition, and the op code actually seen for 0x12 packets).
+	{
+		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+		if (f) {
+			fprintf(f, "[MP-DIAG v140] batch=%d locked=%d suppress_active=%d ops=", (int)batch.size(), g_probe_locked?1:0, g_suppress_active?1:0);
+			for (size_t di = 0; di < batch.size() && di < 12; di++) {
+				if (batch[di].first.empty()) continue;
+				fprintf(f, "%02X ", batch[di].first[0]);
+			}
+			fprintf(f, "\n");
+			fflush(f); fclose(f);
+		}
+	}
 	if (g_probe_locked) {   // [v133] locked=1 forces suppression even before offsets are known
 		// [v138] Full-staircase suppression. The rebuild staircase is
 		//   0x12(remove oid) -> 0x3D(account data oid) -> 0x11(spawn oid)
