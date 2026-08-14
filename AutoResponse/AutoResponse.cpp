@@ -117,6 +117,12 @@ static bool MP_InterpEnabled() {
 		else if (strncmp(line, "y_off=", 6) == 0) {
 			g_interp_y_off = (int)strtol(line + 6, NULL, 0);
 		}
+		// [v131] locked=1 forces the suppress+lerp path without running the
+		// probe (which never locks on this client: 0x11 spawns land in the
+		// CField hashmap unreliably). Offsets come from scan_coords.py.
+		else if (strncmp(line, "locked=", 7) == 0) {
+			if (strtol(line + 7, NULL, 0) != 0) g_probe_locked = true;
+		}
 	}
 	fclose(f);
 	return on;
