@@ -337,24 +337,21 @@ static void MP_MemSearchCoords() {
 	DWORD xa = 0, ya = 0;
 	if (!MP_MemScanForPair(tx, ty, xa, ya)) {
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-MEM v133] no pair for (%.1f,%.1f)
-", tx, ty); fflush(f); fclose(f); }
+		if (f) { fprintf(f, "[MP-MEM v133] no pair for (%.1f,%.1f)\n", tx, ty); fflush(f); fclose(f); }
 		return;
 	}
 	unsigned long long key = ((unsigned long long)xa << 32) | ya;
 	g_mem_cand[key]++;
 	if (g_mem_cand.size() > 64) g_mem_cand.clear();
 	FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-	if (f) { fprintf(f, "[MP-MEM v133] cand x=0x%08X y=0x%08X for (%.1f,%.1f)
-", xa, ya, tx, ty); fflush(f); fclose(f); }
+	if (f) { fprintf(f, "[MP-MEM v133] cand x=0x%08X y=0x%08X for (%.1f,%.1f)\n", xa, ya, tx, ty); fflush(f); fclose(f); }
 	for (std::map<unsigned long long, int>::iterator c = g_mem_cand.begin(); c != g_mem_cand.end(); ++c) {
 		if (c->second >= 2) {
 			g_mem_x_addr = (DWORD)(c->first >> 32);
 			g_mem_y_addr = (DWORD)(c->first & 0xFFFFFFFF);
 			g_mem_locked = true;
 			FILE *ff = NULL; fopen_s(&ff, MP_DiagPath(), "a");
-			if (ff) { fprintf(ff, "[MP-MEM v133] *** LOCKED x=0x%08X y=0x%08X samples=%d ***
-", g_mem_x_addr, g_mem_y_addr, c->second); fflush(ff); fclose(ff); }
+			if (ff) { fprintf(ff, "[MP-MEM v133] *** LOCKED x=0x%08X y=0x%08X samples=%d ***\n", g_mem_x_addr, g_mem_y_addr, c->second); fflush(ff); fclose(ff); }
 			return;
 		}
 	}
