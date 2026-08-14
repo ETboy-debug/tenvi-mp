@@ -35,6 +35,7 @@ struct RemotePlayer {
 	// so we do not remove+respawn the remote character on every tiny step.
 	float last_move_x, last_move_y;
 	bool has_last_move;
+	double last_rebuild_t; // [v125] wall-clock of last rebuild, for rate gate
 };
 static std::mutex g_playersMtx;
 static std::map<int, RemotePlayer> g_players;
@@ -1132,7 +1133,12 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		}
 		// [v108] 40px produced very long teleport hops ("jumping"). With the
 		// coordinate now parsed correctly we can afford denser updates.
-		const float MOVE_THRESHOLD = 20.0f; // larger = less strobe, more teleporty
+		// [v125] Distance alone fired dozens of rebuilds/sec during fast walk
+		// (each rebuild = 0x12+0x3D+0x11 "enter map" burst; the peer froze with
+		// "runs a few steps then sticks"). Dual gate: >=60px OR >=350ms since
+		// last rebuild -> caps rebuilds at ~3/s, client survives, still follows.
+		const float MOVE_THRESHOLD = 60.0f;
+		const double REBUILD_MIN_INTERVAL = 0.35;
 		bool do_update = false;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
@@ -1142,7 +1148,9 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 				float ddx = nx - it->second.last_move_x;
 				float ddy = ny - it->second.last_move_y;
 				mv_dir = (ddx < 0.0f) ? 0 : 1;   // moving left -> face left
-				if (ddx * ddx + ddy * ddy >= MOVE_THRESHOLD * MOVE_THRESHOLD)
+				bool far_enough = (ddx * ddx + ddy * ddy >= MOVE_THRESHOLD * MOVE_THRESHOLD);
+				bool old_enough = (GetTickCount64() / 1000.0 - it->second.last_rebuild_t >= REBUILD_MIN_INTERVAL);
+				if (far_enough || old_enough)
 					do_update = true;
 			} else {
 				do_update = true; // first movement in this session
@@ -1150,7 +1158,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			}
 		}
 		if (!do_update) {
-			printf("[MP-FWD]   skip rebuild (under %.0fpx)\n", MOVE_THRESHOLD);
+			printf("[MP-FWD]   skip rebuild (under %.0fpx / too soon)\n", MOVE_THRESHOLD);
 			return;
 		}
 		for (auto &t : targets) {
@@ -1159,7 +1167,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			// 2) rebuild object (0x3D) then render at new position (0x11)
 			AccountDataPacket(me, t.sid);
 			CharacterSpawnPacket(me, nx, ny, mv_dir, t.sid, MP_RemoteCtx());
-			printf("[MP-FWD] v124 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
+			printf("[MP-FWD] v125 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, nx, ny);
 		}
 		MP_MARK("MP-FWD v102 rebuild-move");
@@ -1170,6 +1178,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 				it->second.last_move_x = nx;
 				it->second.last_move_y = ny;
 				it->second.has_last_move = true;
+				it->second.last_rebuild_t = GetTickCount64() / 1000.0;
 			}
 		}
 		return;
