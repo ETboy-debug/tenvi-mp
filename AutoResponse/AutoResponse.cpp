@@ -287,11 +287,27 @@ static void MP_ProbeCoordOffsets() {
 
 	DWORD oid = 0, ptr = 0;
 	float tx = 0.0f, ty = 0.0f;
-	for (std::map<DWORD, RemoteInterp>::iterator it = g_interp.begin(); it != g_interp.end(); ++it) {
-		DWORD p = _GetCharacterByOID((void*)cfield, it->first);
-		if (p) { oid = it->first; ptr = p; tx = it->second.tx; ty = it->second.ty; break; }
+	// [v132] Sample ONLY 2..8 frames after a 0x11 spawn. At that moment the
+	// client has created the avatar (so GetCharacterByOID resolves) and the
+	// next rebuild that would destroy it is still ~20 frames away. Sampling
+	// outside this window read a dead or not-yet-registered object, which is
+	// why every PROBE round saw a different ptr and the linear fit failed.
+	{
+		std::map<DWORD, RemoteInterp>::iterator best = g_interp.end();
+		for (std::map<DWORD, RemoteInterp>::iterator it = g_interp.begin();
+			it != g_interp.end(); ++it) {
+			if (it->second.stale < 2 || it->second.stale > 8) continue;
+			DWORD p = _GetCharacterByOID((void*)cfield, it->first);
+			if (!p) continue;
+			best = it;
+			ptr = p;
+			break;
+		}
+		if (best == g_interp.end() || !ptr) return;
+		oid = best->first;
+		tx = best->second.tx;
+		ty = best->second.ty;
 	}
-	if (!ptr) return;
 
 	// Require real displacement between rounds - resampling the same spot
 	// proves nothing about which field is tracking the position.
