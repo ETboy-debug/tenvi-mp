@@ -322,6 +322,8 @@ static bool MP_MemScanForPair(float tx, float ty, DWORD &out_x, DWORD &out_y) {
 			unsigned char *p = base;
 			unsigned char *end = base + sz;
 			for (; p + 4 <= end; p += 4) {
+				// [v137] skip blacklisted (sanity-rejected) addresses
+				if (!g_mem_bad.empty() && g_mem_bad.count((DWORD)p)) { p += 4; continue; }
 				float fx = *(float*)p;
 				if (fabsf(fx - tx) <= 2.0f) {
 					unsigned char *q0 = p - 64; if (q0 < base) q0 = base;
@@ -526,7 +528,9 @@ static void MP_ApplyInterpolation() {
 			float cur = *(float*)g_mem_x_addr;
 			// [v133] sanity: if the locked address stopped tracking the target
 			// (avatar was rebuilt and the address is stale) stop writing.
+			// [v137] blacklist the address so the scan does not re-lock it.
 			if (ri.tx != 0.0f && fabsf(cur - ri.tx) > 800.0f) {
+				if (g_mem_x_addr) g_mem_bad.insert(g_mem_x_addr);
 				g_mem_locked = false; g_mem_x_addr = 0; g_mem_y_addr = 0;
 				return;
 			}
@@ -660,29 +664,56 @@ void MP_Pump() {
 	// behaviour is byte-for-byte identical to v85.
 	std::vector<char> mp_suppress(batch.size(), 0);
 	if (g_probe_locked) {   // [v133] locked=1 forces suppression even before offsets are known
-		// [v135] Cross-frame suppression: first 0x11 for an oid is let through
-		// (it CREATES the avatar); rebuild 0x12 remove + 0x11 respawn after
-		// that are swallowed so the avatar never flickers and the memory-write
-		// lerp owns the position. Works even when 0x12/0x11 arrive in separate
-		// batches (the network splits them) and without the unreliable CField
-		// hashmap lookup.
+		// [v137] Pair-based suppression: record every 0x12 (remove) oid; a
+		// 0x11 (respawn) for the same oid within 500ms is a rebuild step, so
+		// swallow BOTH - the avatar is never destroyed and the per-frame
+		// memory-write lerp below moves it smoothly. A lone 0x12 (no 0x11 in
+		// 500ms) is a real departure and is let through on the next pass via
+		// g_remove_tick expiry. No self/peer identity guessing, no CField
+		// hashmap lookup, works across batches.
+		DWORD now_ms = (DWORD)GetTickCount();
 		for (size_t i = 0; i < batch.size(); i++) {
 			if (batch[i].first.size() < 5) continue;
 			BYTE op = batch[i].first[0];
 			DWORD roid = *(DWORD*)&batch[i].first[1];
-			if (roid == 0 || g_interp.find(roid) == g_interp.end()) continue;
-			if ((op == 0x12 || op == 0x11) && g_spawned[roid]) {
-				mp_suppress[i] = 1;
+			if (roid == 0) continue;
+			if (op == 0x12) {
+				g_remove_tick[roid] = now_ms;   // mark as freshly removed
+				mp_suppress[i] = 1;             // swallow the remove (keep avatar alive)
 				g_suppress_active = true;
 				g_suppress_count++;
-				if (g_suppress_count <= 5 || (g_suppress_count % 50) == 0) {
+				if (g_suppress_count <= 8 || (g_suppress_count % 50) == 0) {
 					FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 					if (f) {
-						fprintf(f, "[MP-SUPPRESS v135] swallowed 0x%02X #%d oid=%08X\n", op, g_suppress_count, roid);
+						fprintf(f, "[MP-SUPPRESS v137] swallowed 0x12 #%d oid=%08X
+", g_suppress_count, roid);
 						fflush(f); fclose(f);
 					}
 				}
+			} else if (op == 0x11) {
+				std::map<DWORD, DWORD>::iterator rt = g_remove_tick.find(roid);
+				if (rt != g_remove_tick.end() && (now_ms - rt->second) < 500) {
+					mp_suppress[i] = 1;          // rebuild respawn - swallow it too
+					g_suppress_active = true;
+					g_suppress_count++;
+					if (g_suppress_count <= 8 || (g_suppress_count % 50) == 0) {
+						FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+						if (f) {
+							fprintf(f, "[MP-SUPPRESS v137] swallowed 0x11 #%d oid=%08X
+", g_suppress_count, roid);
+							fflush(f); fclose(f);
+						}
+					}
+				} else {
+					// first spawn / real new avatar - let it through
+					g_remove_tick.erase(roid);
+				}
 			}
+		}
+		// prune stale remove marks (>500ms, no respawn followed = real leave)
+		for (std::map<DWORD, DWORD>::iterator it = g_remove_tick.begin(); it != g_remove_tick.end(); ) {
+			if (now_ms - it->second > 500) g_remove_tick.erase(it++);
+			else ++it;
 		}
 	}
 
