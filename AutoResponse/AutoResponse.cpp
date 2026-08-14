@@ -70,6 +70,13 @@ static bool g_probe_locked = false;
 // the cfg parser in MP_InterpEnabled (line ~125) can reference them.
 static DWORD  g_mem_x_addr = 0, g_mem_y_addr = 0;
 static bool   g_mem_locked = false;
+// [v137] remove-oid -> tick when the last 0x12 for that oid was seen.
+// A 0x11 for the same oid within 500ms is a rebuild pair (swallow it, the
+// memory-write lerp owns the position). No self/peer identity guessing.
+static std::map<DWORD, DWORD> g_remove_tick;
+// [v137] addresses that the sanity check rejected (writes don't move the
+// avatar) are blacklisted so MP_MemScanForPair stops re-locking them.
+static std::set<DWORD> g_mem_bad;
 static int  g_probe_round = 0;
 static float g_probe_last_x = 1.0e9f;     // last probed target x (dedupe)
 static float g_probe_last_y = 1.0e9f;     // last probed target y (dedupe)
@@ -685,8 +692,7 @@ void MP_Pump() {
 				if (g_suppress_count <= 8 || (g_suppress_count % 50) == 0) {
 					FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 					if (f) {
-						fprintf(f, "[MP-SUPPRESS v137] swallowed 0x12 #%d oid=%08X
-", g_suppress_count, roid);
+						fprintf(f, "[MP-SUPPRESS v137] swallowed 0x12 #%d oid=%08X\n", g_suppress_count, roid);
 						fflush(f); fclose(f);
 					}
 				}
@@ -699,8 +705,7 @@ void MP_Pump() {
 					if (g_suppress_count <= 8 || (g_suppress_count % 50) == 0) {
 						FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 						if (f) {
-							fprintf(f, "[MP-SUPPRESS v137] swallowed 0x11 #%d oid=%08X
-", g_suppress_count, roid);
+							fprintf(f, "[MP-SUPPRESS v137] swallowed 0x11 #%d oid=%08X\n", g_suppress_count, roid);
 							fflush(f); fclose(f);
 						}
 					}
