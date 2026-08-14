@@ -1141,13 +1141,12 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// [v127] With AND the rate is capped at ~3/s regardless of distance, so
 		// the hop size can shrink: 60px hops looked like teleporting ("瞬移"),
 		// 25px hops read as a continuous walk while staying at 3/s.
-		// [v128] User: "still not smooth, screen flickers, dizzy". The 25px hop
-		// is fine but at ~3/s the destroy+respawn flicker itself is nauseating
-		// (0x12 removes the avatar, 0x11 re-renders it - a visible blink every
-		// time). Fewer, larger hops read better: 60px hops at <=1.7/s keep the
-		// avatar mostly stable (blink ~1/s is tolerable) while still following.
-		const float MOVE_THRESHOLD = 60.0f;
-		const double REBUILD_MIN_INTERVAL = 0.6;
+		// [v128] 60px/0.6s cut flicker but still not smooth (user wants 顺滑).
+		// [v129] DLL now suppresses 0x12/0x11 (once offsets locked) and lerp-writes
+		// coords each frame - flicker is gone, so we return to DENSE samples
+		// (25px/0.35s) to feed the lerp: remote avatar slides continuously.
+		const float MOVE_THRESHOLD = 25.0f;
+		const double REBUILD_MIN_INTERVAL = 0.35;
 		bool do_update = false;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
@@ -1184,7 +1183,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			// second character morphs into the first ("2号变成1号"). Mirrors
 			// the v62 birth path: AccountDataPacket(other.chr, other_sid).
 			AccountDataPacket(t.chr, t.sid);
-			printf("[MP-FWD] v128 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
+			printf("[MP-FWD] v129 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, nx, ny);
 		}
 		MP_MARK("MP-FWD v102 rebuild-move");
