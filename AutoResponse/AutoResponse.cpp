@@ -661,8 +661,7 @@ void MP_Pump() {
 				if (g_suppress_count <= 5 || (g_suppress_count % 50) == 0) {
 					FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 					if (f) {
-						fprintf(f, "[MP-SUPPRESS v135] swallowed 0x%02X #%d oid=%08X
-", op, g_suppress_count, roid);
+						fprintf(f, "[MP-SUPPRESS v135] swallowed 0x%02X #%d oid=%08X\n", op, g_suppress_count, roid);
 						fflush(f); fclose(f);
 					}
 				}
