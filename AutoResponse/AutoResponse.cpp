@@ -27,6 +27,7 @@ struct RemoteInterp {
 };
 
 static std::map<DWORD, RemoteInterp> g_interp;
+static std::map<DWORD, bool> g_spawned;   // [v135] remote oid already created
 static bool g_interp_announced = false;
 static int mp_frame_count = 0;  // per-frame counter, incremented at top of MP_Pump
 
@@ -641,39 +642,29 @@ void MP_Pump() {
 	// always forwarded. If offsets are not locked yet, nothing is suppressed and
 	// behaviour is byte-for-byte identical to v85.
 	std::vector<char> mp_suppress(batch.size(), 0);
-	if (g_probe_locked) {   // [v133] locked=1 (cfg) forces suppression even before offsets are known
-		DWORD cf = MP_GetCFieldPtr();
-		for (size_t i = 0; i + 1 < batch.size(); i++) {
-			if (batch[i].first.size() < 5 || batch[i].first[0] != 0x12) continue;
+	if (g_probe_locked) {   // [v133] locked=1 forces suppression even before offsets are known
+		// [v135] Cross-frame suppression: first 0x11 for an oid is let through
+		// (it CREATES the avatar); rebuild 0x12 remove + 0x11 respawn after
+		// that are swallowed so the avatar never flickers and the memory-write
+		// lerp owns the position. Works even when 0x12/0x11 arrive in separate
+		// batches (the network splits them) and without the unreliable CField
+		// hashmap lookup.
+		for (size_t i = 0; i < batch.size(); i++) {
+			if (batch[i].first.size() < 5) continue;
+			BYTE op = batch[i].first[0];
 			DWORD roid = *(DWORD*)&batch[i].first[1];
 			if (roid == 0 || g_interp.find(roid) == g_interp.end()) continue;
-			// Only suppress when the object is alive right now - otherwise we
-			// would swallow the rebuild of an avatar that is genuinely gone.
-			// [v134] With locked=1 trust the 0x12+0x11 pair instead: the CField
-			// hashmap lookup (V124 rule) fails even for live avatars on this
-			// client, which made suppression never activate and the avatar
-			// kept rebuilding (flicker). "lone 0x12 = real departure" is still
-			// handled below by the j<0 check, so suppression stays safe.
-			DWORD live = (cf && _GetCharacterByOID) ? _GetCharacterByOID((void*)cf, roid) : 0;
-			if (!live && !g_probe_locked) continue;
-			int j = -1;
-			for (size_t k = i + 1; k < batch.size() && k <= i + 3; k++) {
-				if (batch[k].first.size() >= 5 && batch[k].first[0] == 0x11 &&
-					*(DWORD*)&batch[k].first[1] == roid) { j = (int)k; break; }
-			}
-			if (j < 0) continue;   // lone 0x12 = real departure, let it through
-			mp_suppress[i] = 1;
-			mp_suppress[j] = 1;
-			for (int k = (int)i + 1; k < j; k++)
-				if (!batch[k].first.empty() && batch[k].first[0] == 0x3D) mp_suppress[k] = 1;
-			g_suppress_active = true;
-			g_suppress_count++;
-			if (g_suppress_count <= 5 || (g_suppress_count % 50) == 0) {
-				FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-				if (f) {
-					fprintf(f, "[MP-SUPPRESS v86] respawn swallowed #%d oid=%08X ptr=%08X -> memory-write move\n",
-						g_suppress_count, roid, live);
-					fflush(f); fclose(f);
+			if ((op == 0x12 || op == 0x11) && g_spawned[roid]) {
+				mp_suppress[i] = 1;
+				g_suppress_active = true;
+				g_suppress_count++;
+				if (g_suppress_count <= 5 || (g_suppress_count % 50) == 0) {
+					FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+					if (f) {
+						fprintf(f, "[MP-SUPPRESS v135] swallowed 0x%02X #%d oid=%08X
+", op, g_suppress_count, roid);
+						fflush(f); fclose(f);
+					}
 				}
 			}
 		}
@@ -715,6 +706,7 @@ void MP_Pump() {
 		if (mp_op == 0x11 && oid != g_localObjectId && bp.size() >= 13) {
 			float rx = *(float*)&bp[5];
 			float ry = *(float*)&bp[9];
+			g_spawned[oid] = true;   // [v135] first 0x11 seen -> avatar exists now
 			auto it = g_interp.find(oid);
 			if (it == g_interp.end()) {
 				RemoteInterp ri;
