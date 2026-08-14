@@ -649,8 +649,13 @@ void MP_Pump() {
 			if (roid == 0 || g_interp.find(roid) == g_interp.end()) continue;
 			// Only suppress when the object is alive right now - otherwise we
 			// would swallow the rebuild of an avatar that is genuinely gone.
+			// [v134] With locked=1 trust the 0x12+0x11 pair instead: the CField
+			// hashmap lookup (V124 rule) fails even for live avatars on this
+			// client, which made suppression never activate and the avatar
+			// kept rebuilding (flicker). "lone 0x12 = real departure" is still
+			// handled below by the j<0 check, so suppression stays safe.
 			DWORD live = (cf && _GetCharacterByOID) ? _GetCharacterByOID((void*)cf, roid) : 0;
-			if (!live) continue;
+			if (!live && !g_probe_locked) continue;
 			int j = -1;
 			for (size_t k = i + 1; k < batch.size() && k <= i + 3; k++) {
 				if (batch[k].first.size() >= 5 && batch[k].first[0] == 0x11 &&
