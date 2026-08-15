@@ -1064,11 +1064,13 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	//      oid at [1..4]. It does not: the [MP-HDL] "oid" printed a different
 	//      value every packet because those bytes are path data (flag, count,
 	//      tick). So the relay also truncated 4 bytes of real path.
-// [v141] RE-ENABLE smooth 0x0C path (V110 GOLDEN PROOF: user confirmed both
-// characters moving with cfg=11110010 ctx=1 mode=0). v119-v122 sent move to
-// CField(ctx=0) which is why the peer never moved; the disassembly note about
-// the CField+0x1C0 hashmap miss applied to the *broken ctx=0 era*, not to the
-// V110 configuration. Smooth is the only path that does not strobe.
+// [v142] RE-ENABLE smooth 0x0C path with the V110 GOLDEN layer routing:
+// birth 0x3D/0x11 -> CWvsContext(ctx=1, cfg bit1) - renders the avatar.
+// move 0x0C -> CField(ctx=0, HARDCODED false) - 0x48D4EA lives in CField's
+// dispatch table only; CWvsContext has no 0x0C handler and silently drops
+// it (v141 used MP_RemoteCtx()=cfg ctx=1 -> dropped -> peer never moved).
+// v119-v122 sent the move to CField as well but with the wrong path format.
+// V110 (user-confirmed "互相旺"): 0x0C to CField + absolute (x,y) int16 pairs.
 	if (MP_SmoothMove() && op == 0x0C && has_pos && !mv_pts.empty()) {
 		std::vector<short> elems;
 		for (size_t i = 0; i < mv_pts.size(); i++) {
@@ -1088,11 +1090,11 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			for (size_t k = 0; k < elems.size(); k++)
 				sp.Encode2((WORD)(unsigned short)elems[k]);
 			sp.Encode1(mv_stance);             // stance
-			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());  // [v123] ctx=1 (CWvsContext) - V110 GOLDEN PROOF from _srv_v110.log: birth op=11 ctx=1 AND move op=0C ctx=1. v119-v122 sent move to CField(ctx=0) which is why peer never moved.
-			printf("[MP-FWD] v141 sp0x0C -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
+			MP_BroadcastToSid(t.sid, sp, false);  // [v142] V110 GOLDEN: move 0x0C goes to CField(ctx=0). 0x0C handler (0x48D4EA) lives ONLY in the CField dispatch table; CWvsContext has no 0x0C handler and silently drops it. v141 used MP_RemoteCtx()(=cfg ctx=1) -> dropped -> peer never moved. Birth 0x3D/0x11 stays ctx=1 (CWvsContext).
+			printf("[MP-FWD] v142 sp0x0C -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, (int)elems.size(), (int)mv_stance, nx, ny);
 		}
-		MP_MARK("MP-FWD v141 sp-0x0C-path");
+		MP_MARK("MP-FWD v142 sp-0x0C-path");
 		return;
 	}
 
