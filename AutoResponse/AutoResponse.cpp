@@ -18,7 +18,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_DLL_V146_OFFSET_PROBE";
+static const char* MP_INTERP_TAG = "MP_DLL_V147_ANYFRAME_PROBE";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -389,11 +389,17 @@ static void MP_ProbeCoordOffsets() {
 	// next rebuild that would destroy it is still ~20 frames away. Sampling
 	// outside this window read a dead or not-yet-registered object, which is
 	// why every PROBE round saw a different ptr and the linear fit failed.
+	// [v147] DROP the window: CField hashmap registration is ASYNC (V124
+	// disassembly proof) so the 2..8 frame window often has NO entry yet ->
+	// GetCharacterByOID returns 0 -> probe silently returns forever (V146
+	// never printed a single MP-PROBE line). Sample ANY frame where the
+	// lookup resolves; the displacement gate below still requires >=8px of
+	// travel between rounds, and the strict fit (v146: float-only, slope
+	// +/-0.05, intc < 500) rejects garbage offsets.
 	{
 		std::map<DWORD, RemoteInterp>::iterator best = g_interp.end();
 		for (std::map<DWORD, RemoteInterp>::iterator it = g_interp.begin();
 			it != g_interp.end(); ++it) {
-			if (it->second.stale < 2 || it->second.stale > 8) continue;
 			DWORD p = _GetCharacterByOID((void*)cfield, it->first);
 			if (!p) continue;
 			best = it;
