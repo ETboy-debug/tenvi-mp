@@ -1064,13 +1064,14 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	//      oid at [1..4]. It does not: the [MP-HDL] "oid" printed a different
 	//      value every packet because those bytes are path data (flag, count,
 	//      tick). So the relay also truncated 4 bytes of real path.
-// [v142] RE-ENABLE smooth 0x0C path with the V110 GOLDEN layer routing:
-// birth 0x3D/0x11 -> CWvsContext(ctx=1, cfg bit1) - renders the avatar.
-// move 0x0C -> CField(ctx=0, HARDCODED false) - 0x48D4EA lives in CField's
-// dispatch table only; CWvsContext has no 0x0C handler and silently drops
-// it (v141 used MP_RemoteCtx()=cfg ctx=1 -> dropped -> peer never moved).
-// v119-v122 sent the move to CField as well but with the wrong path format.
-// V110 (user-confirmed "互相旺"): 0x0C to CField + absolute (x,y) int16 pairs.
+// [v143] V110 GOLDEN REBUILD (third attempt at the real config):
+// 1) Move 0x0C goes through MP_RemoteCtx() -> cfg bit1 = 1 -> CWvsContext,
+//    matching _srv_v110.log "op=0C len=23 ctx=1". _v110_ref.cpp:1303 shows
+//    MP_RemoteCtx(){return false} is the DLL stub (#ifndef MP_SERVER), the
+//    server impl reads cfg. v142 forced ctx=0 (CField) from a misread of that
+//    stub -> dropped. 2) DLL must be the v86 build (760320B, no v133-140
+//    suppression/memscan interference) - restored from tenvi-mp-v113.zip.
+//    v141 had ctx=1 right but shipped the v140 DLL, which is why it failed.
 	if (MP_SmoothMove() && op == 0x0C && has_pos && !mv_pts.empty()) {
 		std::vector<short> elems;
 		for (size_t i = 0; i < mv_pts.size(); i++) {
@@ -1090,11 +1091,11 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			for (size_t k = 0; k < elems.size(); k++)
 				sp.Encode2((WORD)(unsigned short)elems[k]);
 			sp.Encode1(mv_stance);             // stance
-			MP_BroadcastToSid(t.sid, sp, false);  // [v142] V110 GOLDEN: move 0x0C goes to CField(ctx=0). 0x0C handler (0x48D4EA) lives ONLY in the CField dispatch table; CWvsContext has no 0x0C handler and silently drops it. v141 used MP_RemoteCtx()(=cfg ctx=1) -> dropped -> peer never moved. Birth 0x3D/0x11 stays ctx=1 (CWvsContext).
-			printf("[MP-FWD] v142 sp0x0C -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
+			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());  // [v143] V110 GOLDEN REBUILD: _v110_ref.cpp line 1303 proves MP_RemoteCtx(){return false} lives under #ifndef MP_SERVER = DLL stub only. Server impl (StandaloneServer.cpp) reads cfg bit1 (=1) -> move 0x0C goes CWvsContext(ctx=1), matching _srv_v110.log "op=0C len=23 ctx=1". v142 wrongly forced false (CField) from a misread of the DLL stub -> peer never moved. v141 was right (ctx=1) but its DLL was v140 with interference; DLL is back to v86 (760320B) now.
+			printf("[MP-FWD] v143 sp0x0C -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, (int)elems.size(), (int)mv_stance, nx, ny);
 		}
-		MP_MARK("MP-FWD v142 sp-0x0C-path");
+		MP_MARK("MP-FWD v143 sp-0x0C-path");
 		return;
 	}
 
