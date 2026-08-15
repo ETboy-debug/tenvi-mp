@@ -18,7 +18,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_DLL_V99_SAFE_NO_INTERP";
+static const char* MP_INTERP_TAG = "MP_DLL_V145_SMOOTH_MEMWRITE";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -534,8 +534,14 @@ static void MP_ProbeCoordOffsets() {
 // the avatar is still being rebuilt, so any locked address goes stale or was
 // a static/incorrect one -> crash (V138: "<9" gate disabled suppression, the
 // mem-write still ran and killed the client).
+// [v145] SMOOTH-mode memory write: in smooth mode (cfg 11110010, no rebuild
+// 0x12/0x3D/0x11) the remote avatar object is NOT rebuilt, so the locked
+// mem_x/mem_y address stays valid and writing needs no suppression (which
+// would swallow packets and crash - the V140 crash). The sanity check below
+// (|cur - tx| > 800) still unlocks and re-scans if the address ever goes
+// stale, so the V138 crash class is covered.
 static void MP_ApplyInterpolation() {
-	if (g_mem_locked && g_mem_x_addr && g_suppress_active) {
+	if (g_mem_locked && g_mem_x_addr) {
 		for (std::map<DWORD, RemoteInterp>::iterator it = g_interp.begin(); it != g_interp.end(); ++it) {
 			RemoteInterp &ri = it->second;
 			float cur = *(float*)g_mem_x_addr;
