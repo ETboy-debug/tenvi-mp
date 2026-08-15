@@ -18,7 +18,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_DLL_V147_ANYFRAME_PROBE";
+static const char* MP_INTERP_TAG = "MP_DLL_V148_PAIR_PROBE";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -83,6 +83,11 @@ static float g_probe_last_x = 1.0e9f;     // last probed target x (dedupe)
 static float g_probe_last_y = 1.0e9f;     // last probed target y (dedupe)
 static const int   PROBE_SCAN_RANGE  = 0x2000;
 static const int   PROBE_LOCK_ROUNDS = 3;
+// [v148] coordinate-PAIR votes: key = (x_off<<16)|y_off, value = agreeing
+// rounds. Rebuild recreates the avatar object every ~0.35s, so rounds sample
+// different objects; a (x,y) float pair found in 2+ DIFFERENT objects proves
+// the struct layout offsets, which are fixed per client build.
+static std::map<unsigned long long, int> g_probe_pairs;
 
 // Linear-fit probe buffers. We no longer require the in-memory value to EQUAL
 // the packet coordinate - that assumption broke on every client that stores
@@ -423,104 +428,63 @@ static void MP_ProbeCoordOffsets() {
 	g_probe_last_y = ty;
 	g_probe_round++;
 
-	// Collect (target, mem-as-float, mem-as-int32) for every 4-byte slot.
-	for (int off = 0; off < PROBE_SCAN_RANGE; off += 4) {
-		ProbeSample sx; sx.t = tx;
-		memcpy(&sx.memf, (void*)(ptr + off), 4);
-		memcpy(&sx.memi, (void*)(ptr + off), 4);
-		if (!isfinite(sx.memf)) continue;   // float channel skips NaN/Inf
-		g_probe_xsamp[off].push_back(sx);
-		ProbeSample sy; sy.t = ty; sy.memf = sx.memf; sy.memi = sx.memi;
-		g_probe_ysamp[off].push_back(sy);
+	// [v148] coordinate-PAIR matching (replaces linear regression): rebuild
+	// recreates the avatar object every ~0.35s, so rounds sample DIFFERENT
+	// objects and slope-fitting across them fails (V147 LOCK FAILED). Each
+	// round scans the CURRENT object: y is foothold-snapped (stable), find a
+	// float == ty, take the adjacent x (within 32B, sane map coord near tx).
+	// The pair offset is fixed by the struct layout so it survives rebuilds;
+	// 2 agreeing rounds (in different objects) lock it.
+	int x_off = 0, y_off = 0;
+	for (int off_y = 0; off_y < PROBE_SCAN_RANGE; off_y += 4) {
+		float vy = *(float*)(ptr + off_y);
+		if (!isfinite(vy) || fabsf(vy - ty) > 2.0f) continue;
+		for (int off_x = off_y - 32; off_x <= off_y + 32; off_x += 4) {
+			if (off_x < 0 || off_x + 4 > PROBE_SCAN_RANGE) continue;
+			float vx = *(float*)(ptr + off_x);
+			if (!isfinite(vx) || vx < -5000.0f || vx > 5000.0f) continue;
+			if (fabsf(vx - tx) < 2000.0f) { x_off = off_x; y_off = off_y; break; }
+		}
+		if (x_off) break;
 	}
 
-	// Diagnostics: print the best-fitting x candidates while probing.
 	if (g_probe_round <= 8) {
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) {
-			fprintf(f, "[MP-PROBE v87] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) slots=%d\n",
-				g_probe_round, oid, ptr, tx, ty, (int)g_probe_xsamp.size());
-			int shown = 0;
-			for (std::map<int, std::vector<ProbeSample>>::iterator c = g_probe_xsamp.begin();
-				c != g_probe_xsamp.end() && shown < 4; ++c) {
-				ProbeFit fit = MP_FitProbeChannel(c->second, 4.0f);
-				if (fit.ok) {
-					fprintf(f, "    x cand +0x%04X %s slope=%.3f intc=%.1f resid=%.2f\n",
-						c->first, fit.is_int ? "int" : "flt", fit.slope, fit.intc, fit.resid);
-					shown++;
-				}
-			}
+			fprintf(f, "[MP-PROBE v148] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) pair=%s",
+				g_probe_round, oid, ptr, tx, ty, x_off ? "yes" : "no");
+			if (x_off) fprintf(f, " x_off=0x%X y_off=0x%X (vx=%.1f vy=%.1f)", x_off, y_off, *(float*)(ptr+x_off), *(float*)(ptr+y_off));
+			fprintf(f, "\n");
 			fflush(f); fclose(f);
 		}
 	}
 
 	if (g_probe_round < PROBE_LOCK_ROUNDS) return;
-
-	// Lock x (tight residual) then y (loose: client snaps y to foothold).
-	ProbeFit best_x; best_x.ok = false; best_x.resid = 1.0e9f; int x_off = 0;
-	for (std::map<int, std::vector<ProbeSample>>::iterator c = g_probe_xsamp.begin(); c != g_probe_xsamp.end(); ++c) {
-		ProbeFit fit = MP_FitProbeChannel(c->second, 4.0f);
-		if (fit.ok && fit.resid < best_x.resid) { best_x = fit; x_off = c->first; }
-	}
-	ProbeFit best_y; best_y.ok = false; best_y.resid = 1.0e9f; int y_off = 0;
-	for (std::map<int, std::vector<ProbeSample>>::iterator c = g_probe_ysamp.begin(); c != g_probe_ysamp.end(); ++c) {
-		ProbeFit fit = MP_FitProbeChannel(c->second, 40.0f);
-		if (fit.ok && fit.resid < best_y.resid) { best_y = fit; y_off = c->first; }
-	}
-
-	if (!best_x.ok) {
-		// Could not lock x - restart probing (clears stale samples).
+	if (!x_off) {
+		// No (x,y) pair in this object - restart probing.
 		g_probe_round = 0; g_probe_last_x = 1.0e9f; g_probe_last_y = 1.0e9f;
-		g_probe_xsamp.clear(); g_probe_ysamp.clear();
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v87] x LOCK FAILED at round %d - see candidates above\n", PROBE_LOCK_ROUNDS); fflush(f); fclose(f); }
+		if (f) { fprintf(f, "[MP-PROBE v148] NO PAIR at round %d\n", PROBE_LOCK_ROUNDS); fflush(f); fclose(f); }
 		return;
 	}
-
-	// [v95] y-static fallback: when the remote avatar walks on flat ground
-	// ty never changes, so slope fitting has zero information. Find the slot
-	// whose current memory value equals the known target y (prefer offsets
-	// close to x_off, since x/y are normally adjacent in the struct).
-	if (!best_y.ok && ty != 0.0f) {
-		float best_err = 1.0e9f;
-		for (std::map<int, std::vector<ProbeSample>>::iterator c = g_probe_ysamp.begin(); c != g_probe_ysamp.end(); ++c) {
-			if (c->second.empty()) continue;
-			// Give nearby offsets a head-start so x/y adjacency wins ties.
-			float near_bonus = (fabsf((float)(c->first - x_off)) <= 32.0f) ? 0.5f : 0.0f;
-			float v = c->second.back().memf;
-			float err = fabsf(v - ty) - near_bonus;
-			// Also accept int32-stored coordinates.
-			if (!isfinite(v) || err >= best_err) {
-				int iv = c->second.back().memi;
-				float verr = fabsf((float)iv - ty) - near_bonus;
-				if (verr >= best_err) continue;
-				v = (float)iv; err = verr;
-			}
-			if (err < 1.0f && err < best_err) {
-				best_err = err;
-				y_off = c->first;
-				best_y.ok = true;
-				best_y.is_int = (v == (float)c->second.back().memi);
-				best_y.slope = 1.0f;
-				best_y.intc = 0.0f;
-				best_y.resid = err;
-			}
-		}
+	// Cross-round vote: same pair seen 2+ times (in rebuilt objects) locks.
+	unsigned long long pk = ((unsigned long long)(unsigned)x_off << 16) | (unsigned)(y_off & 0xFFFF);
+	g_probe_pairs[pk]++;
+	{
+		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+		if (f) { fprintf(f, "[MP-PROBE v148] vote x_off=0x%X y_off=0x%X n=%d\n", x_off, y_off, g_probe_pairs[pk]); fflush(f); fclose(f); }
 	}
+	if (g_probe_pairs[pk] < 2) return;
 
 	g_interp_x_off = x_off;
 	g_interp_y_off = y_off;   // 0 is valid: x-only writes still kill the flicker
-	g_interp_x_is_int = best_x.is_int; g_interp_x_scale = best_x.slope; g_interp_x_intc = best_x.intc;
-	g_interp_y_is_int = best_y.ok ? best_y.is_int : false;
-	g_interp_y_scale = best_y.ok ? best_y.slope : 1.0f;
-	g_interp_y_intc  = best_y.ok ? best_y.intc  : 0.0f;
+	g_interp_x_is_int = false; g_interp_x_scale = 1.0f; g_interp_x_intc = 0.0f;
+	g_interp_y_is_int = false; g_interp_y_scale = 1.0f; g_interp_y_intc = 0.0f;
 	g_probe_locked = true;
 
 	FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 	if (f) {
-		fprintf(f, "[MP-PROBE v87] *** LOCKED x_off=0x%X(%s s=%.3f i=%.1f) y_off=0x%X(%s s=%.3f i=%.1f) ***\n",
-			x_off, best_x.is_int ? "int" : "flt", best_x.slope, best_x.intc,
-			y_off, best_y.ok ? (best_y.is_int ? "int" : "flt") : "none", best_y.ok ? best_y.slope : 0, best_y.ok ? best_y.intc : 0);
+		fprintf(f, "[MP-PROBE v148] *** LOCKED x_off=0x%X y_off=0x%X (flt) ***\n", x_off, y_off);
 		fflush(f); fclose(f);
 	}
 }
