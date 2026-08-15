@@ -1092,10 +1092,10 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 				sp.Encode2((WORD)(unsigned short)elems[k]);
 			sp.Encode1(mv_stance);             // stance
 			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());  // [v143] V110 GOLDEN REBUILD: _v110_ref.cpp line 1303 proves MP_RemoteCtx(){return false} lives under #ifndef MP_SERVER = DLL stub only. Server impl (StandaloneServer.cpp) reads cfg bit1 (=1) -> move 0x0C goes CWvsContext(ctx=1), matching _srv_v110.log "op=0C len=23 ctx=1". v142 wrongly forced false (CField) from a misread of the DLL stub -> peer never moved. v141 was right (ctx=1) but its DLL was v140 with interference; DLL is back to v86 (760320B) now.
-			printf("[MP-FWD] v143 sp0x0C -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
+			printf("[MP-FWD] v144 sp0x0C -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, (int)elems.size(), (int)mv_stance, nx, ny);
 		}
-		MP_MARK("MP-FWD v143 sp-0x0C-path");
+		MP_MARK("MP-FWD v144 sp-0x0C-path");
 		return;
 	}
 
@@ -1362,6 +1362,10 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 	// the deferred spawns OUTSIDE the lock so the Sleep no longer holds
 	// g_playersMtx (which froze other players' movement sync while blocked).
 	std::vector<RemotePlayer> dirB_targets;
+	// [v144] dirA retry targets: the already-present player who only got ONE
+	// 0x11 spawn (live=0, hashmap miss -> 0x0C dropped). Re-send after dirB
+	// loop completes, using the same 3s delay so the first player is stable.
+	std::vector<RemotePlayer> dirA_targets;
 	{
 		std::lock_guard<std::mutex> lk(g_playersMtx);
 		// [v61-diag] prove whether this loop actually matches anybody.
@@ -1409,6 +1413,13 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 				AccountDataPacket(other.chr, other_sid);         // [v62] restore other identity
 			// [v94] collect for dirB (deferred, sent OUTSIDE the lock below)
 			dirB_targets.push_back(other);
+			// [v144] ALSO collect for dirA retry: mp_diag proved the FIRST 0x11
+			// spawn to the already-present player (方向A) lands with live=0
+			// (character not yet in the client hashmap) and the following 0x0C
+			// move packets are silently dropped -> 先进者 sees 后进者 standing
+			// still. dirB (后进者) got a retry x2 and registers (live!=0) so it
+			// CAN move. Give 方向A the same retry so BOTH sides move.
+			dirA_targets.push_back(other);
 		}
 		printf("[MP-XVIS] leave t_sid=%d matched=%d\n", t_sid, xvis_matched);
 		fflush(stdout);
@@ -1439,6 +1450,27 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			AccountDataPacket(chr, t_sid);
 		printf("[MP-XVIS] deferred dirB v94 ctx=%d -> sid=%d other oid=%08X (retry x2)\n",
 			MP_RemoteCtx() ? 1 : 0, t_sid, (unsigned)other.chr.id);
+		fflush(stdout);
+	}
+	// [v144] 方向A retry: 先进者(other)只收到过一次 0x11 (live=0, hashmap
+	// miss -> 后续 0x0C 被丢弃 -> 对方站桩)。与 dirB 同样延迟 3s 后重发
+	// 2 次出生阶梯, 让先进者也能注册远程角色并跟随移动。
+	for (auto &other : dirA_targets) {
+		int other_sid = other.sid;
+		Sleep(3000);
+		if (MP_RemoteSend3D()) AccountDataPacket(chr, other_sid);
+		Sleep(50);
+		CharacterSpawnPacket(chr, x, y, 0, other_sid, MP_RemoteCtx());
+		if (MP_RemoteSend3D() && MP_Restore3D())
+			AccountDataPacket(other.chr, other_sid);
+		Sleep(1500);
+		if (MP_RemoteSend3D()) AccountDataPacket(chr, other_sid);
+		Sleep(50);
+		CharacterSpawnPacket(chr, x, y, 0, other_sid, MP_RemoteCtx());
+		if (MP_RemoteSend3D() && MP_Restore3D())
+			AccountDataPacket(other.chr, other_sid);
+		printf("[MP-XVIS] deferred dirA v144 ctx=%d -> sid=%d my oid=%08X (retry x2)\n",
+			MP_RemoteCtx() ? 1 : 0, other_sid, (unsigned)chr.id);
 		fflush(stdout);
 	}
 #else
