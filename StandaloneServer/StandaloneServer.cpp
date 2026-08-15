@@ -257,7 +257,7 @@ static void MP_Cfg(int &ctx, int &send3d, int &restore3d, int &selffirst,
 	static int s_ctx = -1, s_3d = -1, s_rst = -1, s_first = -1, s_move = -1, s_rebuild = -1, s_smooth = -1;
 	if (s_ctx < 0) {
 		MP_LoadCtxCfg(s_ctx, s_3d, s_rst, s_first, s_move, s_rebuild, s_smooth);
-		Log("[MP-CFG] v142 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d moveAsSpawn=%d rebuildMove=%d smoothMove=%d",
+		Log("[MP-CFG] v143 ctx=%d (%s) send0x3D=%d restore0x3D=%d selfSpawnFirst=%d moveAsSpawn=%d rebuildMove=%d smoothMove=%d",
 			s_ctx, s_ctx ? "CWvsContext" : "CField", s_3d, s_rst, s_first, s_move, s_rebuild, s_smooth);
 	}
 	ctx = s_ctx;
@@ -355,7 +355,7 @@ int MP_PathMode() {
 			fclose(f);
 			if (n >= 8 && buf[7] >= '0' && buf[7] <= '9') s_mode = buf[7] - '0';
 		}
-		Log("[MP-CFG] v142 pathMode=%d (8th char of mp_ctx.cfg)", s_mode);
+		Log("[MP-CFG] v143 pathMode=%d (8th char of mp_ctx.cfg)", s_mode);
 	}
 	return s_mode;
 }
