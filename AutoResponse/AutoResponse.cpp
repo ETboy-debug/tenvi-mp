@@ -18,7 +18,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_DLL_V145_SMOOTH_MEMWRITE";
+static const char* MP_INTERP_TAG = "MP_DLL_V146_OFFSET_PROBE";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -265,6 +265,11 @@ static ProbeFit MP_FitProbeChannel(const std::vector<ProbeSample>& s, float resi
 	if (s.size() < 2) return best;
 	float n = (float)s.size();
 	// float channel
+	// [v146] STRICT: x/y coords are stored as float with slope==1.0, intc==0.
+	// The old +/-0.35 slope gate + int channel let the probe lock garbage
+	// (v87 locked x_off=0x4: the float bit-pattern read as int32 accidentally
+	// tracked tx with slope 1.03 -> writing it moved nothing / risked crash).
+	// Only a float slot with slope ~1.0 and intc ~0 can be the coordinate.
 	{
 		float st = 0, sy = 0, stt = 0, sty = 0;
 		for (size_t i = 0; i < s.size(); i++) { st += s[i].t; sy += s[i].memf; stt += s[i].t*s[i].t; sty += s[i].t*s[i].memf; }
@@ -274,26 +279,13 @@ static ProbeFit MP_FitProbeChannel(const std::vector<ProbeSample>& s, float resi
 			float intc = (sy - slope*st) / n;
 			float rmax = 0;
 			for (size_t i = 0; i < s.size(); i++) { float e = fabsf(s[i].memf - (slope*s[i].t + intc)); if (e > rmax) rmax = e; }
-			if (fabsf(slope - 1.0f) < 0.35f && rmax < resid_thresh && rmax < best.resid) {
+			if (fabsf(slope - 1.0f) < 0.05f && fabsf(intc) < 500.0f && rmax < resid_thresh && rmax < best.resid) {
 				best.ok = true; best.is_int = false; best.slope = slope; best.intc = intc; best.resid = rmax;
 			}
 		}
 	}
-	// int channel
-	{
-		float st = 0, sy = 0, stt = 0, sty = 0;
-		for (size_t i = 0; i < s.size(); i++) { st += s[i].t; sy += (float)s[i].memi; stt += s[i].t*s[i].t; sty += s[i].t*(float)s[i].memi; }
-		float den = n*stt - st*st;
-		if (fabsf(den) > 1e-3f) {
-			float slope = (n*sty - st*sy) / den;
-			float intc = (sy - slope*st) / n;
-			float rmax = 0;
-			for (size_t i = 0; i < s.size(); i++) { float e = fabsf((float)s[i].memi - (slope*s[i].t + intc)); if (e > rmax) rmax = e; }
-			if (fabsf(slope - 1.0f) < 0.35f && rmax < resid_thresh && rmax < best.resid) {
-				best.ok = true; best.is_int = true; best.slope = slope; best.intc = intc; best.resid = rmax;
-			}
-		}
-	}
+	// int channel DISABLED [v146]: coordinate floats read as int32 produce
+	// bogus near-linear fits (bit patterns). Real coords are float only.
 	return best;
 }
 
@@ -933,8 +925,14 @@ void MP_Pump() {
 	// [v99] Coordinate probe DISABLED. The probe was auto-locking offsets that
 	// later caused access-violation crashes when lerp wrote to them. Do not
 	// run any memory discovery until we can validate offsets offline.
+	// [v146] MP_MemSearchCoords DISABLED: it locks the exe static segment
+	// (0x001AF4DC - same address in every process, a constant, not the avatar)
+	// because it scans ALL MEM_PRIVATE from 0x00010000. Writing it never moves
+	// the avatar and it pre-empts the probe. Probe (MP_ProbeCoordOffsets) runs
+	// after a rebuild 0x11, when the live avatar exists in the CField hashmap,
+	// and locks a *stable object offset* (x_off/y_off) that survives rebuilds
+	// because MP_ApplyInterpolation re-resolves GetCharacterByOID every frame.
 	if (MP_InterpEnabled()) {
-		if (!g_mem_locked) MP_MemSearchCoords();
 		if (!g_mem_locked) MP_ProbeCoordOffsets();
 	}
 	// [v71] Drop stale entries so the map does not grow forever if a remote
