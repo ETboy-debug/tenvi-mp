@@ -18,7 +18,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_DLL_V152_FOLLOWVOTE";
+static const char* MP_INTERP_TAG = "MP_DLL_V153_KNOWNCOORD";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -464,7 +464,22 @@ static void MP_ProbeCoordOffsets() {
 	// constant zero field) is now rejected by the vx-follows-tx vote: a real
 	// coord field's value CHANGES as the avatar walks (2 rounds differ), a
 	// constant-zero field does not.
+	// [v153] KNOWN-CANDIDATE FIRST: V152 proved (0x11A4,0x11A8) flt is the
+	// real coord pair on the working side (vx EXACTLY == tx: -455.0, -627.8,
+	// -488.1 ... and vy EXACTLY == ty on every hit; the v98 hard-coded
+	// offsets were right all along - the old crash was a timing issue, not a
+	// wrong offset). Try that pair directly FIRST; only if it fails do the
+	// full scan. This makes the lagging side (V78 non-symmetric visibility)
+	// lock instantly when its GetCharacterByOID pointer is a valid avatar.
+	{
+		float kx = *(float*)(ptr + 0x11A4);
+		float ky = *(float*)(ptr + 0x11A8);
+		if (isfinite(kx) && isfinite(ky) && fabs(kx - tx) < 300.0 && fabs(ky - ty) <= 2.0) {
+			x_off = 0x11A4; y_off = 0x11A8; pair_is_int = false; found_pair = true;
+		}
+	}
 	int x_off = 0, y_off = 0; bool pair_is_int = false; bool found_pair = false;
+	if (!found_pair) {
 	for (int pass = 0; pass < 2 && !found_pair; pass++) {
 		double best_diff = 1.0e9; int bx = 0, by = 0;
 		for (int off_y = 0; off_y < PROBE_SCAN_RANGE; off_y += 4) {
@@ -482,11 +497,12 @@ static void MP_ProbeCoordOffsets() {
 		}
 		if (best_diff < 1.0e8) { x_off = bx; y_off = by; pair_is_int = (pass == 1); found_pair = true; }
 	}
+	}
 
 	if (g_probe_round <= 8) {
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) {
-			fprintf(f, "[MP-PROBE v152] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) pair=%s",
+			fprintf(f, "[MP-PROBE v153] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) pair=%s",
 				g_probe_round, oid, ptr, tx, ty, found_pair ? "yes" : "no");
 			if (found_pair) fprintf(f, " x_off=0x%X y_off=0x%X %s (vx=%.1f vy=%.1f)", x_off, y_off,
 				pair_is_int ? "int" : "flt",
@@ -502,7 +518,7 @@ static void MP_ProbeCoordOffsets() {
 		// No (x,y) pair in this object - restart probing.
 		g_probe_round = 0; g_probe_last_x = 1.0e9f; g_probe_last_y = 1.0e9f;
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v152] NO PAIR at round %d\n", PROBE_LOCK_ROUNDS); fflush(f); fclose(f); }
+		if (f) { fprintf(f, "[MP-PROBE v153] NO PAIR at round %d\n", PROBE_LOCK_ROUNDS); fflush(f); fclose(f); }
 		return;
 	}
 	// Cross-round vote: same pair seen 2+ times (in rebuilt objects) locks.
@@ -515,7 +531,7 @@ static void MP_ProbeCoordOffsets() {
 	vote.count++;
 	{
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v152] vote x_off=0x%X y_off=0x%X %s n=%d\n", x_off, y_off,
+		if (f) { fprintf(f, "[MP-PROBE v153] vote x_off=0x%X y_off=0x%X %s n=%d\n", x_off, y_off,
 			pair_is_int ? "int" : "flt", vote.count); fflush(f); fclose(f); }
 	}
 	if (vote.count < 2) {
@@ -529,7 +545,7 @@ static void MP_ProbeCoordOffsets() {
 		g_probe_pairs.erase(pk);
 		g_probe_round = 0; g_probe_last_x = 1.0e9f; g_probe_last_y = 1.0e9f;
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v152] REJECT constant field x_off=0x%X y_off=0x%X (vx %.1f == %.1f)\n",
+		if (f) { fprintf(f, "[MP-PROBE v153] REJECT constant field x_off=0x%X y_off=0x%X (vx %.1f == %.1f)\n",
 			x_off, y_off, now_vx, vote.last_vx); fflush(f); fclose(f); }
 		return;
 	}
@@ -542,7 +558,7 @@ static void MP_ProbeCoordOffsets() {
 
 	FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 	if (f) {
-		fprintf(f, "[MP-PROBE v152] *** LOCKED x_off=0x%X y_off=0x%X (%s) ***\n", x_off, y_off,
+		fprintf(f, "[MP-PROBE v153] *** LOCKED x_off=0x%X y_off=0x%X (%s) ***\n", x_off, y_off,
 			pair_is_int ? "int" : "flt");
 		fflush(f); fclose(f);
 	}
