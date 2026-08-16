@@ -793,7 +793,7 @@ int main(int argc, char **argv) {
 	}
 
 	Log("=== Tenvi standalone server (multi-player) ===");
-	Log("server build = MP_SERVER_V163_DELTA_PATH");
+	Log("server build = MP_SERVER_V165_ONESTEP");
 	LogW("xml path = ", g_xmlPath);
 	LogW("region   = ", g_regionStr);
 	Log("port     = %d", g_port);
