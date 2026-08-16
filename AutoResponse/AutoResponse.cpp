@@ -471,6 +471,7 @@ static void MP_ProbeCoordOffsets() {
 	// wrong offset). Try that pair directly FIRST; only if it fails do the
 	// full scan. This makes the lagging side (V78 non-symmetric visibility)
 	// lock instantly when its GetCharacterByOID pointer is a valid avatar.
+	int x_off = 0, y_off = 0; bool pair_is_int = false; bool found_pair = false;
 	{
 		float kx = *(float*)(ptr + 0x11A4);
 		float ky = *(float*)(ptr + 0x11A8);
@@ -478,7 +479,6 @@ static void MP_ProbeCoordOffsets() {
 			x_off = 0x11A4; y_off = 0x11A8; pair_is_int = false; found_pair = true;
 		}
 	}
-	int x_off = 0, y_off = 0; bool pair_is_int = false; bool found_pair = false;
 	if (!found_pair) {
 	for (int pass = 0; pass < 2 && !found_pair; pass++) {
 		double best_diff = 1.0e9; int bx = 0, by = 0;
