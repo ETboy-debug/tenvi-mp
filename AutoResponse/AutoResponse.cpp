@@ -18,7 +18,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_DLL_V156_YMATCH30";
+static const char* MP_INTERP_TAG = "MP_DLL_V157_ONLY11A4";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -486,16 +486,15 @@ static void MP_ProbeCoordOffsets() {
 	// in-motion lag, y=255 vs ty=257). So: add (0x638,0x5F8) int as a second
 	// known candidate, widen x-match 300 -> 800 (fast walkers lag the target
 	// by hundreds of px), and run known candidates BEFORE the full scan.
+	// [v157] DROP the (0x638,0x5F8) int candidate: V156 logs prove it is a
+	// CONSTANT field (vx=-75.0 on every round -> REJECT constant field) that
+	// kept pre-empting the real 0x11A4 pair (found_pair=true set by the junk
+	// candidate, then REJECT cleared it, next round re-hit it -> infinite
+	// reject loop, real candidate never ran). V152/V154 already PROVED
+	// (0x11A4,0x11A8) flt is the real coord (vx EXACTLY == tx). Keep ONLY
+	// that candidate, with y-match 30 for jump coverage.
 	int x_off = 0, y_off = 0; bool pair_is_int = false; bool found_pair = false;
 	{
-		// int pixel pair, V153 21852 hit
-		float kx_i = (float)(*(int*)(ptr + 0x638));
-		float ky_i = (float)(*(int*)(ptr + 0x5F8));
-		if (isfinite(kx_i) && isfinite(ky_i) && fabs(kx_i - tx) < 800.0 && fabs(ky_i - ty) <= 30.0) {
-			x_off = 0x638; y_off = 0x5F8; pair_is_int = true; found_pair = true;
-		}
-	}
-	if (!found_pair) {
 		float kx = *(float*)(ptr + 0x11A4);
 		float ky = *(float*)(ptr + 0x11A8);
 		if (isfinite(kx) && isfinite(ky) && fabs(kx - tx) < 300.0 && fabs(ky - ty) <= 30.0) {
@@ -525,7 +524,7 @@ static void MP_ProbeCoordOffsets() {
 	if (g_probe_round <= 8) {
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) {
-			fprintf(f, "[MP-PROBE v156] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) pair=%s",
+			fprintf(f, "[MP-PROBE v157] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) pair=%s",
 				g_probe_round, oid, ptr, tx, ty, found_pair ? "yes" : "no");
 			if (found_pair) fprintf(f, " x_off=0x%X y_off=0x%X %s (vx=%.1f vy=%.1f)", x_off, y_off,
 				pair_is_int ? "int" : "flt",
@@ -541,7 +540,7 @@ static void MP_ProbeCoordOffsets() {
 		// No (x,y) pair in this object - restart probing.
 		g_probe_round = 0; g_probe_last_x = 1.0e9f; g_probe_last_y = 1.0e9f;
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v156] NO PAIR at round %d\n", PROBE_LOCK_ROUNDS); fflush(f); fclose(f); }
+		if (f) { fprintf(f, "[MP-PROBE v157] NO PAIR at round %d\n", PROBE_LOCK_ROUNDS); fflush(f); fclose(f); }
 		return;
 	}
 	// Cross-round vote: same pair seen 2+ times (in rebuilt objects) locks.
@@ -554,7 +553,7 @@ static void MP_ProbeCoordOffsets() {
 	vote.count++;
 	{
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v156] vote x_off=0x%X y_off=0x%X %s n=%d\n", x_off, y_off,
+		if (f) { fprintf(f, "[MP-PROBE v157] vote x_off=0x%X y_off=0x%X %s n=%d\n", x_off, y_off,
 			pair_is_int ? "int" : "flt", vote.count); fflush(f); fclose(f); }
 	}
 	if (vote.count < 2) {
@@ -568,7 +567,7 @@ static void MP_ProbeCoordOffsets() {
 		g_probe_pairs.erase(pk);
 		g_probe_round = 0; g_probe_last_x = 1.0e9f; g_probe_last_y = 1.0e9f;
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v156] REJECT constant field x_off=0x%X y_off=0x%X (vx %.1f == %.1f)\n",
+		if (f) { fprintf(f, "[MP-PROBE v157] REJECT constant field x_off=0x%X y_off=0x%X (vx %.1f == %.1f)\n",
 			x_off, y_off, now_vx, vote.last_vx); fflush(f); fclose(f); }
 		return;
 	}
@@ -581,7 +580,7 @@ static void MP_ProbeCoordOffsets() {
 
 	FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 	if (f) {
-		fprintf(f, "[MP-PROBE v156] *** LOCKED x_off=0x%X y_off=0x%X (%s) ***\n", x_off, y_off,
+		fprintf(f, "[MP-PROBE v157] *** LOCKED x_off=0x%X y_off=0x%X (%s) ***\n", x_off, y_off,
 			pair_is_int ? "int" : "flt");
 		fflush(f); fclose(f);
 	}
