@@ -18,7 +18,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_DLL_V154_INT638";
+static const char* MP_INTERP_TAG = "MP_DLL_V155_SPEED10";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -48,7 +48,16 @@ static std::map<DWORD, DWORD> g_char_by_oid;  // filled per-frame by direct look
 // Speed is the lerp factor per frame (0.1 = move 10% of the gap each frame).
 static int g_interp_x_off = 0;
 static int g_interp_y_off = 0;
-static float g_interp_speed = 0.15f;
+// [v155] speed 0.15 -> 1.0: V154 user shows residual/afterimage and flicker
+// because DLL writes the coord slowly (speed 0.15) while the client ALSO
+// updates the object internally each frame; the two writers desync -> the
+// rendered position keeps trailing the DLL-written position (afterimage),
+// and the rebuild staircase that still slips through produces a per-frame
+// flicker. Speed 1.0 means "snap to target this frame" -> no lerp lag ->
+// afterimage goes away. Suppression already runs (locked=1) so rebuild
+// staircases to that oid are swallowed; the flicker is from the client
+// rendering the snap-to position before the next animation tick settles.
+static float g_interp_speed = 1.0f;
 
 // [v86] Coordinate-offset probe state.
 //
@@ -516,7 +525,7 @@ static void MP_ProbeCoordOffsets() {
 	if (g_probe_round <= 8) {
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) {
-			fprintf(f, "[MP-PROBE v154] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) pair=%s",
+			fprintf(f, "[MP-PROBE v155] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) pair=%s",
 				g_probe_round, oid, ptr, tx, ty, found_pair ? "yes" : "no");
 			if (found_pair) fprintf(f, " x_off=0x%X y_off=0x%X %s (vx=%.1f vy=%.1f)", x_off, y_off,
 				pair_is_int ? "int" : "flt",
@@ -532,7 +541,7 @@ static void MP_ProbeCoordOffsets() {
 		// No (x,y) pair in this object - restart probing.
 		g_probe_round = 0; g_probe_last_x = 1.0e9f; g_probe_last_y = 1.0e9f;
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v154] NO PAIR at round %d\n", PROBE_LOCK_ROUNDS); fflush(f); fclose(f); }
+		if (f) { fprintf(f, "[MP-PROBE v155] NO PAIR at round %d\n", PROBE_LOCK_ROUNDS); fflush(f); fclose(f); }
 		return;
 	}
 	// Cross-round vote: same pair seen 2+ times (in rebuilt objects) locks.
@@ -545,7 +554,7 @@ static void MP_ProbeCoordOffsets() {
 	vote.count++;
 	{
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v154] vote x_off=0x%X y_off=0x%X %s n=%d\n", x_off, y_off,
+		if (f) { fprintf(f, "[MP-PROBE v155] vote x_off=0x%X y_off=0x%X %s n=%d\n", x_off, y_off,
 			pair_is_int ? "int" : "flt", vote.count); fflush(f); fclose(f); }
 	}
 	if (vote.count < 2) {
@@ -559,7 +568,7 @@ static void MP_ProbeCoordOffsets() {
 		g_probe_pairs.erase(pk);
 		g_probe_round = 0; g_probe_last_x = 1.0e9f; g_probe_last_y = 1.0e9f;
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v154] REJECT constant field x_off=0x%X y_off=0x%X (vx %.1f == %.1f)\n",
+		if (f) { fprintf(f, "[MP-PROBE v155] REJECT constant field x_off=0x%X y_off=0x%X (vx %.1f == %.1f)\n",
 			x_off, y_off, now_vx, vote.last_vx); fflush(f); fclose(f); }
 		return;
 	}
@@ -572,7 +581,7 @@ static void MP_ProbeCoordOffsets() {
 
 	FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 	if (f) {
-		fprintf(f, "[MP-PROBE v154] *** LOCKED x_off=0x%X y_off=0x%X (%s) ***\n", x_off, y_off,
+		fprintf(f, "[MP-PROBE v155] *** LOCKED x_off=0x%X y_off=0x%X (%s) ***\n", x_off, y_off,
 			pair_is_int ? "int" : "flt");
 		fflush(f); fclose(f);
 	}
