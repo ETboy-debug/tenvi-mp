@@ -1076,10 +1076,32 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 //    suppression/memscan interference) - restored from tenvi-mp-v113.zip.
 //    v141 had ctx=1 right but shipped the v140 DLL, which is why it failed.
 	if (MP_SmoothMove() && op == 0x0C && has_pos && !mv_pts.empty()) {
+		// [v163] 路径元素必须是 (dx,dy) 相对位移，不是绝对坐标。客户端
+		// ApplyPath(0x45C9A7/0x45CAEE) 把每个 int16 当 delta 累加到角色当前
+		// 渲染位置。v144 发的是绝对坐标(如 -220,374)，被当成 delta 累加 ->
+		// 角色被踹到天上/地图外 = "看不到对方移动"。V162 诊断已确认 0x0C 到达
+		// 时角色在 CField hashmap(live 非 0)、oid/ctx 全对，唯一错的就是路径
+		// 语义。起点 = 发送方 last_move，逐点做差得 (dx,dy) int16 delta。
+		float px = 0.0f, py = 0.0f;
+		bool have_origin = false;
+		{
+			std::lock_guard<std::mutex> lk(g_playersMtx);
+			auto oit = g_players.find(t_sid);
+			if (oit != g_players.end() && oit->second.has_last_move) {
+				px = oit->second.last_move_x;
+				py = oit->second.last_move_y;
+				have_origin = true;
+			}
+		}
 		std::vector<short> elems;
+		float cx = px, cy = py;
 		for (size_t i = 0; i < mv_pts.size(); i++) {
-			elems.push_back((short)mv_pts[i].x);
-			elems.push_back((short)mv_pts[i].y);
+			if (!have_origin && i == 0) { cx = mv_pts[0].x; cy = mv_pts[0].y; }
+			short dx = (short)(mv_pts[i].x - cx);
+			short dy = (short)(mv_pts[i].y - cy);
+			elems.push_back(dx);
+			elems.push_back(dy);
+			cx = mv_pts[i].x; cy = mv_pts[i].y;
 		}
 		if (elems.size() > 255) elems.resize(255);
 		if (elems.empty()) {
@@ -1095,10 +1117,10 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 				sp.Encode2((WORD)(unsigned short)elems[k]);
 			sp.Encode1(mv_stance);             // stance
 			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());  // [v143] V110 GOLDEN REBUILD: _v110_ref.cpp line 1303 proves MP_RemoteCtx(){return false} lives under #ifndef MP_SERVER = DLL stub only. Server impl (StandaloneServer.cpp) reads cfg bit1 (=1) -> move 0x0C goes CWvsContext(ctx=1), matching _srv_v110.log "op=0C len=23 ctx=1". v142 wrongly forced false (CField) from a misread of the DLL stub -> peer never moved. v141 was right (ctx=1) but its DLL was v140 with interference; DLL is back to v86 (760320B) now.
-			printf("[MP-FWD] v144 sp0x0C -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
+			printf("[MP-FWD] v163 sp0x0C-delta -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, (int)elems.size(), (int)mv_stance, nx, ny);
 		}
-		MP_MARK("MP-FWD v144 sp-0x0C-path");
+		MP_MARK("MP-FWD v163 sp-0x0C-delta-path");
 		return;
 	}
 
