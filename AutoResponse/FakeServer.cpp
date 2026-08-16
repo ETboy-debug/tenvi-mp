@@ -1076,12 +1076,11 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 //    suppression/memscan interference) - restored from tenvi-mp-v113.zip.
 //    v141 had ctx=1 right but shipped the v140 DLL, which is why it failed.
 	if (MP_SmoothMove() && op == 0x0C && has_pos && !mv_pts.empty()) {
-		// [v163] 路径元素必须是 (dx,dy) 相对位移，不是绝对坐标。客户端
-		// ApplyPath(0x45C9A7/0x45CAEE) 把每个 int16 当 delta 累加到角色当前
-		// 渲染位置。v144 发的是绝对坐标(如 -220,374)，被当成 delta 累加 ->
-		// 角色被踹到天上/地图外 = "看不到对方移动"。V162 诊断已确认 0x0C 到达
-		// 时角色在 CField hashmap(live 非 0)、oid/ctx 全对，唯一错的就是路径
-		// 语义。起点 = 发送方 last_move，逐点做差得 (dx,dy) int16 delta。
+		// [v164] 单步 delta：只发一个 (dx,dy) = 目标位置 - 上次位置(count=2)。
+		// V163 发完整轨迹的逐点微小 delta(-2~-47, 大多为0)，客户端 ApplyPath
+		// 几乎不动。V115 铁律: 客户端把 int16 当 delta 累加到角色当前位置，
+		// 最小合法包就是 count=2(MP_PathMode mode=3 "endpoint only")。所以发
+		// 一个"从现在位置一步到目标"的 delta，客户端一次走到位。
 		float px = 0.0f, py = 0.0f;
 		bool have_origin = false;
 		{
@@ -1093,34 +1092,37 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 				have_origin = true;
 			}
 		}
-		std::vector<short> elems;
-		float cx = px, cy = py;
-		for (size_t i = 0; i < mv_pts.size(); i++) {
-			if (!have_origin && i == 0) { cx = mv_pts[0].x; cy = mv_pts[0].y; }
-			short dx = (short)(mv_pts[i].x - cx);
-			short dy = (short)(mv_pts[i].y - cy);
-			elems.push_back(dx);
-			elems.push_back(dy);
-			cx = mv_pts[i].x; cy = mv_pts[i].y;
-		}
-		if (elems.size() > 255) elems.resize(255);
-		if (elems.empty()) {
-			printf("[MP-FWD] v119 sp0x0C skip: empty path\n");
-			return;
+		short ddx, ddy;
+		if (have_origin) {
+			ddx = (short)(nx - px);
+			ddy = (short)(ny - py);
+		} else {
+			ddx = (short)(nx - mv_pts[0].x);
+			ddy = (short)(ny - mv_pts[0].y);
 		}
 		for (auto &t : targets) {
 			ServerPacket sp;
 			sp.Encode1(0x0C);
 			sp.Encode4(me.id);                 // remote oid, 4-byte LE
-			sp.Encode1((BYTE)elems.size());    // count = number of int16 values
-			for (size_t k = 0; k < elems.size(); k++)
-				sp.Encode2((WORD)(unsigned short)elems[k]);
+			sp.Encode1(2);                     // count = 2 (single (dx,dy) pair)
+			sp.Encode2((WORD)(unsigned short)ddx);
+			sp.Encode2((WORD)(unsigned short)ddy);
 			sp.Encode1(mv_stance);             // stance
-			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());  // [v143] V110 GOLDEN REBUILD: _v110_ref.cpp line 1303 proves MP_RemoteCtx(){return false} lives under #ifndef MP_SERVER = DLL stub only. Server impl (StandaloneServer.cpp) reads cfg bit1 (=1) -> move 0x0C goes CWvsContext(ctx=1), matching _srv_v110.log "op=0C len=23 ctx=1". v142 wrongly forced false (CField) from a misread of the DLL stub -> peer never moved. v141 was right (ctx=1) but its DLL was v140 with interference; DLL is back to v86 (760320B) now.
-			printf("[MP-FWD] v163 sp0x0C-delta -> sid=%d oid=%08X count=%d stance=%d dst=(%.1f,%.1f)\n",
-				t.sid, (unsigned)me.id, (int)elems.size(), (int)mv_stance, nx, ny);
+			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
+			printf("[MP-FWD] v164 sp0x0C-1step -> sid=%d oid=%08X d=(%d,%d) dst=(%.1f,%.1f)\n",
+				t.sid, (unsigned)me.id, (int)ddx, (int)ddy, nx, ny);
 		}
-		MP_MARK("MP-FWD v163 sp-0x0C-delta-path");
+		MP_MARK("MP-FWD v164 sp-0x0C-1step");
+		// [v164] 每次移动后立即更新 last_move，供下一次做差。
+		{
+			std::lock_guard<std::mutex> lk(g_playersMtx);
+			auto uit = g_players.find(t_sid);
+			if (uit != g_players.end()) {
+				uit->second.last_move_x = nx;
+				uit->second.last_move_y = ny;
+				uit->second.has_last_move = true;
+			}
+		}
 		return;
 	}
 
