@@ -18,7 +18,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_DLL_V149_INT_PAIR_PROBE";
+static const char* MP_INTERP_TAG = "MP_DLL_V150_XMATCH30";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -438,6 +438,11 @@ static void MP_ProbeCoordOffsets() {
 	// [v149] pass 0 = float, pass 1 = int32 pixels: V148 found NOTHING with
 	// float-only because this client stores coords as int pixels (v95 note:
 	// "client that stores coords as int pixels").
+	// [v150] x-match tightened 2000 -> 30: V149 locked constant fields
+	// (vx=0.0 / vy=374.0) because ANY field within 2000 of tx qualified, so a
+	// constant-zero field next to a constant-374 field voted in and wrote to
+	// garbage. A real coord pair must have x EXACTLY at the target (avatar
+	// sits at tx right after a rebuild 0x11), so 30px is generous.
 	int x_off = 0, y_off = 0; bool pair_is_int = false; bool found_pair = false;
 	for (int pass = 0; pass < 2 && !found_pair; pass++) {
 		for (int off_y = 0; off_y < PROBE_SCAN_RANGE && !found_pair; off_y += 4) {
@@ -449,7 +454,7 @@ static void MP_ProbeCoordOffsets() {
 				double vx = (pass == 0) ? (double)*(float*)(ptr + off_x) : (double)(*(int*)(ptr + off_x));
 				double txv = (pass == 0) ? (double)tx : (double)(int)tx;
 				if (!isfinite((float)vx) || vx < -5000.0 || vx > 5000.0) continue;
-				if (fabs(vx - txv) < 2000.0) { x_off = off_x; y_off = off_y; pair_is_int = (pass == 1); found_pair = true; }
+				if (fabs(vx - txv) < 30.0) { x_off = off_x; y_off = off_y; pair_is_int = (pass == 1); found_pair = true; }
 			}
 		}
 	}
@@ -457,7 +462,7 @@ static void MP_ProbeCoordOffsets() {
 	if (g_probe_round <= 8) {
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) {
-			fprintf(f, "[MP-PROBE v149] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) pair=%s",
+			fprintf(f, "[MP-PROBE v150] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) pair=%s",
 				g_probe_round, oid, ptr, tx, ty, found_pair ? "yes" : "no");
 			if (found_pair) fprintf(f, " x_off=0x%X y_off=0x%X %s (vx=%.1f vy=%.1f)", x_off, y_off,
 				pair_is_int ? "int" : "flt",
@@ -473,7 +478,7 @@ static void MP_ProbeCoordOffsets() {
 		// No (x,y) pair in this object - restart probing.
 		g_probe_round = 0; g_probe_last_x = 1.0e9f; g_probe_last_y = 1.0e9f;
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v149] NO PAIR at round %d\n", PROBE_LOCK_ROUNDS); fflush(f); fclose(f); }
+		if (f) { fprintf(f, "[MP-PROBE v150] NO PAIR at round %d\n", PROBE_LOCK_ROUNDS); fflush(f); fclose(f); }
 		return;
 	}
 	// Cross-round vote: same pair seen 2+ times (in rebuilt objects) locks.
@@ -481,7 +486,7 @@ static void MP_ProbeCoordOffsets() {
 	g_probe_pairs[pk]++;
 	{
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v149] vote x_off=0x%X y_off=0x%X %s n=%d\n", x_off, y_off,
+		if (f) { fprintf(f, "[MP-PROBE v150] vote x_off=0x%X y_off=0x%X %s n=%d\n", x_off, y_off,
 			pair_is_int ? "int" : "flt", g_probe_pairs[pk]); fflush(f); fclose(f); }
 	}
 	if (g_probe_pairs[pk] < 2) return;
@@ -494,7 +499,7 @@ static void MP_ProbeCoordOffsets() {
 
 	FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 	if (f) {
-		fprintf(f, "[MP-PROBE v149] *** LOCKED x_off=0x%X y_off=0x%X (%s) ***\n", x_off, y_off,
+		fprintf(f, "[MP-PROBE v150] *** LOCKED x_off=0x%X y_off=0x%X (%s) ***\n", x_off, y_off,
 			pair_is_int ? "int" : "flt");
 		fflush(f); fclose(f);
 	}
