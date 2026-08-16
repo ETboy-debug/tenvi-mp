@@ -18,7 +18,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_DLL_V150_XMATCH30";
+static const char* MP_INTERP_TAG = "MP_DLL_V151_MINDIFF120";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -443,26 +443,38 @@ static void MP_ProbeCoordOffsets() {
 	// constant-zero field next to a constant-374 field voted in and wrote to
 	// garbage. A real coord pair must have x EXACTLY at the target (avatar
 	// sits at tx right after a rebuild 0x11), so 30px is generous.
+	// [v151] x-match 30 -> 120, AND pick the MINIMUM-diff field, not the
+	// first match. V150 locked NOTHING (0 LOCKED both clients) because the
+	// avatar does NOT sit exactly at tx - it walks toward tx, so the
+	// in-memory x lags the target by 17..200px depending on when the probe
+	// samples; 30px almost never matched. Also, first-match scanning let a
+	// near-tx junk field shadow the real x (which sits further along the
+	// scan). Scanning ALL candidates in y+/-32 and keeping the one with the
+	// smallest |vx-tx| picks the real x; the 2-round vote still filters
+	// junk. 120px still excludes the V149 fake pair (vx=0.0 vs tx=-220).
 	int x_off = 0, y_off = 0; bool pair_is_int = false; bool found_pair = false;
 	for (int pass = 0; pass < 2 && !found_pair; pass++) {
-		for (int off_y = 0; off_y < PROBE_SCAN_RANGE && !found_pair; off_y += 4) {
+		double best_diff = 1.0e9; int bx = 0, by = 0;
+		for (int off_y = 0; off_y < PROBE_SCAN_RANGE; off_y += 4) {
 			double vy = (pass == 0) ? (double)*(float*)(ptr + off_y) : (double)(*(int*)(ptr + off_y));
 			double tyv = (pass == 0) ? (double)ty : (double)(int)ty;
 			if (!isfinite((float)vy) || fabs(vy - tyv) > 2.0) continue;
-			for (int off_x = off_y - 32; off_x <= off_y + 32 && !found_pair; off_x += 4) {
+			for (int off_x = off_y - 32; off_x <= off_y + 32; off_x += 4) {
 				if (off_x < 0 || off_x + 4 > PROBE_SCAN_RANGE) continue;
 				double vx = (pass == 0) ? (double)*(float*)(ptr + off_x) : (double)(*(int*)(ptr + off_x));
 				double txv = (pass == 0) ? (double)tx : (double)(int)tx;
 				if (!isfinite((float)vx) || vx < -5000.0 || vx > 5000.0) continue;
-				if (fabs(vx - txv) < 30.0) { x_off = off_x; y_off = off_y; pair_is_int = (pass == 1); found_pair = true; }
+				double d = fabs(vx - txv);
+				if (d < 120.0 && d < best_diff) { best_diff = d; bx = off_x; by = off_y; }
 			}
 		}
+		if (best_diff < 1.0e8) { x_off = bx; y_off = by; pair_is_int = (pass == 1); found_pair = true; }
 	}
 
 	if (g_probe_round <= 8) {
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) {
-			fprintf(f, "[MP-PROBE v150] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) pair=%s",
+			fprintf(f, "[MP-PROBE v151] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) pair=%s",
 				g_probe_round, oid, ptr, tx, ty, found_pair ? "yes" : "no");
 			if (found_pair) fprintf(f, " x_off=0x%X y_off=0x%X %s (vx=%.1f vy=%.1f)", x_off, y_off,
 				pair_is_int ? "int" : "flt",
@@ -478,7 +490,7 @@ static void MP_ProbeCoordOffsets() {
 		// No (x,y) pair in this object - restart probing.
 		g_probe_round = 0; g_probe_last_x = 1.0e9f; g_probe_last_y = 1.0e9f;
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v150] NO PAIR at round %d\n", PROBE_LOCK_ROUNDS); fflush(f); fclose(f); }
+		if (f) { fprintf(f, "[MP-PROBE v151] NO PAIR at round %d\n", PROBE_LOCK_ROUNDS); fflush(f); fclose(f); }
 		return;
 	}
 	// Cross-round vote: same pair seen 2+ times (in rebuilt objects) locks.
@@ -486,7 +498,7 @@ static void MP_ProbeCoordOffsets() {
 	g_probe_pairs[pk]++;
 	{
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v150] vote x_off=0x%X y_off=0x%X %s n=%d\n", x_off, y_off,
+		if (f) { fprintf(f, "[MP-PROBE v151] vote x_off=0x%X y_off=0x%X %s n=%d\n", x_off, y_off,
 			pair_is_int ? "int" : "flt", g_probe_pairs[pk]); fflush(f); fclose(f); }
 	}
 	if (g_probe_pairs[pk] < 2) return;
@@ -499,7 +511,7 @@ static void MP_ProbeCoordOffsets() {
 
 	FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 	if (f) {
-		fprintf(f, "[MP-PROBE v150] *** LOCKED x_off=0x%X y_off=0x%X (%s) ***\n", x_off, y_off,
+		fprintf(f, "[MP-PROBE v151] *** LOCKED x_off=0x%X y_off=0x%X (%s) ***\n", x_off, y_off,
 			pair_is_int ? "int" : "flt");
 		fflush(f); fclose(f);
 	}
