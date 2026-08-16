@@ -18,7 +18,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_DLL_V157_ONLY11A4";
+static const char* MP_INTERP_TAG = "MP_DLL_V162_0C_CHK";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -838,6 +838,26 @@ void MP_Pump() {
 		BYTE mp_op = (bp.size() > 0) ? bp[0] : 0;
 		DWORD oid = 0;
 		if (bp.size() >= 5) oid = *(DWORD*)&bp[1];
+		// [v162-diag] 0x0C 到达时: 查 CField hashmap 是否已有该 oid 的角色,
+		// 并 dump 前 12 字节验证包格式。回答"0x0C 为什么驱动不了远程角色"：
+		//   live=0  -> 角色还没注册进 CField hashmap(时序问题, 延迟放行可解)
+		//   live!=0 -> 角色在 hashmap, 问题在路径格式/分发层, 需另查
+		if (mp_op == 0x0C && bp.size() >= 5) {
+			DWORD cfield = MP_GetCFieldPtr();
+			DWORD live = (cfield && _GetCharacterByOID) ? _GetCharacterByOID((void*)cfield, oid) : 0;
+			static int oc_chk = 0;
+			if (oc_chk < 40 || (oc_chk % 20) == 0) {
+				FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+				if (f) {
+					fprintf(f, "[MP-0C-CHK v162] oid=%08X live=%08X ctx=%d len=%d bytes=", oid, live, mp_ctx?1:0, (int)bp.size());
+					for (int bi = 0; bi < 12 && bi < (int)bp.size(); bi++) fprintf(f, "%02X ", bp[bi]);
+					if (bp.size() >= 6) fprintf(f, " count=%d", (int)bp[5]);
+					fprintf(f, "\n");
+					fflush(f); fclose(f);
+				}
+			}
+			oc_chk++;
+		}
 		// Diagnostics: remember the first self-tagged spawn we ever see.
 		if (mp_op == 0x11 && mp_ctx && g_localObjectId == 0) g_localObjectId = oid;
 		// [v72a-fix] Cache remote 0x11 spawn coords for interpolation. A remote
