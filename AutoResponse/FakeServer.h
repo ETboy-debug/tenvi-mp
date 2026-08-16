@@ -22,6 +22,8 @@ extern thread_local int t_sid;
 // [v50] context selects the receiving client's dispatch layer:
 // true -> CWvsContext, false -> CField (remote players / objects).
 void MP_BroadcastToSid(int sid, ServerPacket &sp, bool context = true);
+// [v161] 多个包合并成一次 TCP 写入发给同一 sid（消除 rebuild 闪烁）
+void MP_SendBatchToSid(int sid, std::vector<ServerPacket>& pks, bool context = true);
 void MP_RemovePlayer(int sid);
 // [v61] Dispatch layer used for REMOTE-player packets (0x3D/0x11/0x12/0x0C).
 // Runtime-configurable via "mp_ctx.cfg" next to StandaloneServer.exe so the
