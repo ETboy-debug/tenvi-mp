@@ -387,6 +387,33 @@ void MP_BroadcastToSid(int sid, ServerPacket &sp, bool context) {
 	}
 }
 
+// [v161] 把多个包合并成一次 TCP 写入发给同一 sid，让接收客户端在同一次
+// recv/同一帧处理（消除 rebuild 阶梯 0x12→0x11 之间的可见闪烁）。
+void MP_SendBatchToSid(int sid, std::vector<ServerPacket>& pks, bool context) {
+	SOCKET s = INVALID_SOCKET;
+	{
+		std::lock_guard<std::mutex> lk(g_adminMutex);
+		auto it = g_onlineSock.find(sid);
+		if (it != g_onlineSock.end()) s = it->second;
+	}
+	if (s == INVALID_SOCKET) return;
+	BYTE ft = context ? MP_TYPE_GAME : MP_TYPE_GAME_FIELD;
+	std::vector<BYTE> frame;
+	for (size_t i = 0; i < pks.size(); i++) {
+		std::vector<BYTE> data = pks[i].get();
+		DWORD len = (DWORD)data.size() + 1;
+		frame.push_back((BYTE)(len & 0xFF));
+		frame.push_back((BYTE)((len >> 8) & 0xFF));
+		frame.push_back((BYTE)((len >> 16) & 0xFF));
+		frame.push_back((BYTE)((len >> 24) & 0xFF));
+		frame.push_back(ft);
+		frame.insert(frame.end(), data.begin(), data.end());
+	}
+	int r = send(s, (const char *)&frame[0], (int)frame.size(), 0);
+	if (r == SOCKET_ERROR) Log("batch send failed, err=%d", WSAGetLastError());
+	else Log("[MP-BATCH] sid=%d pkts=%d bytes=%d", sid, (int)pks.size(), (int)frame.size());
+}
+
 // [MP] GM 广播: 给所有在线客户端发一条 Board 公告
 // 注意: CN v126 目前没有确认过 SP_BOARD 的 opcode(CN_v126_SP.cpp 里是注释掉的),
 // 发一个 opcode=0 的包客户端会当未知包处理, 有崩溃风险 -> 没映射就直接拒绝。
@@ -766,7 +793,7 @@ int main(int argc, char **argv) {
 	}
 
 	Log("=== Tenvi standalone server (multi-player) ===");
-	Log("server build = MP_SERVER_V89_OID_REWRITE");
+	Log("server build = MP_SERVER_V161_BATCH_REBUILD");
 	LogW("xml path = ", g_xmlPath);
 	LogW("region   = ", g_regionStr);
 	Log("port     = %d", g_port);
