@@ -18,7 +18,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_DLL_V155_SPEED10";
+static const char* MP_INTERP_TAG = "MP_DLL_V156_YMATCH30";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -491,14 +491,14 @@ static void MP_ProbeCoordOffsets() {
 		// int pixel pair, V153 21852 hit
 		float kx_i = (float)(*(int*)(ptr + 0x638));
 		float ky_i = (float)(*(int*)(ptr + 0x5F8));
-		if (isfinite(kx_i) && isfinite(ky_i) && fabs(kx_i - tx) < 800.0 && fabs(ky_i - ty) <= 2.0) {
+		if (isfinite(kx_i) && isfinite(ky_i) && fabs(kx_i - tx) < 800.0 && fabs(ky_i - ty) <= 30.0) {
 			x_off = 0x638; y_off = 0x5F8; pair_is_int = true; found_pair = true;
 		}
 	}
 	if (!found_pair) {
 		float kx = *(float*)(ptr + 0x11A4);
 		float ky = *(float*)(ptr + 0x11A8);
-		if (isfinite(kx) && isfinite(ky) && fabs(kx - tx) < 300.0 && fabs(ky - ty) <= 2.0) {
+		if (isfinite(kx) && isfinite(ky) && fabs(kx - tx) < 300.0 && fabs(ky - ty) <= 30.0) {
 			x_off = 0x11A4; y_off = 0x11A8; pair_is_int = false; found_pair = true;
 		}
 	}
@@ -508,7 +508,7 @@ static void MP_ProbeCoordOffsets() {
 		for (int off_y = 0; off_y < PROBE_SCAN_RANGE; off_y += 4) {
 			double vy = (pass == 0) ? (double)*(float*)(ptr + off_y) : (double)(*(int*)(ptr + off_y));
 			double tyv = (pass == 0) ? (double)ty : (double)(int)ty;
-			if (!isfinite((float)vy) || fabs(vy - tyv) > 2.0) continue;
+			if (!isfinite((float)vy) || fabs(vy - tyv) > 30.0) continue;
 			for (int off_x = off_y - 64; off_x <= off_y + 64; off_x += 4) {
 				if (off_x < 0 || off_x + 4 > PROBE_SCAN_RANGE) continue;
 				double vx = (pass == 0) ? (double)*(float*)(ptr + off_x) : (double)(*(int*)(ptr + off_x));
@@ -525,7 +525,7 @@ static void MP_ProbeCoordOffsets() {
 	if (g_probe_round <= 8) {
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 		if (f) {
-			fprintf(f, "[MP-PROBE v155] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) pair=%s",
+			fprintf(f, "[MP-PROBE v156] round=%d oid=%08X ptr=%08X target=(%.1f,%.1f) pair=%s",
 				g_probe_round, oid, ptr, tx, ty, found_pair ? "yes" : "no");
 			if (found_pair) fprintf(f, " x_off=0x%X y_off=0x%X %s (vx=%.1f vy=%.1f)", x_off, y_off,
 				pair_is_int ? "int" : "flt",
@@ -541,7 +541,7 @@ static void MP_ProbeCoordOffsets() {
 		// No (x,y) pair in this object - restart probing.
 		g_probe_round = 0; g_probe_last_x = 1.0e9f; g_probe_last_y = 1.0e9f;
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v155] NO PAIR at round %d\n", PROBE_LOCK_ROUNDS); fflush(f); fclose(f); }
+		if (f) { fprintf(f, "[MP-PROBE v156] NO PAIR at round %d\n", PROBE_LOCK_ROUNDS); fflush(f); fclose(f); }
 		return;
 	}
 	// Cross-round vote: same pair seen 2+ times (in rebuilt objects) locks.
@@ -554,7 +554,7 @@ static void MP_ProbeCoordOffsets() {
 	vote.count++;
 	{
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v155] vote x_off=0x%X y_off=0x%X %s n=%d\n", x_off, y_off,
+		if (f) { fprintf(f, "[MP-PROBE v156] vote x_off=0x%X y_off=0x%X %s n=%d\n", x_off, y_off,
 			pair_is_int ? "int" : "flt", vote.count); fflush(f); fclose(f); }
 	}
 	if (vote.count < 2) {
@@ -568,7 +568,7 @@ static void MP_ProbeCoordOffsets() {
 		g_probe_pairs.erase(pk);
 		g_probe_round = 0; g_probe_last_x = 1.0e9f; g_probe_last_y = 1.0e9f;
 		FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-		if (f) { fprintf(f, "[MP-PROBE v155] REJECT constant field x_off=0x%X y_off=0x%X (vx %.1f == %.1f)\n",
+		if (f) { fprintf(f, "[MP-PROBE v156] REJECT constant field x_off=0x%X y_off=0x%X (vx %.1f == %.1f)\n",
 			x_off, y_off, now_vx, vote.last_vx); fflush(f); fclose(f); }
 		return;
 	}
@@ -581,7 +581,7 @@ static void MP_ProbeCoordOffsets() {
 
 	FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 	if (f) {
-		fprintf(f, "[MP-PROBE v155] *** LOCKED x_off=0x%X y_off=0x%X (%s) ***\n", x_off, y_off,
+		fprintf(f, "[MP-PROBE v156] *** LOCKED x_off=0x%X y_off=0x%X (%s) ***\n", x_off, y_off,
 			pair_is_int ? "int" : "flt");
 		fflush(f); fclose(f);
 	}
