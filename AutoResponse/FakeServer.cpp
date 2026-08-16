@@ -265,7 +265,7 @@ void ChangeMapPacket(WORD mapid, float x = 0, float y = 0, int target_sid = -1) 
 }
 
 // 0x11
-void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, BYTE dir = 0, int target_sid = -1, bool context = true) {
+void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, BYTE dir = 0, int target_sid = -1, bool context = true, std::vector<ServerPacket>* batch = nullptr) {
 	ServerPacket sp(SP_CHARACTER_SPAWN);
 	sp.Encode4(chr.id); // 0048DB9B id, where checks id?
 	sp.EncodeFloat(x); // 0048DBA5, coordinate x
@@ -365,6 +365,7 @@ void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, BYTE di
 		if (context) SendPacket(sp);
 		else SendPacket2(sp);
 	}
+	else if (batch) batch->push_back(sp);   // [v161] collect for a single-TCP-write rebuild batch
 	// [v57] REVERT remote 0x11 to CField (ctx=0). The v54 premise "CN client
 	// renders remote 0x11 via CWvsContext" is contradicted by the live failure:
 	// remote players stay invisible at ctx=1. Canonical rule (0x11 = CField/
@@ -383,10 +384,11 @@ void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, BYTE di
 // 0x12
 // [v57] 0x12 移除随 0x11 一起退回 CField(ctx=0): 移除层必须与渲染层一致,
 // 否则下线后对方仍显示. 远程 0x11 已退回 CField, 移除也必须同步.
-void RemoveObjectPacket(DWORD object_id, int target_sid = -1) {
+void RemoveObjectPacket(DWORD object_id, int target_sid = -1, std::vector<ServerPacket>* batch = nullptr) {
 	ServerPacket sp(SP_REMOVE_OBJECT);
 	sp.Encode4(object_id); // not only for character
 	if (target_sid < 0) SendPacket(sp);
+	else if (batch) batch->push_back(sp);   // [v161] collect for a single-TCP-write rebuild batch
 	else MP_BroadcastToSid(target_sid, sp, MP_RemoteCtx());
 }
 
@@ -500,7 +502,7 @@ void InMapTeleportPacket(TenviCharacter &chr) {
 // renders a 0x11 spawn if it can find the character object; that object is
 // created by 0x3D. Broadcasting only the spawn (v50-v54) left the remote
 // character unknown -> silently dropped. Now we send 0x3D + 0x11 together.
-void AccountDataPacket(TenviCharacter &chr, int target_sid = -1) {
+void AccountDataPacket(TenviCharacter &chr, int target_sid = -1, std::vector<ServerPacket>* batch = nullptr) {
 	ServerPacket sp(SP_ACCOUNT_DATA);
 	sp.Encode4(0); // 00498E4F, ???
 	sp.Encode4(chr.id); // 00498E5C, character id
@@ -582,6 +584,7 @@ void AccountDataPacket(TenviCharacter &chr, int target_sid = -1) {
 	// [v57] 0x3D 远程分支退回 CField(ctx=0), 与 0x11 出生同层: 客户端在该层
 	// 用 0x3D 建对象后, 同一层的 0x11 才能引用到 oid 并渲染.
 	if (target_sid < 0) SendPacket(sp);
+	else if (batch) batch->push_back(sp);   // [v161] collect for a single-TCP-write rebuild batch
 	else MP_BroadcastToSid(target_sid, sp, MP_RemoteCtx());
 }
 
@@ -1170,18 +1173,26 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			return;
 		}
 		for (auto &t : targets) {
+			// [v161] Collect the 4 rebuild packets and flush them in ONE TCP
+			// write so the receiver processes 0x12(remove)+0x3D+0x11(rebuild)
+			// in the same recv/frame. The old 4x-send sequence let the client
+			// render the delete and the recreate on separate frames -> the
+			// avatar visibly blinked every hop ("一闪一闪").
+			std::vector<ServerPacket> batch;
+			batch.reserve(4);
 			// 1) remove existing remote avatar at old position
-			RemoveObjectPacket(me.id, t.sid);
+			RemoveObjectPacket(me.id, t.sid, &batch);
 			// 2) rebuild object (0x3D) then render at new position (0x11)
-			AccountDataPacket(me, t.sid);
-			CharacterSpawnPacket(me, nx, ny, mv_dir, t.sid, MP_RemoteCtx());
+			AccountDataPacket(me, t.sid, &batch);
+			CharacterSpawnPacket(me, nx, ny, mv_dir, t.sid, MP_RemoteCtx(), &batch);
 			// [v126] restore the RECEIVER's own identity. Without this the
 			// peer's client treats our 0x3D as its own account data and the
 			// second character morphs into the first ("2号变成1号"). Mirrors
 			// the v62 birth path: AccountDataPacket(other.chr, other_sid).
-			AccountDataPacket(t.chr, t.sid);
-			printf("[MP-FWD] v130 rebuild-move -> sid=%d oid=%08X to (%.1f,%.1f)\n",
-				t.sid, (unsigned)me.id, nx, ny);
+			AccountDataPacket(t.chr, t.sid, &batch);
+			MP_SendBatchToSid(t.sid, batch, MP_RemoteCtx());
+			printf("[MP-FWD] v161 rebuild-batch -> sid=%d oid=%08X to (%.1f,%.1f) pkts=%d\n",
+				t.sid, (unsigned)me.id, nx, ny, (int)batch.size());
 		}
 		MP_MARK("MP-FWD v102 rebuild-move");
 		{
