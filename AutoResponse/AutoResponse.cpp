@@ -122,6 +122,7 @@ static float g_interp_x_intc  = 0.0f;
 static bool  g_interp_y_is_int = false;
 static float g_interp_y_scale = 1.0f;
 static float g_interp_y_intc  = 0.0f;
+static bool g_scan = false;   // [v168] dump remote char memory for offset discovery
 
 // [v86] Suppress-respawn state: once offsets are locked we stop letting the
 // despawn/respawn packets touch the client and drive movement by memory write.
@@ -134,8 +135,8 @@ static int  g_suppress_count = 0;
 // can explicitly disable with "interp=0", but default is ON.
 static bool MP_InterpEnabled() {
 	FILE* f = NULL;
-	fopen_s(&f, "mp_interp.cfg", "r");
-	if (!f) return true;
+	fopen_s(&f, "D:/mp_interp.cfg", "r");
+	if (!f) return false;   // [v168] missing cfg => interp OFF (safe: native drive)
 	char line[128];
 	bool on = true;
 	while (fgets(line, sizeof(line), f)) {
@@ -155,6 +156,9 @@ static bool MP_InterpEnabled() {
 		// CField hashmap unreliably). Offsets come from scan_coords.py.
 		else if (strncmp(line, "locked=", 7) == 0) {
 			if (strtol(line + 7, NULL, 0) != 0) g_probe_locked = true;
+		}
+		else if (strncmp(line, "scan=", 5) == 0) {
+			if (strtol(line + 5, NULL, 0) != 0) g_scan = true;
 		}
 		// [v136] mem_x=/mem_y= hard-code the absolute addresses found by
 		// scan_coords.py (heap, not the exe static segment the old in-DLL
@@ -679,6 +683,28 @@ static void MP_ApplyInterpolation() {
 	} else {
 		for (auto &kv : g_interp) kv.second.stale++;
 	}
+	if (g_scan && !g_interp.empty()) {
+		static int sc = 0;
+		if (++sc % 30 == 0) {
+			FILE *sf = NULL; fopen_s(&sf, "D:/mp_scan.log", "a");
+			if (sf) {
+				for (auto &kv : g_interp) {
+					DWORD cp = g_char_by_oid[kv.first];
+					if (!cp) continue;
+					fprintf(sf, "[MP-SCAN] oid=%08X tx=%.2f ty=%.2f ptr=%08X\n", kv.first, kv.second.tx, kv.second.ty, cp);
+					for (int o = 0; o < 0x200; o += 16) {
+						fprintf(sf, "  %04X:", o);
+						for (int b = 0; b < 16; b++) fprintf(sf, " %02X", *(BYTE*)(cp + o + b));
+						fprintf(sf, "  |");
+						for (int b = 0; b < 16; b += 4) { float v = *(float*)(cp + o + b); fprintf(sf, " %.2f", v); }
+						fprintf(sf, "\n");
+					}
+					break;
+				}
+				fflush(sf); fclose(sf);
+			}
+		}
+	}
 }
 
 void MP_Pump() {
@@ -689,7 +715,7 @@ void MP_Pump() {
 	// and writes only after g_probe_locked. MP_WriteCoord no-ops on off==0.
 	// Remote rebuild is suppressed once locked; the lerp writes coords each
 	// frame, which is the only path to true smooth movement.
-	if (MP_InterpEnabled()) MP_ApplyInterpolation();
+	if (MP_InterpEnabled() || g_scan) MP_ApplyInterpolation();
 
 	// [v50] Each entry carries the dispatch context supplied by the server
 	// (frame type 0 = CWvsContext, type 2 = CField). No more guessing.
