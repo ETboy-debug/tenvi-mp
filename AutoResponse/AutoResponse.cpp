@@ -18,7 +18,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_DLL_V169_WIDE_PROBE";
+static const char* MP_INTERP_TAG = "MP_DLL_V171_MODE_LIVEPROBE";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -123,11 +123,44 @@ static bool  g_interp_y_is_int = false;
 static float g_interp_y_scale = 1.0f;
 static float g_interp_y_intc  = 0.0f;
 static bool g_scan = false;   // [v168] dump remote char memory for offset discovery
+// [v171] Suppression strategy selector. The rebuild staircase is
+//   0x12(remove) -> 0x3D(mover account data) -> 0x11(spawn) -> 0x3D(receiver)
+// mode=0 : swallow 0x12 + middle 0x3D + 0x11   (v138 behaviour, needs lerp)
+// mode=1 : swallow ONLY 0x12                   (avatar is never destroyed, the
+//          0x3D+0x11 still reach the client -> the client's own 0x11 handler
+//          takes the "update existing avatar" branch = native smooth, no
+//          memory write and no offset guessing required)
+// mode=2 : swallow 0x12 + middle 0x3D, let 0x11 through
+static int  g_sup_mode = 0;
+// [v171] Extra mirror offsets written alongside x_off/y_off (probe found
+// 0x11A4/0x11A8 and mirrors 0x17A4/0x17A8 holding the same coordinate).
+static int  g_interp_x_off2 = 0;
+static int  g_interp_y_off2 = 0;
+// [v171] Live-field auto-probe (scan=3): poke a value into each candidate
+// offset, read it back one frame later. A field the client rewrites every
+// frame (render/physics state) reverts; a dead cache keeps the poked value.
+// This identifies the render coordinate without any user eyeballing.
+static int  g_live_probe_cursor = 0;
+static bool g_live_probe_done = false;
+static int  g_scan_kind = 0;  // [v171] value of scan= (1=match probe, 3=live probe)
 
 // [v169] SEH-guarded 4-byte read. The wide probe walks up to 8KB past the
 // character pointer, which can cross the end of the allocation (or hit an
 // object that was freed between frames). Keep this in its own function -
 // __try/__except cannot coexist with C++ object unwinding in one scope.
+// [v171] SEH-guarded 4-byte write. The live-field probe restores the original
+// value one frame after poking it; by then the avatar object may already have
+// been freed by the rebuild staircase, so an unguarded write would crash the
+// client.
+static bool MP_SafeWrite4(DWORD addr, DWORD val) {
+	__try {
+		*(DWORD*)addr = val;
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
 static bool MP_SafeRead4(DWORD addr, DWORD *out) {
 	__try {
 		*out = *(DWORD*)addr;
@@ -171,7 +204,20 @@ static bool MP_InterpEnabled() {
 			if (strtol(line + 7, NULL, 0) != 0) g_probe_locked = true;
 		}
 		else if (strncmp(line, "scan=", 5) == 0) {
-			if (strtol(line + 5, NULL, 0) != 0) g_scan = true;
+			long sv = strtol(line + 5, NULL, 0);
+			if (sv != 0) g_scan = true;
+			g_scan_kind = (int)sv;          // [v171] 1=match probe, 3=live-field probe
+		}
+		// [v171] suppression strategy (see g_sup_mode comment)
+		else if (strncmp(line, "mode=", 5) == 0) {
+			g_sup_mode = (int)strtol(line + 5, NULL, 0);
+		}
+		// [v171] mirror coordinate offsets written together with x_off/y_off
+		else if (strncmp(line, "x_off2=", 7) == 0) {
+			g_interp_x_off2 = (int)strtol(line + 7, NULL, 0);
+		}
+		else if (strncmp(line, "y_off2=", 7) == 0) {
+			g_interp_y_off2 = (int)strtol(line + 7, NULL, 0);
 		}
 		// [v136] mem_x=/mem_y= hard-code the absolute addresses found by
 		// scan_coords.py (heap, not the exe static segment the old in-DLL
@@ -663,13 +709,37 @@ static void MP_ApplyInterpolation() {
 			g_char_by_oid.erase(dead_oids[d]);
 	}
 	if (have_offsets && !g_interp.empty()) {
-		int applied = 0;
+		int applied = 0, rejected = 0;
 		for (auto &kv : g_interp) {
 			RemoteInterp &ri = kv.second;
 			ri.stale++;
 			auto it = g_char_by_oid.find(ri.oid);
 			if (it == g_char_by_oid.end() || it->second == 0) continue;
 			DWORD char_ptr = it->second;
+			// [v171] Sanity-gate the object BEFORE writing. The v169 probe proved
+			// _GetCharacterByOID hands back a recycled/stale object most of the
+			// time (2 pointers alternating, neither ever held a coordinate), so
+			// every previous lerp attempt wrote into a dead allocation - the
+			// write "succeeded" (3377 log lines) while the rendered avatar was a
+			// different object. Require the field to read back as a plausible map
+			// coordinate; otherwise skip and report.
+			DWORD rawx = 0, rawy = 0;
+			if (!MP_SafeRead4(char_ptr + g_interp_x_off, &rawx) ||
+				!MP_SafeRead4(char_ptr + g_interp_y_off, &rawy)) { rejected++; continue; }
+			float probe_x, probe_y;
+			memcpy(&probe_x, &rawx, 4); memcpy(&probe_y, &rawy, 4);
+			bool plausible = (probe_x > -30000.0f && probe_x < 30000.0f &&
+							  probe_y > -30000.0f && probe_y < 30000.0f &&
+							  probe_x == probe_x && probe_y == probe_y);
+			if (!plausible) {
+				rejected++;
+				if (rejected <= 6) {
+					FILE *rf = NULL; fopen_s(&rf, MP_DiagPath(), "a");
+					if (rf) { fprintf(rf, "[MP-INTERP v171] STALE ptr=%08X oid=%08X read=(%.1f,%.1f) want=(%.1f,%.1f) -> skip\n",
+						char_ptr, ri.oid, probe_x, probe_y, ri.tx, ri.ty); fflush(rf); fclose(rf); }
+				}
+				continue;
+			}
 			float cur_cx = MP_ReadCoord(char_ptr, g_interp_x_off, g_interp_x_is_int);
 			float cur_cy = MP_ReadCoord(char_ptr, g_interp_y_off, g_interp_y_is_int);
 			float cur_px = (g_interp_x_scale != 0.0f) ? (cur_cx - g_interp_x_intc) / g_interp_x_scale : cur_cx;
@@ -685,13 +755,36 @@ static void MP_ApplyInterpolation() {
 			float nxt_cy = (g_interp_y_scale != 0.0f) ? (nxt_py * g_interp_y_scale + g_interp_y_intc) : nxt_py;
 			MP_WriteCoord(char_ptr, g_interp_y_off, g_interp_y_is_int, nxt_cy);
 			ri.cy = nxt_cy;
+			// [v171] mirror fields (probe saw the same coordinate duplicated at
+			// 0x17A4/0x17A8). Writing both covers the case where the renderer
+			// reads the mirror rather than the primary copy.
+			if (g_interp_x_off2) MP_WriteCoord(char_ptr, g_interp_x_off2, g_interp_x_is_int, nxt_cx);
+			if (g_interp_y_off2) MP_WriteCoord(char_ptr, g_interp_y_off2, g_interp_y_is_int, nxt_cy);
 			applied++;
+			// [v171] Write-back verification, throttled. If the value we read one
+			// frame later is not what we wrote, the client owns the field (good -
+			// it is live) ; if it matches exactly forever while the avatar stays
+			// put, the field is a dead cache and this offset is wrong.
+			static int vdbg = 0;
+			if ((++vdbg % 40) == 0) {
+				DWORD bx = 0, by = 0; float rbx = 0, rby = 0;
+				MP_SafeRead4(char_ptr + g_interp_x_off, &bx);
+				MP_SafeRead4(char_ptr + g_interp_y_off, &by);
+				memcpy(&rbx, &bx, 4); memcpy(&rby, &by, 4);
+				FILE *vf = NULL; fopen_s(&vf, MP_DiagPath(), "a");
+				if (vf) { fprintf(vf, "[MP-INTERP v171] ptr=%08X oid=%08X pre=(%.1f,%.1f) wrote=(%.1f,%.1f) readback=(%.1f,%.1f) tgt=(%.1f,%.1f)\n",
+					char_ptr, ri.oid, cur_cx, cur_cy, nxt_cx, nxt_cy, rbx, rby, ri.tx, ri.ty);
+					fflush(vf); fclose(vf); }
+			}
 		}
-		if (applied > 0) {
-			FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
-			if (f) { fprintf(f, "[MP-INTERP] applied lerp to %d/%d tracked (x_off=%04X y_off=%04X)\n",
-				applied, (int)g_interp.size(), g_interp_x_off, g_interp_y_off);
-				fflush(f); fclose(f); }
+		if (applied > 0 || rejected > 0) {
+			static int adbg = 0;
+			if ((++adbg % 40) == 0) {
+				FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+				if (f) { fprintf(f, "[MP-INTERP] applied=%d rejected=%d /%d tracked (x_off=%04X y_off=%04X mode=%d)\n",
+					applied, rejected, (int)g_interp.size(), g_interp_x_off, g_interp_y_off, g_sup_mode);
+					fflush(f); fclose(f); }
+			}
 		}
 	} else {
 		for (auto &kv : g_interp) kv.second.stale++;
@@ -702,7 +795,73 @@ static void MP_ApplyInterpolation() {
 	// value matches the known target position (tx/ty). Cross-sample intersection
 	// then yields the true render-coordinate offsets. Emits one line per position
 	// change per oid, so the log stays small.
-	if (g_scan && !g_interp.empty()) {
+	// [v171] scan=3 : LIVE-SOURCE probe. The v169 match-probe only proved which
+	// fields *hold* a coordinate, not which one the renderer *reads*. Here we
+	// poke +137 into every plausible float field of the avatar object and read
+	// it back one frame later:
+	//   readback ~= poked  -> the client continued from OUR value, so this field
+	//                         is the authoritative position source (what we want)
+	//   readback ~= before -> the client ignored/overwrote us: dead cache
+	// Pointers and huge/zero values are skipped so the poke can never corrupt a
+	// vtable or heap pointer. Runs in 40-field batches every 3rd frame.
+	if (g_scan_kind == 3 && !g_interp.empty()) {
+		static int   pk_off[40];
+		static DWORD pk_before[40], pk_poked[40];
+		static int   pk_n = 0;
+		static DWORD pk_ptr = 0;
+		static int   pk_frame = 0;
+		if ((++pk_frame % 3) == 0) {
+			if (pk_n > 0 && pk_ptr) {
+				FILE *lf = NULL;
+				for (int i = 0; i < pk_n; i++) {
+					DWORD nowraw = 0;
+					if (MP_SafeRead4(pk_ptr + pk_off[i], &nowraw)) {
+						float fb, fp, fn;
+						memcpy(&fb, &pk_before[i], 4);
+						memcpy(&fp, &pk_poked[i], 4);
+						memcpy(&fn, &nowraw, 4);
+						if (fn == fn && fabsf(fn - fp) < 30.0f && nowraw != pk_poked[i]) {
+							if (!lf) fopen_s(&lf, "D:/mp_live.log", "a");
+							if (lf) fprintf(lf, "[LIVE-SOURCE] off=%04X before=%.1f poked=%.1f readback=%.1f\n",
+								pk_off[i], fb, fp, fn);
+						}
+					}
+					MP_SafeWrite4(pk_ptr + pk_off[i], pk_before[i]);
+				}
+				if (lf) { fflush(lf); fclose(lf); }
+				pk_n = 0;
+			}
+			DWORD cp = 0;
+			for (std::map<DWORD, RemoteInterp>::iterator kv = g_interp.begin(); kv != g_interp.end(); ++kv) {
+				DWORD c = g_char_by_oid[kv->first];
+				if (c) { cp = c; break; }
+			}
+			if (cp) {
+				pk_ptr = cp;
+				int o = g_live_probe_cursor;
+				for (; o <= PROBE_SCAN_RANGE && pk_n < 40; o += 4) {
+					DWORD raw = 0;
+					if (!MP_SafeRead4(cp + o, &raw)) break;
+					float fv; memcpy(&fv, &raw, 4);
+					if (!(fv == fv)) continue;
+					if (fabsf(fv) < 0.5f || fabsf(fv) > 30000.0f) continue;
+					float pv = fv + 137.0f;
+					DWORD pr; memcpy(&pr, &pv, 4);
+					pk_off[pk_n] = o; pk_before[pk_n] = raw; pk_poked[pk_n] = pr;
+					if (!MP_SafeWrite4(cp + o, pr)) break;
+					pk_n++;
+				}
+				if (o > PROBE_SCAN_RANGE) {
+					g_live_probe_cursor = 0;
+					FILE *lf = NULL; fopen_s(&lf, "D:/mp_live.log", "a");
+					if (lf) { fprintf(lf, "--- round end (ptr=%08X) ---\n", cp); fflush(lf); fclose(lf); }
+				} else {
+					g_live_probe_cursor = o;
+				}
+			}
+		}
+	}
+	if (g_scan && g_scan_kind != 3 && !g_interp.empty()) {
 		static std::map<DWORD, std::pair<float, float> > last_probe;
 		FILE *sf = NULL;
 		for (std::map<DWORD, RemoteInterp>::iterator kv = g_interp.begin(); kv != g_interp.end(); ++kv) {
@@ -861,7 +1020,7 @@ void MP_Pump() {
 				if (g_suppress_count <= 8 || (g_suppress_count % 50) == 0) {
 					FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
 					if (f) {
-						fprintf(f, "[MP-SUPPRESS v138] swallowed 0x12 #%d oid=%08X\n", g_suppress_count, roid);
+						fprintf(f, "[MP-SUPPRESS v171 mode=%d] swallowed 0x12 #%d oid=%08X\n", g_sup_mode, g_suppress_count, roid);
 						fflush(f); fclose(f);
 					}
 				}
@@ -870,7 +1029,10 @@ void MP_Pump() {
 				// freshly removed avatar (the middle step of the staircase).
 				DWORD data_oid = *(DWORD*)&batch[i].first[5];
 				std::map<DWORD, DWORD>::iterator rt = g_remove_tick.find(data_oid);
-				if (rt != g_remove_tick.end() && (now_ms - rt->second) < 800) {
+				// [v171] mode=1 lets the account-data packet through: the avatar
+				// was never destroyed, so its data must stay in sync.
+				if (g_sup_mode != 1 &&
+					rt != g_remove_tick.end() && (now_ms - rt->second) < 800) {
 					mp_suppress[i] = 1;
 					g_suppress_active = true;
 					g_suppress_count++;
@@ -884,7 +1046,12 @@ void MP_Pump() {
 				}
 			} else if (op == 0x11) {
 				std::map<DWORD, DWORD>::iterator rt = g_remove_tick.find(roid);
-				if (rt != g_remove_tick.end() && (now_ms - rt->second) < 800) {
+				// [v171] mode=1/2 let the spawn packet reach the client. Because
+				// the matching 0x12 was swallowed the avatar still exists, so the
+				// client's 0x11 handler updates it in place instead of creating a
+				// new one -> native movement, no flicker, no memory write.
+				if (g_sup_mode == 0 &&
+					rt != g_remove_tick.end() && (now_ms - rt->second) < 800) {
 					mp_suppress[i] = 1;
 					g_suppress_active = true;
 					g_suppress_count++;
