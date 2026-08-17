@@ -1100,19 +1100,44 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			ddx = (short)(nx - mv_pts[0].x);
 			ddy = (short)(ny - mv_pts[0].y);
 		}
+		// [v175] *** OPCODE FIX - the nine-year bug ***
+		// The CN v126 client's CWvsContext dispatcher (0x00492F70) reads a
+		// 1-byte opcode via 0x0056AB8A, then does:
+		//     add eax, -0x0D            ; table index = opcode - 0x0D
+		//     cmp eax, 0xE4 / ja default
+		//     jmp [eax*4 + 0x0049391C]
+		// So the jump table is indexed by (opcode - 0x0D), NOT by opcode.
+		// The remote-move handler 0x0048D4EA sits at table index 0x0C, which
+		// means its real wire opcode is 0x0C + 0x0D = 0x19.
+		// Sending 0x0C made the index -1 -> `ja` -> default handler
+		// 0x0046B569 (`ret 4`, a no-op). That is exactly why every smooth
+		// attempt (V110..V174) reported "peer does not move": the packet was
+		// silently discarded before any parsing happened.
+		// Handler 0x0048D4EA then does:
+		//     Dec4 -> oid ; 0x45CB52 -> path blob ; Dec1 -> stance
+		//     [0x6FAF6C] + 0x42ACDD  -> lookup char by oid in field+0x1C0
+		//     0x45806D(1) SetMoving ; 0x45C9A7 SetMovePath(+0x89C)
+		//     0x458081(stance) ; 0x487D32 post-apply
+		// No destroy, no recreate -> smooth, flicker-free.
+		// The spawn opcode 0x11 was always CORRECT: index 0x11-0x0D = 4 ->
+		// handler 0x0048F598, whose field order (Dec4 oid, float x, float y,
+		// 4x Dec1, Dec4, Dec1, Dec1, DecStr name, ...) matches
+		// CharacterSpawnPacket exactly, and it registers the character into
+		// field+0x1C0 via 0x42C053 (@0x0048FF04) - the very table 0x42ACDD
+		// searches. So spawn(0x11) + move(0x19) close the loop.
 		for (auto &t : targets) {
 			ServerPacket sp;
-			sp.Encode1(0x0C);
+			sp.Encode1(0x19);                  // [v175] was 0x0C (out of range)
 			sp.Encode4(me.id);                 // remote oid, 4-byte LE
 			sp.Encode1(2);                     // count = 2 (single (dx,dy) pair)
 			sp.Encode2((WORD)(unsigned short)ddx);
 			sp.Encode2((WORD)(unsigned short)ddy);
 			sp.Encode1(mv_stance);             // stance
 			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
-			printf("[MP-FWD] v164 sp0x0C-1step -> sid=%d oid=%08X d=(%d,%d) dst=(%.1f,%.1f)\n",
+			printf("[MP-FWD] v175 sp0x19-1step -> sid=%d oid=%08X d=(%d,%d) dst=(%.1f,%.1f)\n",
 				t.sid, (unsigned)me.id, (int)ddx, (int)ddy, nx, ny);
 		}
-		MP_MARK("MP-FWD v164 sp-0x0C-1step");
+		MP_MARK("MP-FWD v175 sp-0x19-smoothmove");
 		// [v164] 每次移动后立即更新 last_move，供下一次做差。
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
