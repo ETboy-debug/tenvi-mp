@@ -18,7 +18,7 @@ DWORD Addr_OnPacket2 = 0;
 // MP_InterpApply() is a no-op + diag log until those offsets are filled in.
 // Safe by design: if the cfg is missing or does not say interp=1, nothing
 // happens and the existing spawn/teleport path is untouched.
-static const char* MP_INTERP_TAG = "MP_DLL_V162_0C_CHK";
+static const char* MP_INTERP_TAG = "MP_DLL_V169_WIDE_PROBE";
 
 struct RemoteInterp {
 	DWORD oid;
@@ -123,6 +123,19 @@ static bool  g_interp_y_is_int = false;
 static float g_interp_y_scale = 1.0f;
 static float g_interp_y_intc  = 0.0f;
 static bool g_scan = false;   // [v168] dump remote char memory for offset discovery
+
+// [v169] SEH-guarded 4-byte read. The wide probe walks up to 8KB past the
+// character pointer, which can cross the end of the allocation (or hit an
+// object that was freed between frames). Keep this in its own function -
+// __try/__except cannot coexist with C++ object unwinding in one scope.
+static bool MP_SafeRead4(DWORD addr, DWORD *out) {
+	__try {
+		*out = *(DWORD*)addr;
+		return true;
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
 
 // [v86] Suppress-respawn state: once offsets are locked we stop letting the
 // despawn/respawn packets touch the client and drive movement by memory write.
@@ -683,27 +696,62 @@ static void MP_ApplyInterpolation() {
 	} else {
 		for (auto &kv : g_interp) kv.second.stale++;
 	}
+	// [v169] Wide-range coordinate field probe. v168 dumped only 0x000-0x1FF and
+	// the render coords were not in range. Instead of dumping raw memory, scan
+	// 0..0x2000 of the character object and log ONLY offsets whose float/int
+	// value matches the known target position (tx/ty). Cross-sample intersection
+	// then yields the true render-coordinate offsets. Emits one line per position
+	// change per oid, so the log stays small.
 	if (g_scan && !g_interp.empty()) {
-		static int sc = 0;
-		if (++sc % 30 == 0) {
-			FILE *sf = NULL; fopen_s(&sf, "D:/mp_scan.log", "a");
-			if (sf) {
-				for (auto &kv : g_interp) {
-					DWORD cp = g_char_by_oid[kv.first];
-					if (!cp) continue;
-					fprintf(sf, "[MP-SCAN] oid=%08X tx=%.2f ty=%.2f ptr=%08X\n", kv.first, kv.second.tx, kv.second.ty, cp);
-					for (int o = 0; o < 0x200; o += 16) {
-						fprintf(sf, "  %04X:", o);
-						for (int b = 0; b < 16; b++) fprintf(sf, " %02X", *(BYTE*)(cp + o + b));
-						fprintf(sf, "  |");
-						for (int b = 0; b < 16; b += 4) { float v = *(float*)(cp + o + b); fprintf(sf, " %.2f", v); }
-						fprintf(sf, "\n");
+		static std::map<DWORD, std::pair<float, float> > last_probe;
+		FILE *sf = NULL;
+		for (std::map<DWORD, RemoteInterp>::iterator kv = g_interp.begin(); kv != g_interp.end(); ++kv) {
+			DWORD cp = g_char_by_oid[kv->first];
+			if (!cp) continue;
+			float tx = kv->second.tx, ty = kv->second.ty;
+			if (tx == 0.0f && ty == 0.0f) continue;
+			std::map<DWORD, std::pair<float, float> >::iterator lp = last_probe.find(kv->first);
+			if (lp != last_probe.end() &&
+				fabs((double)(lp->second.first - tx)) < 6.0 &&
+				fabs((double)(lp->second.second - ty)) < 6.0) continue;
+			last_probe[kv->first] = std::make_pair(tx, ty);
+
+			if (!sf) fopen_s(&sf, "D:/mp_probe.log", "a");
+			if (!sf) break;
+			fprintf(sf, "[MP-PROBE] oid=%08X tx=%.2f ty=%.2f ptr=%08X\n", kv->first, tx, ty, cp);
+			char xb[1600], yb[1600];
+			xb[0] = 0; yb[0] = 0;
+			int xn = 0, yn = 0;
+			for (int o = 0; o <= 0x2000; o += 4) {
+				DWORD raw = 0;
+				if (!MP_SafeRead4(cp + o, &raw)) break;
+				float fv; memcpy(&fv, &raw, 4);
+				int iv = (int)raw;
+				if (fv > -100000.0f && fv < 100000.0f) {
+					if (fabs((double)(fv - tx)) < 24.0 && xn < 24) {
+						xn++; size_t l = strlen(xb);
+						_snprintf_s(xb + l, sizeof(xb) - l, _TRUNCATE, " %X:f%.1f", o, fv);
 					}
-					break;
+					if (fabs((double)(fv - ty)) < 24.0 && yn < 24) {
+						yn++; size_t l = strlen(yb);
+						_snprintf_s(yb + l, sizeof(yb) - l, _TRUNCATE, " %X:f%.1f", o, fv);
+					}
 				}
-				fflush(sf); fclose(sf);
+				if (iv > -100000 && iv < 100000) {
+					if (fabs((double)iv - (double)tx) < 24.0 && xn < 24) {
+						xn++; size_t l = strlen(xb);
+						_snprintf_s(xb + l, sizeof(xb) - l, _TRUNCATE, " %X:i%d", o, iv);
+					}
+					if (fabs((double)iv - (double)ty) < 24.0 && yn < 24) {
+						yn++; size_t l = strlen(yb);
+						_snprintf_s(yb + l, sizeof(yb) - l, _TRUNCATE, " %X:i%d", o, iv);
+					}
+				}
 			}
+			fprintf(sf, "  X:%s\n  Y:%s\n", xb, yb);
+			break;
 		}
+		if (sf) { fflush(sf); fclose(sf); }
 	}
 }
 
