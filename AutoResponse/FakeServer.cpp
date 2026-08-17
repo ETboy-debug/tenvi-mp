@@ -1076,68 +1076,36 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 //    suppression/memscan interference) - restored from tenvi-mp-v113.zip.
 //    v141 had ctx=1 right but shipped the v140 DLL, which is why it failed.
 	if (MP_SmoothMove() && op == 0x0C && has_pos && !mv_pts.empty()) {
-		// [v164] 单步 delta：只发一个 (dx,dy) = 目标位置 - 上次位置(count=2)。
-		// V163 发完整轨迹的逐点微小 delta(-2~-47, 大多为0)，客户端 ApplyPath
-		// 几乎不动。V115 铁律: 客户端把 int16 当 delta 累加到角色当前位置，
-		// 最小合法包就是 count=2(MP_PathMode mode=3 "endpoint only")。所以发
-		// 一个"从现在位置一步到目标"的 delta，客户端一次走到位。
-		float px = 0.0f, py = 0.0f;
-		bool have_origin = false;
-		{
-			std::lock_guard<std::mutex> lk(g_playersMtx);
-			auto oit = g_players.find(t_sid);
-			if (oit != g_players.end() && oit->second.has_last_move) {
-				px = oit->second.last_move_x;
-				py = oit->second.last_move_y;
-				have_origin = true;
-			}
-		}
-		short ddx, ddy;
-		if (have_origin) {
-			ddx = (short)(nx - px);
-			ddy = (short)(ny - py);
-		} else {
-			ddx = (short)(nx - mv_pts[0].x);
-			ddy = (short)(ny - mv_pts[0].y);
-		}
-		// [v175] *** OPCODE FIX - the nine-year bug ***
-		// The CN v126 client's CWvsContext dispatcher (0x00492F70) reads a
-		// 1-byte opcode via 0x0056AB8A, then does:
-		//     add eax, -0x0D            ; table index = opcode - 0x0D
-		//     cmp eax, 0xE4 / ja default
-		//     jmp [eax*4 + 0x0049391C]
-		// So the jump table is indexed by (opcode - 0x0D), NOT by opcode.
-		// The remote-move handler 0x0048D4EA sits at table index 0x0C, which
-		// means its real wire opcode is 0x0C + 0x0D = 0x19.
-		// Sending 0x0C made the index -1 -> `ja` -> default handler
-		// 0x0046B569 (`ret 4`, a no-op). That is exactly why every smooth
-		// attempt (V110..V174) reported "peer does not move": the packet was
-		// silently discarded before any parsing happened.
-		// Handler 0x0048D4EA then does:
-		//     Dec4 -> oid ; 0x45CB52 -> path blob ; Dec1 -> stance
-		//     [0x6FAF6C] + 0x42ACDD  -> lookup char by oid in field+0x1C0
-		//     0x45806D(1) SetMoving ; 0x45C9A7 SetMovePath(+0x89C)
-		//     0x458081(stance) ; 0x487D32 post-apply
-		// No destroy, no recreate -> smooth, flicker-free.
-		// The spawn opcode 0x11 was always CORRECT: index 0x11-0x0D = 4 ->
-		// handler 0x0048F598, whose field order (Dec4 oid, float x, float y,
-		// 4x Dec1, Dec4, Dec1, Dec1, DecStr name, ...) matches
-		// CharacterSpawnPacket exactly, and it registers the character into
-		// field+0x1C0 via 0x42C053 (@0x0048FF04) - the very table 0x42ACDD
-		// searches. So spawn(0x11) + move(0x19) close the loop.
+		// [v176] RAW-RELAY smooth movement (verified via capstone).
+		// Opcode fix from v175 stands: the CWvsContext dispatcher (0x492F70)
+		// indexes its jump table by (opcode - 0x0D), so the remote-move handler
+		// 0x48D4EA is reached by wire opcode 0x19 (= 0x0C + 0x0D), NOT 0x0C
+		// (which indexed -1 -> default no-op, the real reason peers never moved).
+		// Handler 0x48D4EA: Dec4(oid) -> 0x45CB52(path) -> Dec1(stance) ->
+		// 0x42ACDD lookup in [0x6FAF6C]+0x1C0 (SAME container spawn 0x11
+		// registers into via 0x42C053) -> 0x45806D/0x45C9A7/0x458081 apply.
+		// The v175 mistake: it hand-built a compact packet (count=2 + 2xint16)
+		// that 0x45CB52 could not parse, so the lookup still ran but the path
+		// was garbage and the avatar never moved. The correct, format-safe fix
+		// is to relay the SENDER's own movement bytes verbatim (the client's CP
+		// 0x0C encoder and the 0x19 decoder are symmetric), prefixing only the
+		// remote oid that 0x48D4EA reads first.
 		for (auto &t : targets) {
 			ServerPacket sp;
-			sp.Encode1(0x19);                  // [v175] was 0x0C (out of range)
-			sp.Encode4(me.id);                 // remote oid, 4-byte LE
-			sp.Encode1(2);                     // count = 2 (single (dx,dy) pair)
-			sp.Encode2((WORD)(unsigned short)ddx);
-			sp.Encode2((WORD)(unsigned short)ddy);
-			sp.Encode1(mv_stance);             // stance
+			sp.Encode1(0x19);                  // [v176] remote-move opcode (idx = 0x19-0x0D = 0x0C -> 0x48d4ea)
+			sp.Encode4(me.id);                 // remote oid, 4-byte LE (handler reads this first)
+			// [v176] Forward the sender's own movement bytes verbatim (skip its 0x0C
+			// opcode byte). The client's CP 0x0C encoder and the 0x19 decoder
+			// (0x45cb52 inside 0x48d4ea) are symmetric, so relaying the raw path is
+			// format-safe. The v175 hand-built compact packet (count=2 + 2xint16) was
+			// misparsed by the client -> peer never moved. Now we send exactly what the
+			// client itself produced, which the peer's remote-move handler understands.
+			for (DWORD i = 1; i < len; i++) sp.Encode1(pkt[i]);
 			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
-			printf("[MP-FWD] v175 sp0x19-1step -> sid=%d oid=%08X d=(%d,%d) dst=(%.1f,%.1f)\n",
-				t.sid, (unsigned)me.id, (int)ddx, (int)ddy, nx, ny);
+			printf("[MP-FWD] v176 sp0x19-rawrelay -> sid=%d oid=%08X plen=%d\n",
+				t.sid, (unsigned)me.id, (int)(len - 1));
 		}
-		MP_MARK("MP-FWD v175 sp-0x19-smoothmove");
+		MP_MARK("MP-FWD v176 sp-0x19-rawrelay");
 		// [v164] 每次移动后立即更新 last_move，供下一次做差。
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
