@@ -1126,9 +1126,9 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			sp.Encode1((uint8_t)((dy >> 8) & 0xFF));
 			sp.Encode1(stance);
 			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
+			printf("[MP-FWD] v177 sp0x19-fmt sid=%d oid=%08X dx=%d dy=%d st=%d\n",
+				t.sid, (unsigned)me.id, (int)dx, (int)dy, (int)stance);
 		}
-		printf("[MP-FWD] v177 sp0x19-fmt sid=%d oid=%08X dx=%d dy=%d st=%d\n",
-			t.sid, (unsigned)me.id, (int)dx, (int)dy, (int)stance);
 		MP_MARK("MP-FWD v177 sp-0x19-fmt");
 		// [v164] 每次移动后立即更新 last_move，供下一次做差。
 		{
