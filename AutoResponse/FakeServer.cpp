@@ -1090,22 +1090,46 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// is to relay the SENDER's own movement bytes verbatim (the client's CP
 		// 0x0C encoder and the 0x19 decoder are symmetric), prefixing only the
 		// remote oid that 0x48D4EA reads first.
+		// [v177] FORMAT-CORRECT smooth movement (capstone-verified 0x19 payload).
+		// 0x19 handler 0x48d4ea decode order: Dec4(oid) -> 0x45cb52(path) ->
+		// Dec1(stance). 0x45cb52 reads ONE element [cmd:1][2*cmd bytes int16
+		// deltas]; cmd=2 => [dx:int16 LE][dy:int16 LE]. So an 11-byte packet
+		// moves the remote avatar by (dx,dy) with native client animation - no
+		// destroy/rebuild, no flicker. v176's raw-relay of CP 0x0C bytes failed
+		// because that body is NOT in this layout; we build the element ourselves.
+		short dx = 0, dy = 0; uint8_t stance = 0;
+		{
+			std::lock_guard<std::mutex> lk(g_playersMtx);
+			auto uit = g_players.find(t_sid);
+			if (uit != g_players.end()) {
+				auto &p = uit->second;
+				if (p.has_last_move) {
+					long ldx = (long)(nx - p.last_move_x);
+					long ldy = (long)(ny - p.last_move_y);
+					if (ldx < -32768) ldx = -32768; else if (ldx > 32767) ldx = 32767;
+					if (ldy < -32768) ldy = -32768; else if (ldy > 32767) ldy = 32767;
+					dx = (short)ldx; dy = (short)ldy;
+				}
+				p.last_move_x = nx; p.last_move_y = ny; p.has_last_move = true;
+			}
+		}
+		if (dx == 0 && dy == 0) return;       // no real movement this tick
+		stance = (dx < 0) ? 1 : 0;            // facing: 0=right, 1=left (approx)
 		for (auto &t : targets) {
 			ServerPacket sp;
-			sp.Encode1(0x19);                  // [v176] remote-move opcode (idx = 0x19-0x0D = 0x0C -> 0x48d4ea)
-			sp.Encode4(me.id);                 // remote oid, 4-byte LE (handler reads this first)
-			// [v176] Forward the sender's own movement bytes verbatim (skip its 0x0C
-			// opcode byte). The client's CP 0x0C encoder and the 0x19 decoder
-			// (0x45cb52 inside 0x48d4ea) are symmetric, so relaying the raw path is
-			// format-safe. The v175 hand-built compact packet (count=2 + 2xint16) was
-			// misparsed by the client -> peer never moved. Now we send exactly what the
-			// client itself produced, which the peer's remote-move handler understands.
-			for (DWORD i = 1; i < len; i++) sp.Encode1(pkt[i]);
+			sp.Encode1(0x19);
+			sp.Encode4(me.id);
+			sp.Encode1(0x02);                  // cmd=2 -> 4 bytes of int16 deltas
+			sp.Encode1((uint8_t)(dx & 0xFF));
+			sp.Encode1((uint8_t)((dx >> 8) & 0xFF));
+			sp.Encode1((uint8_t)(dy & 0xFF));
+			sp.Encode1((uint8_t)((dy >> 8) & 0xFF));
+			sp.Encode1(stance);
 			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
-			printf("[MP-FWD] v176 sp0x19-rawrelay -> sid=%d oid=%08X plen=%d\n",
-				t.sid, (unsigned)me.id, (int)(len - 1));
 		}
-		MP_MARK("MP-FWD v176 sp-0x19-rawrelay");
+		printf("[MP-FWD] v177 sp0x19-fmt sid=%d oid=%08X dx=%d dy=%d st=%d\n",
+			t.sid, (unsigned)me.id, (int)dx, (int)dy, (int)stance);
+		MP_MARK("MP-FWD v177 sp-0x19-fmt");
 		// [v164] 每次移动后立即更新 last_move，供下一次做差。
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
