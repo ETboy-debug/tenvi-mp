@@ -1121,7 +1121,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			ServerPacket sp;
 			sp.Encode1(0x19);
 			sp.Encode4(me.id);
-			sp.Encode4(120);                   // duration: int(4B) total move time (ms-ish)
+			sp.Encode4(5);                     // duration = bytes after this field (cmd+dx+dy=5). MUST be >= 2*cmd+1(=5) AND < packet-remaining, else 0x4029d5 bounds-check throws 0x80070057 and the avatar freezes. 120 was the bug.
 			sp.Encode1(0x02);                  // cmd=2 -> 4 bytes of int16 deltas
 			sp.Encode1((uint8_t)(dx & 0xFF));
 			sp.Encode1((uint8_t)((dx >> 8) & 0xFF));
