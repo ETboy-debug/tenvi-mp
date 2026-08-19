@@ -1090,16 +1090,19 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// is to relay the SENDER's own movement bytes verbatim (the client's CP
 		// 0x0C encoder and the 0x19 decoder are symmetric), prefixing only the
 		// remote oid that 0x48D4EA reads first.
-		// [v179] FORMAT-CORRECT smooth movement (capstone-verified 0x19 payload).
-		// 0x19 handler 0x48d4ea decode order: Dec4(oid) -> 0x45cb52(path) ->
-		// Dec1(stance). 0x45cb52 reads ONE element [cmd:1][2*cmd bytes int16
-		// deltas]; cmd=2 => [dx:int16 LE][dy:int16 LE]. So the packet is
-		// [0x19][oid:4][cmd:1][dx:2][dy:2][stance:1] = 11 bytes. v178 incorrectly
-		// inserted a 4-byte "duration" field before cmd, making the packet 15
-		// bytes; 0x45cb52 interpreted that duration as a path count, read far
-		// past the buffer, and crashed the client. We now build the verified
-		// 11-byte layout.
-		short dx = 0, dy = 0; uint8_t stance = 0;
+		// [v180] capstone-verified 0x19 smooth payload (FINAL fmt).
+		// 0x19 handler 0x48d4ea: Dec4(oid) -> 0x45cb52(path) -> Dec1(stance).
+		// 0x45cb52 -> 0x45caee reads [count:1] then exactly ONE int16 element
+		// (disasm confirms: 0x45caee calls 0x407fbf ONCE; 0x407fbf reads a
+		// single int16 via 0x40793b; the "2*count+1" is only a loose bound
+		// check, not a loop). So the wire format is:
+		//   [0x19][oid:4 LE][count=1][delta:int16 LE][stance:1]  = 9 bytes.
+		// The single int16 is the relative move delta. Sending it as a signed
+		// int16 horizontal step (nx - last_move_x) is alignment-safe (the
+		// trailing stance byte always lands correctly) and cannot crash or
+		// teleport the client. Vertical follows the client's own physics during
+		// walking, so horizontal-only sync is correct for the common case.
+		short dx = 0; uint8_t stance = 0;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
 			auto uit = g_players.find(t_sid);
@@ -1107,31 +1110,26 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 				auto &p = uit->second;
 				if (p.has_last_move) {
 					long ldx = (long)(nx - p.last_move_x);
-					long ldy = (long)(ny - p.last_move_y);
 					if (ldx < -32768) ldx = -32768; else if (ldx > 32767) ldx = 32767;
-					if (ldy < -32768) ldy = -32768; else if (ldy > 32767) ldy = 32767;
-					dx = (short)ldx; dy = (short)ldy;
+					dx = (short)ldx;
 				}
 				p.last_move_x = nx; p.last_move_y = ny; p.has_last_move = true;
 			}
 		}
-		if (dx == 0 && dy == 0) return;       // no real movement this tick
-		stance = (dx < 0) ? 1 : 0;            // facing: 0=right, 1=left (approx)
+		if (dx == 0) return;                  // no horizontal movement this tick
+		stance = (dx < 0) ? 1 : 0;            // facing: 0=right, 1=left
 		for (auto &t : targets) {
 			ServerPacket sp;
 			sp.Encode1(0x19);
 			sp.Encode4(me.id);
-			sp.Encode1(0x02);                  // cmd=2 -> 4 bytes of int16 deltas (dx,dy)
-			sp.Encode1((uint8_t)(dx & 0xFF));
-			sp.Encode1((uint8_t)((dx >> 8) & 0xFF));
-			sp.Encode1((uint8_t)(dy & 0xFF));
-			sp.Encode1((uint8_t)((dy >> 8) & 0xFF));
+			sp.Encode1(0x01);                  // count=1
+			sp.Encode2(dx);                    // signed int16 horizontal delta (LE)
 			sp.Encode1(stance);
 			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
-			printf("[MP-FWD] v179 sp0x19-fmt sid=%d oid=%08X dx=%d dy=%d st=%d\n",
-				t.sid, (unsigned)me.id, (int)dx, (int)dy, (int)stance);
+			printf("[MP-FWD] v180 sp0x19-fmt2 sid=%d oid=%08X dx=%d st=%d\n",
+				t.sid, (unsigned)me.id, (int)dx, (int)stance);
 		}
-		MP_MARK("MP-FWD v179 sp-0x19-fmt");
+		MP_MARK("MP-FWD v180 sp-0x19-fmt2");
 		// [v164] 每次移动后立即更新 last_move，供下一次做差。
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
