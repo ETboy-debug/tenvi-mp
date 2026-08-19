@@ -1090,15 +1090,15 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// is to relay the SENDER's own movement bytes verbatim (the client's CP
 		// 0x0C encoder and the 0x19 decoder are symmetric), prefixing only the
 		// remote oid that 0x48D4EA reads first.
-		// [v178] FORMAT-CORRECT smooth movement (capstone-verified 0x19 payload).
+		// [v179] FORMAT-CORRECT smooth movement (capstone-verified 0x19 payload).
 		// 0x19 handler 0x48d4ea decode order: Dec4(oid) -> 0x45cb52(path) ->
-		// Dec1(stance). 0x45cb52 reads [duration:4 via desc 0x762848=INT] then
-		// ONE element [cmd:1][2*cmd bytes int16 deltas]; cmd=2 => [dx:int16
-		// LE][dy:int16 LE]. So the packet is [0x19][oid:4][duration:4][cmd:1]
-		// [dx:2][dy:2][stance:1] = 15 bytes. v177 missed the 4-byte duration ->
-		// every byte shifted +4 -> client misparsed the path as a different packet
-		// (the "摆摊/出售" glitch). v176 raw-relay of CP 0x0C also failed (body
-		// not in this layout). We build the element ourselves now.
+		// Dec1(stance). 0x45cb52 reads ONE element [cmd:1][2*cmd bytes int16
+		// deltas]; cmd=2 => [dx:int16 LE][dy:int16 LE]. So the packet is
+		// [0x19][oid:4][cmd:1][dx:2][dy:2][stance:1] = 11 bytes. v178 incorrectly
+		// inserted a 4-byte "duration" field before cmd, making the packet 15
+		// bytes; 0x45cb52 interpreted that duration as a path count, read far
+		// past the buffer, and crashed the client. We now build the verified
+		// 11-byte layout.
 		short dx = 0, dy = 0; uint8_t stance = 0;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
@@ -1121,18 +1121,17 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			ServerPacket sp;
 			sp.Encode1(0x19);
 			sp.Encode4(me.id);
-			sp.Encode4(5);                     // duration = bytes after this field (cmd+dx+dy=5). MUST be >= 2*cmd+1(=5) AND < packet-remaining, else 0x4029d5 bounds-check throws 0x80070057 and the avatar freezes. 120 was the bug.
-			sp.Encode1(0x02);                  // cmd=2 -> 4 bytes of int16 deltas
+			sp.Encode1(0x02);                  // cmd=2 -> 4 bytes of int16 deltas (dx,dy)
 			sp.Encode1((uint8_t)(dx & 0xFF));
 			sp.Encode1((uint8_t)((dx >> 8) & 0xFF));
 			sp.Encode1((uint8_t)(dy & 0xFF));
 			sp.Encode1((uint8_t)((dy >> 8) & 0xFF));
 			sp.Encode1(stance);
 			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
-			printf("[MP-FWD] v178 sp0x19-fmt sid=%d oid=%08X dx=%d dy=%d st=%d\n",
+			printf("[MP-FWD] v179 sp0x19-fmt sid=%d oid=%08X dx=%d dy=%d st=%d\n",
 				t.sid, (unsigned)me.id, (int)dx, (int)dy, (int)stance);
 		}
-		MP_MARK("MP-FWD v178 sp-0x19-fmt");
+		MP_MARK("MP-FWD v179 sp-0x19-fmt");
 		// [v164] 每次移动后立即更新 last_move，供下一次做差。
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
