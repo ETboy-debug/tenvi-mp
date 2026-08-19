@@ -657,9 +657,16 @@ static void HandlePayload(const BYTE *p, DWORD n) {
 		return;
 	}
 	// [v55] 移动同步: 客户端发出的 0x0C 移动包原样转发给同图其他人
-	if (p[1] == 0x0C) {
+	// [v181] ROOT CAUSE FIX. Live logs prove this client's real movement
+	// packet is opcode 0x19 (35 bytes, "[UNK-RECV] opcode=0x19 len=35"), NOT
+	// 0x0C. Because this gate only let 0x0C through, EVERY movement packet was
+	// dropped before MP_ForwardToSameMap was even entered - which is why no
+	// amount of packet-format tweaking inside FakeServer.cpp (v175..v180) could
+	// ever make peers move. Let 0x19 in as well.
+	if (p[1] == 0x0C || p[1] == 0x19) {
 		DWORD oid = (n >= 6) ? *(DWORD *)(p + 2) : 0;
-		printf("[MP-HDL] 0x0C from sid=%d len=%d oid=%08X\n", (int)t_sid, (int)(n - 1), (unsigned)oid);
+		printf("[MP-HDL] move op=%02X from sid=%d len=%d oid=%08X\n",
+			(unsigned)p[1], (int)t_sid, (int)(n - 1), (unsigned)oid);
 		MP_ForwardToSameMap(p + 1, n - 1);
 	}
 	if (t_recvCount < g_dump) {
