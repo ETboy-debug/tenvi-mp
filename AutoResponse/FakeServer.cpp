@@ -1002,6 +1002,26 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		}
 	}
 
+	// [v181] CP 0x19 = the REAL client->server movement packet of this client.
+	// Verified from live server logs (_srv.log), 35 bytes, e.g.
+	//   19 36 9C 1D C3 | 00 00 BB 43 | 00 00 00 01 16 00*9 | 74 CD 5E 06 | ...
+	//   ^op  ^x=-157.61  ^y=374.00                           ^GetTickCount
+	// Absolute float coordinates sit at [1..4] (x) and [5..8] (y) - no guessing
+	// and no delta arithmetic, so a peer can never be teleported or "run away".
+	if (op == 0x19 && len >= 9) {
+		float px = 0.0f, py = 0.0f;
+		memcpy(&px, pkt + 1, 4);
+		memcpy(&py, pkt + 5, 4);
+		if (px > -1.0e5f && px < 1.0e5f && py > -1.0e5f && py < 1.0e5f) {
+			nx = px; ny = py;
+			has_pos = true;
+			mv_struct = true;
+			mv_points = 1;
+		}
+		printf("[MP-PARSE v181] cp0x19 len=%d pos=(%.1f,%.1f) ok=%d\n",
+			(int)len, px, py, has_pos ? 1 : 0);
+	}
+
 	WORD my_map = 0;
 	TenviCharacter me;
 	{
@@ -1075,7 +1095,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 //    stub -> dropped. 2) DLL must be the v86 build (760320B, no v133-140
 //    suppression/memscan interference) - restored from tenvi-mp-v113.zip.
 //    v141 had ctx=1 right but shipped the v140 DLL, which is why it failed.
-	if (MP_SmoothMove() && op == 0x0C && has_pos && !mv_pts.empty()) {
+	if (MP_SmoothMove() && (op == 0x19 || op == 0x0C) && has_pos) {
 		// [v176] RAW-RELAY smooth movement (verified via capstone).
 		// Opcode fix from v175 stands: the CWvsContext dispatcher (0x492F70)
 		// indexes its jump table by (opcode - 0x0D), so the remote-move handler
@@ -1102,44 +1122,49 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// trailing stance byte always lands correctly) and cannot crash or
 		// teleport the client. Vertical follows the client's own physics during
 		// walking, so horizontal-only sync is correct for the common case.
-		short dx = 0; uint8_t stance = 0;
+		// [v181] FINAL SMOOTH DESIGN - absolute position via 0x11, no deltas.
+		//
+		// Why v175..v180 all failed: they hand-built a 0x19 remote-move packet
+		// whose path-blob layout was never fully pinned down, AND the packet
+		// never even reached this code because StandaloneServer.cpp gated
+		// forwarding on opcode 0x0C while this client actually sends 0x19.
+		//
+		// v181 drops all packet guesswork. The client's own CP 0x19 carries
+		// ABSOLUTE float coordinates, and 0x11 (CharacterSpawnPacket) is the one
+		// packet whose format is 100% proven on this client. 0x11 addresses the
+		// character BY OID and updates it in place (0x42C053 registers into
+		// [0x6FAF6C]+0x1C0; a repeat 0x11 for a known oid just moves it) - no
+		// 0x12 removal, no 0x3D rebuild, so there is nothing left to flicker.
+		// Because the coordinate is absolute and comes straight from the peer's
+		// own client, drift, delta-accumulation and teleport-to-origin bugs are
+		// structurally impossible.
+		bool moved = true;
+		BYTE dir = mv_dir;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
 			auto uit = g_players.find(t_sid);
 			if (uit != g_players.end()) {
 				auto &p = uit->second;
 				if (p.has_last_move) {
-					long ldx = (long)(nx - p.last_move_x);
-					if (ldx < -32768) ldx = -32768; else if (ldx > 32767) ldx = 32767;
-					dx = (short)ldx;
+					float ddx = nx - p.last_move_x;
+					float ddy = ny - p.last_move_y;
+					if (ddx > 0.5f) dir = 1;
+					else if (ddx < -0.5f) dir = 0;
+					// Idle clients keep sending 0x19 heartbeats with an
+					// unchanged position; forwarding those would spam ~20
+					// spawn packets/sec per player for no visual gain.
+					if (ddx * ddx + ddy * ddy < 0.25f) moved = false;
 				}
 				p.last_move_x = nx; p.last_move_y = ny; p.has_last_move = true;
 			}
 		}
-		if (dx == 0) return;                  // no horizontal movement this tick
-		stance = (dx < 0) ? 1 : 0;            // facing: 0=right, 1=left
+		if (!moved) return;                   // standing still - nothing to send
 		for (auto &t : targets) {
-			ServerPacket sp;
-			sp.Encode1(0x19);
-			sp.Encode4(me.id);
-			sp.Encode1(0x01);                  // count=1
-			sp.Encode2(dx);                    // signed int16 horizontal delta (LE)
-			sp.Encode1(stance);
-			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
-			printf("[MP-FWD] v180 sp0x19-fmt2 sid=%d oid=%08X dx=%d st=%d\n",
-				t.sid, (unsigned)me.id, (int)dx, (int)stance);
+			CharacterSpawnPacket(me, nx, ny, dir, t.sid, MP_RemoteCtx());
 		}
-		MP_MARK("MP-FWD v180 sp-0x19-fmt2");
-		// [v164] 每次移动后立即更新 last_move，供下一次做差。
-		{
-			std::lock_guard<std::mutex> lk(g_playersMtx);
-			auto uit = g_players.find(t_sid);
-			if (uit != g_players.end()) {
-				uit->second.last_move_x = nx;
-				uit->second.last_move_y = ny;
-				uit->second.has_last_move = true;
-			}
-		}
+		printf("[MP-FWD] v181 pos-0x11 op=%02X oid=%08X pos=(%.1f,%.1f) dir=%d targets=%zu\n",
+			(unsigned)op, (unsigned)me.id, nx, ny, (int)dir, targets.size());
+		MP_MARK("MP-FWD v181 pos-0x11-abs");
 		return;
 	}
 
