@@ -1122,49 +1122,69 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// trailing stance byte always lands correctly) and cannot crash or
 		// teleport the client. Vertical follows the client's own physics during
 		// walking, so horizontal-only sync is correct for the common case.
-		// [v181] FINAL SMOOTH DESIGN - absolute position via 0x11, no deltas.
+		// [v181] THE GATE WAS THE BUG - not the packet format.
 		//
-		// Why v175..v180 all failed: they hand-built a 0x19 remote-move packet
-		// whose path-blob layout was never fully pinned down, AND the packet
-		// never even reached this code because StandaloneServer.cpp gated
-		// forwarding on opcode 0x0C while this client actually sends 0x19.
+		// StandaloneServer.cpp only forwarded opcode 0x0C. This client sends
+		// 0x0C rarely (63x in a session log) and 0x19 constantly (533x, ~8.5x
+		// more). On top of that, MP_ParseCP0C fails on most 0x0C variants, so
+		// mv_pts came back empty and the old `!mv_pts.empty()` guard killed
+		// what little got through. Net effect: this smooth branch NEVER ran,
+		// not once, in v175..v180. Every "0x19 format is wrong" conclusion
+		// drawn from those tests was measuring a branch that never executed.
 		//
-		// v181 drops all packet guesswork. The client's own CP 0x19 carries
-		// ABSOLUTE float coordinates, and 0x11 (CharacterSpawnPacket) is the one
-		// packet whose format is 100% proven on this client. 0x11 addresses the
-		// character BY OID and updates it in place (0x42C053 registers into
-		// [0x6FAF6C]+0x1C0; a repeat 0x11 for a known oid just moves it) - no
-		// 0x12 removal, no 0x3D rebuild, so there is nothing left to flicker.
-		// Because the coordinate is absolute and comes straight from the peer's
-		// own client, drift, delta-accumulation and teleport-to-origin bugs are
-		// structurally impossible.
-		bool moved = true;
-		BYTE dir = mv_dir;
+		// So v181 keeps the capstone-verified 0x19 remote-move packet and
+		// simply feeds it real data:
+		//   handler 0x48D4EA: Dec4(oid) -> 0x45CB52(path) -> Dec1(stance) ->
+		//   0x42ACDD looks the oid up in [0x6FAF6C]+0x1C0 (the very container
+		//   spawn 0x11 registers into) -> 0x45806D SetMoving / 0x45C9A7
+		//   SetMovePath / 0x458081 stance. Nothing is destroyed and nothing is
+		//   rebuilt, so there is structurally nothing left to flicker.
+		// Wire format (0x45CAEE reads [count:1] then exactly ONE int16 via
+		// 0x407FBF -> 0x40793B; no loop):
+		//   [0x19][oid:4 LE][count=1][delta:int16 LE][stance:1] = 9 bytes.
+		//
+		// 0x11 is deliberately NOT used for movement: AutoResponse.cpp v93
+		// proved a bare 0x11 for an ALREADY-RENDERED remote object is ignored
+		// by this client, which is exactly why the v90 "moveAsSpawn" mode and
+		// the 11111000 experiment both froze.
+		//
+		// Because CP 0x19 arrives ~20x/sec, each delta is only a few pixels -
+		// comfortably inside int16 and far too small to look like a teleport.
+		short dx = 0;
+		BYTE stance = 0;
+		bool moved = false;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
 			auto uit = g_players.find(t_sid);
 			if (uit != g_players.end()) {
 				auto &p = uit->second;
 				if (p.has_last_move) {
-					float ddx = nx - p.last_move_x;
-					float ddy = ny - p.last_move_y;
-					if (ddx > 0.5f) dir = 1;
-					else if (ddx < -0.5f) dir = 0;
-					// Idle clients keep sending 0x19 heartbeats with an
-					// unchanged position; forwarding those would spam ~20
-					// spawn packets/sec per player for no visual gain.
-					if (ddx * ddx + ddy * ddy < 0.25f) moved = false;
+					float fdx = nx - p.last_move_x;
+					float fdy = ny - p.last_move_y;
+					long ldx = (long)fdx;
+					if (ldx < -32768) ldx = -32768; else if (ldx > 32767) ldx = 32767;
+					dx = (short)ldx;
+					// Idle clients keep sending 0x19 heartbeats at an unchanged
+					// position; forwarding those is pure noise.
+					if (fdx * fdx + fdy * fdy >= 0.25f) moved = true;
 				}
 				p.last_move_x = nx; p.last_move_y = ny; p.has_last_move = true;
 			}
 		}
-		if (!moved) return;                   // standing still - nothing to send
+		if (!moved || dx == 0) return;
+		stance = (dx < 0) ? 1 : 0;            // facing: 0 = right, 1 = left
 		for (auto &t : targets) {
-			CharacterSpawnPacket(me, nx, ny, dir, t.sid, MP_RemoteCtx());
+			ServerPacket sp;
+			sp.Encode1(0x19);
+			sp.Encode4(me.id);
+			sp.Encode1(0x01);                  // path element count = 1
+			sp.Encode2((WORD)dx);              // signed int16 step (LE)
+			sp.Encode1(stance);
+			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
 		}
-		printf("[MP-FWD] v181 pos-0x11 op=%02X oid=%08X pos=(%.1f,%.1f) dir=%d targets=%zu\n",
-			(unsigned)op, (unsigned)me.id, nx, ny, (int)dir, targets.size());
-		MP_MARK("MP-FWD v181 pos-0x11-abs");
+		printf("[MP-FWD] v181 mv0x19 op=%02X oid=%08X pos=(%.1f,%.1f) dx=%d st=%d targets=%zu\n",
+			(unsigned)op, (unsigned)me.id, nx, ny, (int)dx, (int)stance, targets.size());
+		MP_MARK("MP-FWD v181 mv-0x19-gated");
 		return;
 	}
 
