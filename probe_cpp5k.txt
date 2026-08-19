@@ -1,0 +1,420 @@
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
+// [v182] test fragment
+#include <cstdio>
+int main() {
+    float x = 1.0f;
+    printf("hello <world> & 'test' %d\n", 42);
+    return 0;
+}
