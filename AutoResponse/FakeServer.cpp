@@ -1095,7 +1095,113 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 //    stub -> dropped. 2) DLL must be the v86 build (760320B, no v133-140
 //    suppression/memscan interference) - restored from tenvi-mp-v113.zip.
 //    v141 had ctx=1 right but shipped the v140 DLL, which is why it failed.
-	if (MP_SmoothMove() && (op == 0x19 || op == 0x0C) && has_pos) {
+	// [v182] ===================== THE REAL SMOOTH FIX =====================
+	// Everything before v182 was chasing the wrong packet AND the wrong format.
+	// Three capstone facts, all re-verified this round:
+	//
+	// 1) DOWNSTREAM opcode is 0x19 (jump table 0x49391C, index = opcode - 0x0D,
+	//    so 0x19 -> idx 0x0C -> stub 0x4937A0 -> handler 0x48D4EA). Handler:
+	//      Dec4(oid) -> 0x45CB52(blob) -> Dec1(stance) -> 0x42ACDD lookup in
+	//      [0x6FAF6C]+0x1C0 -> SetMoving(1) / SetMovePath(blob) / SetStance.
+	//    Nothing is destroyed or rebuilt -> structurally cannot flicker.
+	//    0x42C053 (used by spawn 0x11) inserts into BOTH +0x190 and +0x1C0, so
+	//    a spawned peer is always findable here. Verified, not assumed.
+	//    (0xD6 was a red herring: it dynamic_casts to CVehicle, so a plain
+	//     character fails the cast and the SetPosition call is skipped.)
+	//
+	// 2) The blob format is [count:1][int16 * count]; 0x45CAEE computes its own
+	//    consumed length as lea esi,[eax+eax+1] = 1 + 2*count and returns it to
+	//    advance the read cursor. The v180 "only one int16 is read" reading was
+	//    wrong - 0x407FBF gets count passed in and reads count elements of 2
+	//    bytes each. So count is a COUNT OF INT16s, not a count of path nodes.
+	//
+	// 3) The client's own upstream CP 0x0C carries a full path, live-captured:
+	//      0C 01 02 14 0A | <node0 18B> | <node1 18B>            len=41
+	//      0C 01 08 8C 05 | <node0..7>                           len=149
+	//      0C 01 0C FA 00 | <node0..11>                          len=221
+	//    i.e. [0x0C][flag:1][nodes:1][word:2][node * nodes], node = 18 bytes
+	//    = [dur:4][w:2][w:2][float x:4][float y:4][w:2]. Every observed length
+	//    satisfies len == 5 + 18*nodes exactly (41/95/149/185/221 all match).
+	//
+	// Put 2) and 3) together: 18 bytes == 9 int16, so relaying the raw node
+	// array with count = 9*nodes is byte-exact for the 0x19 decoder. We never
+	// have to understand what is inside a node - the client encoded it and the
+	// client decodes it, we only re-address it to the peer's oid. The node
+	// coordinates are absolute floats in the same space the spawn packet uses,
+	// so no delta math, no teleports, no drift.
+	//
+	// One 0x0C carries the WHOLE path with per-node durations, so the receiving
+	// client animates the walk itself. That is why this is smooth: we are no
+	// longer streaming positions at 20Hz, we hand over a path once and let the
+	// client's own interpolation run it.
+	//
+	// Upstream 0x19 (35B, guardian/pet position) is NOT forwarded any more - it
+	// has a single point and no path, it was pure noise. It still updates the
+	// stored position so later spawns land in the right place.
+	// A malformed variant does show up in live captures with flag byte 0x00
+	// ("0C 00 01 02 4E 02 ..."), where nodes/coords sit elsewhere. Relaying it
+	// blind would hand the peer a garbage path (jitter / teleport), so every
+	// node is coordinate-checked and the whole packet is dropped on any miss.
+	if (MP_SmoothMove() && op == 0x0C && len >= 23 && pkt[1] == 0x01) {
+		BYTE nodes = pkt[2];
+		DWORD need = 5u + 18u * (DWORD)nodes;
+		// count is a byte and must cover 9 int16 per node -> 28 nodes max.
+		DWORD use = nodes > 28 ? 28 : (DWORD)nodes;
+		const BYTE *n0 = pkt + 5;
+		bool shape_ok = (nodes >= 1 && len >= need);
+		if (shape_ok) {
+			for (DWORD i = 0; i < use; i++) {
+				float ax = 0.0f, ay = 0.0f;
+				memcpy(&ax, n0 + 18u * i + 8, 4);
+				memcpy(&ay, n0 + 18u * i + 12, 4);
+				if (!(ax > -1.0e5f && ax < 1.0e5f && ay > -1.0e5f && ay < 1.0e5f)) {
+					shape_ok = false;
+					break;
+				}
+			}
+		}
+		if (!shape_ok) {
+			printf("[MP-FWD] v182 shape-miss nodes=%d len=%d need=%d\n",
+				(int)nodes, (int)len, (int)need);
+		} else {
+			float fx = 0.0f, fy = 0.0f, lx = 0.0f, ly = 0.0f;
+			memcpy(&fx, n0 + 8, 4);
+			memcpy(&fy, n0 + 12, 4);
+			memcpy(&lx, n0 + 18u * (use - 1) + 8, 4);
+			memcpy(&ly, n0 + 18u * (use - 1) + 12, 4);
+			BYTE stance = (lx < fx) ? 1 : 0;   // 0 = facing right, 1 = left
+			{
+				std::lock_guard<std::mutex> lk(g_playersMtx);
+				auto uit = g_players.find(t_sid);
+				if (uit != g_players.end()) {
+					uit->second.x = lx;
+					uit->second.y = ly;
+					uit->second.last_move_x = lx;
+					uit->second.last_move_y = ly;
+					uit->second.has_last_move = true;
+				}
+			}
+			for (auto &t : targets) {
+				ServerPacket sp;
+				sp.Encode1(0x19);
+				sp.Encode4(me.id);
+				sp.Encode1((BYTE)(9u * use));      // int16 count = 9 per node
+				for (DWORD i = 0; i < 18u * use; i++) sp.Encode1(n0[i]);
+				sp.Encode1(stance);
+				MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
+			}
+			printf("[MP-FWD] v182 path oid=%08X nodes=%d/%d ic=%d "
+				"start=(%.1f,%.1f) end=(%.1f,%.1f) st=%d targets=%zu\n",
+				(unsigned)me.id, (int)use, (int)nodes, (int)(9u * use),
+				fx, fy, lx, ly, (int)stance, targets.size());
+			MP_MARK("MP-FWD v182 path-relay-0x19");
+			return;
+		}
+	}
+	// Guardian/pet heartbeat: position already stored above, never relayed.
+	if (MP_SmoothMove() && op == 0x19) return;
+
+	if (false && MP_SmoothMove() && (op == 0x19 || op == 0x0C) && has_pos) {
 		// [v176] RAW-RELAY smooth movement (verified via capstone).
 		// Opcode fix from v175 stands: the CWvsContext dispatcher (0x492F70)
 		// indexes its jump table by (opcode - 0x0D), so the remote-move handler
