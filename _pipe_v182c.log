@@ -1,0 +1,8 @@
+19:49:21 触发 tenvi-build build_mp.yml (ref=main) ...
+19:49:22 dispatch 已发送
+19:49:30 run id = 32249488455
+19:49:31   poll 0: status=in_progress conclusion=None
+19:50:02   poll 1: status=in_progress conclusion=None
+19:50:35   poll 2: status=in_progress conclusion=None
+19:51:06   poll 3: status=completed conclusion=failure
+19:51:06 !! 构建失败 conclusion=failure
