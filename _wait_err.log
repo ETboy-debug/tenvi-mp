@@ -1,0 +1,9 @@
+poll run=32251601515 status=in_progress concl=None
+poll run=32251601515 status=in_progress concl=None
+poll run=32251601515 status=completed concl=failure
+FINAL run=32251601515
+Traceback (most recent call last):
+  File "D:\冲锋岛\build_src\_wait_err.py", line 41, in <module>
+    print("build_err.txt:", st, body[:300])
+                                ~~~~^^^^^^
+TypeError: 'int' object is not subscriptable
