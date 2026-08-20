@@ -1,0 +1,5 @@
+RUN 32253524229 failure
+  GZ: 2026-08-19T12:36:39.0873332Z [36;1mWrite-Host "gunzip done, count=$($files.Count)"[0m
+  GZ: 2026-08-19T12:36:39.0874853Z [36;1m  Write-Host ("MPClient.h line81 = [" + $lines[80] + "]")[0m
+  GZ: 2026-08-19T12:36:39.0875278Z [36;1m} else { Write-Host "WARN MPClient.h missing after gunzip" }[0m
+DONE
