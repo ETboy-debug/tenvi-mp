@@ -1,0 +1,13 @@
+等待新 run 出现并结束...
+poll in_progress None
+poll in_progress None
+poll in_progress None
+poll in_progress None
+poll completed failure
+Traceback (most recent call last):
+  File "D:\冲锋岛\build_src\_wait_err_v182.py", line 33, in <module>
+    r=g(f'{API}/repos/{REPO}/actions/runs/{RUN}/logs')
+  File "D:\冲锋岛\build_src\_wait_err_v182.py", line 7, in g
+    try: return ('OK',urllib.request.urlopen(r,timeout=60).read().decode())
+                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+UnicodeDecodeError: 'utf-8' codec can't decode bytes in position 41-42: invalid continuation byte
