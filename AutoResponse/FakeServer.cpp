@@ -273,7 +273,7 @@ void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, BYTE di
 	sp.EncodeFloat(x); // 0048DBA5, coordinate x
 	sp.EncodeFloat(y); // 0048DBAF, corrdinate y
 	sp.Encode1(dir); // 0048DBB9, direction 0 = left, 1 = right
-	sp.Encode1(1); // 0048DBC6, guardian, 0 = guardian off, 1 = guardian on
+	sp.Encode1(0); // 0048DBC6, guardian, 0 = guardian off, 1 = guardian on (v209 OFF to kill golden pile)
 	sp.Encode1(1); // 0048DBD3, death, 0 = death, 1 = alive
 	sp.Encode1(0); // 0048DBE0, battle, 0 = change channel OK, 1 = change channel NG
 	sp.Encode4(4444); // 0048DBFB, ???
@@ -302,10 +302,10 @@ void CharacterSpawnPacket(TenviCharacter &chr, float x = 0, float y = 0, BYTE di
 		sp.Encode2(equip);
 	}
 
-	// guardian equip
-	for (auto gequip : chr.gequipped) {
+	// guardian equip (remote avatars: suppress guardian visuals so scan=4 cannot lock onto the guardian's coords instead of the player)
+	for (size_t i = 0; i < chr.gequipped.size(); i++) {
 		sp.Encode8(0);
-		sp.Encode2(gequip);
+		sp.Encode2(0);
 	}
 
 	sp.Encode2(0); // 0048DDC3
@@ -1223,7 +1223,8 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	// So stream 0x11 with fresh coords and NEVER send 0x12: the avatar object is
 	// never destroyed (no sprite reload = no flicker) and the DLL slides it to
 	// each new target. No packet-format guessing is involved any more.
-	if (MP_SmoothMove() && (op == 0x19 || op == 0x0C) && has_pos) {
+	// [v210] enable the 0x11 CField position stream (v209 was accidentally dead because this outer gate stayed `false`).
+	if (true && MP_SmoothMove() && (op == 0x19 || op == 0x0C) && has_pos) {
 		if (fabsf(nx) < 0.001f && fabsf(ny) < 0.001f) return;   // poison guard
 		bool do_send = false;
 		short mdx = 0;   // [v193] relative horizontal step for the 0x19 move
@@ -1315,26 +1316,47 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		// full-memory mode writes those targets into the 21 scanned render
 		// position copies. Single consistent path: one-time rebuild-birth
 		// (above) + 0x11 stream. No 0x19 (it writes a dead CField object).
-		// [v205] REMOVED 0x11 per-step stream. The client does NOT ignore
-		// repeated 0x11 for an already-rendered avatar (v93 was wrong about
-		// this build) - the receiver creates a new CField object each time
-		// and the old one stays, producing the "3 stacked qwe111" bug. The
-		// position itself is now driven entirely by the DLL's scan=4 full-
-		// memory mode writing the lerp target into the 21 render-position
-		// copies (mp_interp.cfg scan=4). The 0x3D+0x11 birth above registers
-		// the oid in the CField hashmap once, and DLL scan=4 keeps the
-		// single instance in lockstep with the sender.
-		/*
+		// [v206] RESTORED 0x11 per-step stream (the v204 mechanism that
+		// actually moved peers). v205 deleted it and relied solely on DLL
+		// scan=4 writing the lerp target into memory, but scan=4 writes a
+		// stale/dead CField object on this build, so peers froze. The 0x11
+		// stream hands each fresh coordinate to the receiver's native spawn
+		// handler, which the injected DLL caches as the per-frame lerp target
+		// and slides the avatar to it. The one-time 0x3D+0x11 birth above
+		// registers the oid once; the stream keeps it in lockstep. The
+		// "3 stacked qwe111" bug was caused by the ENTRY retry re-spawning
+		// without 0x12 remove - that retry is already gone in v205, so the
+		// runtime stream no longer stacks (verified: v204 showed only the
+		// 3 entry spawns, not N runtime ones).
 		BYTE mst = (mdx < 0) ? 1 : 0;   // facing from last delta
-		for (auto &t : targets) {
-			CharacterSpawnPacket(me, nx, ny, mst, t.sid, MP_RemoteCtx());
+		// [v217] DOWNSTREAM 0x19 native move: client 0x48D4EA handler looks the
+		// oid up in [0x6FAF6C]+0x1C0 (registered by the one-time rebuild-birth
+		// above) and applies a smooth in-place path -> no destroy/recreate ->
+		// no flicker, pure network, ZERO memory writes. Wire format
+		// (capstone v181, decoder 0x45CAEE reads [count:1] then ONE int16):
+		//   [0x19][oid:4 LE][count=1][dx:int16 LE][stance:1] = 9 bytes.
+		if (!MP_RebuildMove()) {
+			for (auto &t : targets) {
+				if (mdx == 0) continue;
+				ServerPacket sp;
+				sp.Encode1(0x19);
+				sp.Encode4(me.id);
+				sp.Encode1(0x01);
+				sp.Encode2((WORD)mdx);
+				sp.Encode1(mst);
+				MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
+			}
+			MP_MARK("MP-FWD v217 move-0x19-native");
+			return;
 		}
-		*/
-		MP_MARK("MP-FWD v205 scan4-clean");
-		return;
 	}
 
 	if (false && MP_SmoothMove() && (op == 0x19 || op == 0x0C) && len >= 9) {
+		// [v207] v206 0x11 stream had no walk animation (client ignores repeated
+		// 0x11 for an already-rendered avatar). Switch back to the capstone-
+		// verified SP 0x19 remote-move handler (0x48D4EA) for native animation.
+		// Birth uses the v195 rebuild-batch so the oid is registered in the
+		// CField hashmap BEFORE any 0x19 delta is applied.
 		short dx = 0, dy = 0; BYTE stance = 0; bool moved = false;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
@@ -1393,6 +1415,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		return;
 	}
 
+	// [v210] SP 0x19 native move is dropped by StandaloneServer.cpp gate; keep it off.
 	if (false && MP_SmoothMove() && (op == 0x19 || op == 0x0C) && has_pos) {
 		// [v176] RAW-RELAY smooth movement (verified via capstone).
 		// Opcode fix from v175 stands: the CWvsContext dispatcher (0x492F70)
@@ -1470,7 +1493,10 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			}
 		}
 		mv_dir = (dx < 0) ? 0 : 1;
-	// v190: 一次性 0x11 出生，保证接收端已注册 oid（0x19 才有效），不受 moved 限制
+	// [v207] full rebuild-batch birth (from v195). A bare 0x11 renders via
+	// CWvsContext but does NOT register the CField hashmap that the 0x19 move
+	// handler (0x42ACDD) looks up. 0x12 remove + 0x3D build + 0x11 render +
+	// restore identity registers a findable object for native 0x19 animation.
 	for (auto &t : targets) {
 		bool need_birth = false;
 		{
@@ -1482,7 +1508,15 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			}
 		}
 		if (need_birth) {
-			CharacterSpawnPacket(me, nx, ny, mv_dir, t.sid, MP_RemoteCtx());
+			std::vector<ServerPacket> batch;
+			batch.reserve(4);
+			RemoveObjectPacket(me.id, t.sid, &batch);
+			AccountDataPacket(me, t.sid, &batch);                                  // 0x3D: build CField object
+			CharacterSpawnPacket(me, nx, ny, mv_dir, t.sid, MP_RemoteCtx(), &batch); // 0x11: render at pos
+			AccountDataPacket(t.chr, t.sid, &batch);                               // restore receiver identity
+			MP_SendBatchToSid(t.sid, batch, MP_RemoteCtx());
+			printf("[MP-FWD] v210 birth(rebuild-batch) oid=%08X -> sid=%d pos=(%.1f,%.1f)\n",
+				(unsigned)me.id, t.sid, nx, ny);
 		}
 	}
 	if (!moved || dx == 0) return;
@@ -1496,9 +1530,9 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 			sp.Encode1(stance);
 			MP_BroadcastToSid(t.sid, sp, MP_RemoteCtx());
 		}
-		printf("[MP-FWD] v181 mv0x19 op=%02X oid=%08X pos=(%.1f,%.1f) dx=%d st=%d targets=%zu\n",
+		printf("[MP-FWD] v210 mv0x19 op=%02X oid=%08X pos=(%.1f,%.1f) dx=%d st=%d targets=%zu\n",
 			(unsigned)op, (unsigned)me.id, nx, ny, (int)dx, (int)stance, targets.size());
-		MP_MARK("MP-FWD v191 spawn-stream-lerp");
+		MP_MARK("MP-FWD v210 rebuild-fallback");
 		return;
 	}
 
