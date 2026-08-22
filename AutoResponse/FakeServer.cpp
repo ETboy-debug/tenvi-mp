@@ -1213,7 +1213,128 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 	// 0x19 is only a position heartbeat. 0x0C is already parsed into nx,ny
 	// above (line 967), so drive the same smooth-delta path instead of
 	// falling through to the rebuild staircase that causes flicker.
-	if (MP_SmoothMove() && (op == 0x19 || op == 0x0C) && len >= 9) {
+	// [v188] PROVEN-PATH smooth movement (replaces the SP 0x19 delta stream).
+	// Evidence from the 2026-08-20 live test (mp_diag_25552.log): the receiving
+	// client got 58 batches of SP 0x19 and the avatar never moved one pixel, so
+	// handler 0x48D4EA is a dead end on this build - stop feeding it.
+	// The ONLY coordinate the peer provably consumes is the 0x11 spawn body
+	// ([MP-11DUMP] logged x=-285.0 y=374.0 decoded correctly), and the injected
+	// DLL caches every incoming 0x11 coordinate as its per-frame lerp target.
+	// So stream 0x11 with fresh coords and NEVER send 0x12: the avatar object is
+	// never destroyed (no sprite reload = no flicker) and the DLL slides it to
+	// each new target. No packet-format guessing is involved any more.
+	if (MP_SmoothMove() && (op == 0x19 || op == 0x0C) && has_pos) {
+		if (fabsf(nx) < 0.001f && fabsf(ny) < 0.001f) return;   // poison guard
+		bool do_send = false;
+		short mdx = 0;   // [v193] relative horizontal step for the 0x19 move
+		{
+			std::lock_guard<std::mutex> lk(g_playersMtx);
+			auto uit = g_players.find(t_sid);
+			if (uit == g_players.end()) return;
+			auto &p = uit->second;
+			double now = GetTickCount64() / 1000.0;
+			if (!p.has_last_move) {
+				do_send = true;
+				mv_dir = 0;
+			} else {
+				float ddx = nx - p.last_move_x;
+				float ddy = ny - p.last_move_y;
+				float d2 = ddx * ddx + ddy * ddy;
+				double age = now - p.last_rebuild_t;
+				mv_dir = (ddx < 0.0f) ? 0 : 1;
+				// [v198] faster stream: ~30Hz / 2px threshold (cut latency)
+				if (d2 >= 4.0f && age >= 0.03) do_send = true;
+				else if (d2 >= 0.25f && age >= 0.20) do_send = true;
+				if (do_send) {
+					// compute BEFORE last_move is overwritten below
+					long ldx = (long)ddx;
+					if (ldx < -32768) ldx = -32768; else if (ldx > 32767) ldx = 32767;
+					mdx = (short)ldx;
+				}
+			}
+			if (do_send) {
+				p.last_move_x = nx; p.last_move_y = ny;
+				p.has_last_move = true; p.last_rebuild_t = now;
+			}
+		}
+		if (!do_send) return;
+		// [v192] ONE-TIME 0x3D birth: a bare 0x11 birth renders the avatar via
+		// CWvsContext but NEVER registers the CField hashmap (0x42ACDD) - v191
+		// proved it (DLL GetCharacterByOID got junk/stale objects, 194 STALE
+		// rejections). v192 proved 0x3D+0x11 birth DOES register a findable
+		// object (DLL applied=102 rejected=0). The avatar still did not move
+		// because repeated 0x11 for an already-rendered avatar is ignored by
+		// this client (v93) and the DLL memory write targets a non-rendered
+		// object.
+		// [v193] So after the 0x3D-registered birth, drive movement with the
+		// native SP 0x19 move handler (0x48D4EA) - it looks the avatar up in
+		// the SAME CField hashmap the birth now fills, and applies a smooth
+		// in-place path (no destroy/recreate = no flicker). Format (capstone
+		// v180/v181, decoder 0x45CAEE reads [count:1] then ONE int16):
+		//   [0x19][oid:4 LE][count=1][dx:int16 LE][stance:1] = 9 bytes.
+		// dx is the relative horizontal step from the last broadcast position.
+		for (auto &t : targets) {
+			bool need_birth = false;
+			{
+				std::lock_guard<std::mutex> lk(g_playersMtx);
+				auto uit = g_players.find(t_sid);
+				if (uit != g_players.end() && !uit->second.born_to.count(t.sid)) {
+					need_birth = true;
+					uit->second.born_to.insert(t.sid);
+				}
+			}
+			if (need_birth) {
+				// [v195] FULL rebuild batch ONCE at birth. Disasm of the 0x19
+				// handler chain (0x48D4EA) proves: the packet format
+				// [count:1][count*int16] is decoded correctly, SetMoving(+0x898)
+				// / SetMovePath(+0x89C) / SetStance(+0x8A0) all run without
+				// bailing when the oid resolves (v194 recorder: ptr found,
+				// position frozen at spawn) - yet the avatar never walks the
+				// stored path, i.e. the per-frame path follower is not running
+				// for a character created by a bare 0x11/0x3D+0x11 birth. The
+				// ONLY sequence proven to put the avatar in a simulated state
+				// is the rebuild batch 0x12+0x3D+0x11 (v102-era: it moves).
+				// So send that exact batch ONCE here (avatar is not yet
+				// rendered on the receiver, single TCP write = no visible
+				// flicker), then drive movement with native 0x19 steps.
+				std::vector<ServerPacket> batch;
+				batch.reserve(4);
+				RemoveObjectPacket(me.id, t.sid, &batch);
+				AccountDataPacket(me, t.sid, &batch);                                  // 0x3D: build CField object
+				CharacterSpawnPacket(me, nx, ny, mv_dir, t.sid, MP_RemoteCtx(), &batch); // 0x11: render at pos
+				AccountDataPacket(t.chr, t.sid, &batch);                               // restore receiver identity
+				MP_SendBatchToSid(t.sid, batch, MP_RemoteCtx());
+				printf("[MP-FWD] v195 birth(rebuild-batch) oid=%08X -> sid=%d pos=(%.1f,%.1f)\n",
+					(unsigned)me.id, t.sid, nx, ny);
+			}
+		}
+		// [v197] drive the receiver DLL's scan-locked render-position copies
+		// with the 0x11 spawn-stream. The client ignores repeated 0x11 for an
+		// already-rendered avatar (v93) but the DLL caches every 0x11
+		// coordinate as its per-frame lerp target, and the DLL's scan=4
+		// full-memory mode writes those targets into the 21 scanned render
+		// position copies. Single consistent path: one-time rebuild-birth
+		// (above) + 0x11 stream. No 0x19 (it writes a dead CField object).
+		// [v205] REMOVED 0x11 per-step stream. The client does NOT ignore
+		// repeated 0x11 for an already-rendered avatar (v93 was wrong about
+		// this build) - the receiver creates a new CField object each time
+		// and the old one stays, producing the "3 stacked qwe111" bug. The
+		// position itself is now driven entirely by the DLL's scan=4 full-
+		// memory mode writing the lerp target into the 21 render-position
+		// copies (mp_interp.cfg scan=4). The 0x3D+0x11 birth above registers
+		// the oid in the CField hashmap once, and DLL scan=4 keeps the
+		// single instance in lockstep with the sender.
+		/*
+		BYTE mst = (mdx < 0) ? 1 : 0;   // facing from last delta
+		for (auto &t : targets) {
+			CharacterSpawnPacket(me, nx, ny, mst, t.sid, MP_RemoteCtx());
+		}
+		*/
+		MP_MARK("MP-FWD v205 scan4-clean");
+		return;
+	}
+
+	if (false && MP_SmoothMove() && (op == 0x19 || op == 0x0C) && len >= 9) {
 		short dx = 0, dy = 0; BYTE stance = 0; bool moved = false;
 		{
 			std::lock_guard<std::mutex> lk(g_playersMtx);
@@ -1348,7 +1469,23 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 				p.last_move_x = nx; p.last_move_y = ny; p.has_last_move = true;
 			}
 		}
-		if (!moved || dx == 0) return;
+		mv_dir = (dx < 0) ? 0 : 1;
+	// v190: 一次性 0x11 出生，保证接收端已注册 oid（0x19 才有效），不受 moved 限制
+	for (auto &t : targets) {
+		bool need_birth = false;
+		{
+			std::lock_guard<std::mutex> lk(g_playersMtx);
+			auto uit = g_players.find(t_sid);
+			if (uit != g_players.end() && !uit->second.born_to.count(t.sid)) {
+				need_birth = true;
+				uit->second.born_to.insert(t.sid);
+			}
+		}
+		if (need_birth) {
+			CharacterSpawnPacket(me, nx, ny, mv_dir, t.sid, MP_RemoteCtx());
+		}
+	}
+	if (!moved || dx == 0) return;
 		stance = (dx < 0) ? 1 : 0;            // facing: 0 = right, 1 = left
 		for (auto &t : targets) {
 			ServerPacket sp;
@@ -1361,7 +1498,7 @@ void MP_ForwardToSameMap(const BYTE *pkt, DWORD len) {
 		}
 		printf("[MP-FWD] v181 mv0x19 op=%02X oid=%08X pos=(%.1f,%.1f) dx=%d st=%d targets=%zu\n",
 			(unsigned)op, (unsigned)me.id, nx, ny, (int)dx, (int)stance, targets.size());
-		MP_MARK("MP-FWD v181 mv-0x19-gated");
+		MP_MARK("MP-FWD v191 spawn-stream-lerp");
 		return;
 	}
 
@@ -1748,36 +1885,12 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 		CharacterSpawnPacket(other.chr, other.x, other.y, 0, t_sid, MP_RemoteCtx());
 		if (MP_RemoteSend3D() && MP_Restore3D())
 			AccountDataPacket(chr, t_sid); // [v62] restore my identity
-		// retry once: 1.5s , 
-		Sleep(1500);
-		if (MP_RemoteSend3D()) AccountDataPacket(other.chr, t_sid);
-		Sleep(50);
-		CharacterSpawnPacket(other.chr, other.x, other.y, 0, t_sid, MP_RemoteCtx());
-		if (MP_RemoteSend3D() && MP_Restore3D())
-			AccountDataPacket(chr, t_sid);
-		printf("[MP-XVIS] deferred dirB v94 ctx=%d -> sid=%d other oid=%08X (retry x2)\n",
+		// [v205] dirB retry x1 REMOVED (was the cause of "3 stacked qwe111"
+		// on the receiver - each retry re-sent 0x11 without 0x12 remove).
+		// DLL scan=4 keeps the avatar in lockstep once the initial 0x11
+		// from above is rendered.
+		printf("[MP-XVIS] deferred dirB v205 (retry off) -> sid=%d other oid=%08X\n",
 			MP_RemoteCtx() ? 1 : 0, t_sid, (unsigned)other.chr.id);
-		fflush(stdout);
-	}
-	// [v144] A retry: (other) 0x11 (live=0, hashmap
-	// miss ->  0x0C  -> ) dirB  3s 
-	// 2 , 
-	for (auto &other : dirA_targets) {
-		int other_sid = other.sid;
-		Sleep(3000);
-		if (MP_RemoteSend3D()) AccountDataPacket(chr, other_sid);
-		Sleep(50);
-		CharacterSpawnPacket(chr, x, y, 0, other_sid, MP_RemoteCtx());
-		if (MP_RemoteSend3D() && MP_Restore3D())
-			AccountDataPacket(other.chr, other_sid);
-		Sleep(1500);
-		if (MP_RemoteSend3D()) AccountDataPacket(chr, other_sid);
-		Sleep(50);
-		CharacterSpawnPacket(chr, x, y, 0, other_sid, MP_RemoteCtx());
-		if (MP_RemoteSend3D() && MP_Restore3D())
-			AccountDataPacket(other.chr, other_sid);
-		printf("[MP-XVIS] deferred dirA v144 ctx=%d -> sid=%d my oid=%08X (retry x2)\n",
-			MP_RemoteCtx() ? 1 : 0, other_sid, (unsigned)chr.id);
 		fflush(stdout);
 	}
 #else
