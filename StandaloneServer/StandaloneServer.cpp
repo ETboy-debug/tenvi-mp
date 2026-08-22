@@ -671,6 +671,25 @@ static void HandlePayload(const BYTE *p, DWORD n) {
 	if (type != MP_TYPE_GAME || n < 2) {
 		return;
 	}
+	// [v188] CP sniffer. The 2026-08-20 session log proves NO stall/shop packet
+	// ever reached the forwarder: only 0x0C, 0x19 and 1-byte keepalives (0xF1,
+	// 0x1E, 0x0B) showed up, because packets the local FakeServer handles are
+	// never printed. Log the first 3 packets of EVERY opcode with a short hex
+	// dump so the stall opcode can be identified from one test session.
+	// Bounded (3 per opcode) so the log stays readable.
+	{
+		static int s_sniff[256] = { 0 };
+		BYTE cop = p[1];
+		if (s_sniff[cop] < 3) {
+			s_sniff[cop]++;
+			int dl = (int)(n - 1);
+			if (dl > 40) dl = 40;
+			printf("[CP-SNIFF] op=0x%02X len=%d bytes=", (unsigned)cop, (int)(n - 1));
+			for (int i = 1; i <= dl; i++) printf("%02X ", (unsigned)(BYTE)p[i]);
+			printf("\n");
+			fflush(stdout);
+		}
+	}
 	// [v55] :  0x0C 
 	// [v181] ROOT CAUSE FIX. Live logs prove this client's real movement
 	// packet is opcode 0x19 (35 bytes, "[UNK-RECV] opcode=0x19 len=35"), NOT
