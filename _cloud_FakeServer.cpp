@@ -1745,19 +1745,34 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 		if (MP_RemoteSend3D() && MP_Restore3D())
 			AccountDataPacket(chr, t_sid); // [v62] restore my identity
 		// retry once: 1.5s , 
+		// [v205] retry removed - causes 2x stacking on the receiver
+		// (0x11 re-sent without 0x12 remove, so the previous avatar stays).
+		// v184 0x19 step + DLL scan=4 already drive position; this retry was
+		// only needed for the 0x0C path that 0x19 replaced.
+		/*
 		Sleep(1500);
 		if (MP_RemoteSend3D()) AccountDataPacket(other.chr, t_sid);
 		Sleep(50);
 		CharacterSpawnPacket(other.chr, other.x, other.y, 0, t_sid, MP_RemoteCtx());
 		if (MP_RemoteSend3D() && MP_Restore3D())
 			AccountDataPacket(chr, t_sid);
-		printf("[MP-XVIS] deferred dirB v94 ctx=%d -> sid=%d other oid=%08X (retry x2)\n",
+		*/
+		printf("[MP-XVIS] deferred dirB v205 (retry off) -> sid=%d other oid=%08X\n",
 			MP_RemoteCtx() ? 1 : 0, t_sid, (unsigned)other.chr.id);
 		fflush(stdout);
 	}
 	// [v144] A retry: (other) 0x11 (live=0, hashmap
-	// miss ->  0x0C  -> ) dirB  3s 
-	// 2 , 
+	// miss ->  0x0C  -> ) dirB  3s
+	// 2 ,
+	// [v205] dirA retry REMOVED - the retry x2 was the direct cause of the
+	// "3 stacked qwe111" bug on the receiver: each retry re-sent 0x11
+	// without 0x12 remove, so the old avatar stayed alongside the new one.
+	// v184 0x19 step + DLL scan=4 already drive position continuously, so
+	// the retry (only ever needed for the 0x0C path that 0x19 replaced)
+	// is no longer required. The ChangeMap entry loop above (1679-1726)
+	// already sends the one-time 0x3D+0x11+0x3D-restore that registers
+	// the oid and renders the avatar.
+	/*
 	for (auto &other : dirA_targets) {
 		int other_sid = other.sid;
 		Sleep(3000);
@@ -1776,6 +1791,7 @@ void ChangeMap(TenviCharacter &chr, WORD map_id, float x, float y) {
 			MP_RemoteCtx() ? 1 : 0, other_sid, (unsigned)chr.id);
 		fflush(stdout);
 	}
+	*/
 #else
 	CharacterSpawnPacket(chr, x, y);
 #endif
