@@ -877,153 +877,36 @@ static void MP_ApplyInterpolation() {
 	// target - the rendered copy is among them, so the avatar glides.
 	// Candidates that the client reverts (>100px) are dropped (client-owned
 	// fields); fields that keep our value are plain copies we keep writing.
+	// [v216-safe] PRECISE walk-animation write ONLY. Position is driven by
+	// the network 0x11 stream (smooth + stable, no crash). We do NOT scan
+	// memory: the full-process scan crashed the 2nd client in v197/v206/v214,
+	// and interp=1's auto-probe locked offsets that lerp then wrote -> crash.
+	// Here we only set the move-state fields of the KNOWN CField avatar object
+	// returned by GetCharacterByOID - the very offsets (0x898 moving, 0x8A0
+	// stance) the game's own 0x19 handler writes every frame, so it can never
+	// corrupt the heap. Result: smooth glide + walk animation + 2-client safe.
 	if (g_scan_kind == 4 && !g_interp.empty()) {
-		static MP_ScanCand s_cands[512];
-		static int s_n = 0;
-		static bool s_done = false;
-		static float s_tx = 0, s_ty = 0;
-		static int s_frame = 0;
-		static FILE *s_lf = NULL;
-		if (!s_done) {
-			// [v204] retry throttle: full-memory scan is heavy; retry at most
-			// once per 30 frames while no match exists (the mover may stop, or
-			// a fresh 0x11 stream may arrive with a better-aligned target).
-			static int s_retry = 0;
-			if ((s_retry++ % 30) == 0) {
-				// scan for the birth position (first remote oid's target)
-				DWORD oid0 = 0; float px = 0, py = 0;
-				{
-					std::map<DWORD, RemoteInterp>::iterator kv = g_interp.begin();
-					if (kv != g_interp.end()) { oid0 = kv->first; px = kv->second.tx; py = kv->second.ty; }
-				}
-				if (oid0 && (fabsf(px) > 1.0f || fabsf(py) > 1.0f)) {
-					s_n = 0;
-					SYSTEM_INFO si; GetSystemInfo(&si);
-					DWORD base = (DWORD)si.lpMinimumApplicationAddress;
-					DWORD top = (DWORD)si.lpMaximumApplicationAddress;
-					for (DWORD a = base; a < top && s_n < 512; ) {
-						MEMORY_BASIC_INFORMATION mi;
-						if (VirtualQuery((LPCVOID)a, &mi, sizeof(mi)) == 0) break;
-						if (mi.State == MEM_COMMIT && mi.Protect == PAGE_READWRITE &&
-							mi.RegionSize > 0x1000 && mi.RegionSize < 0x4000000) {
-							DWORD rbase = (DWORD)mi.BaseAddress;
-							DWORD rend = rbase + (DWORD)mi.RegionSize - 8;
-							for (DWORD p = rbase; p < rend && s_n < 512; p += 4) {
-								float fx = 0, fy = 0; DWORD rx = 0, ry = 0;
-								if (!MP_SafeRead4(p, &rx) || !MP_SafeRead4(p + 4, &ry)) break;
-								memcpy(&fx, &rx, 4); memcpy(&fy, &ry, 4);
-								// [v204] WIDE tolerance: the later-joining client
-								// scans with a slightly stale target (broadcast
-								// lags the mover's real position by a few
-								// frames), so the old 1.5px gate matched
-								// NOTHING and the later client never drove the
-								// earlier one (diag 20380: oid=0x550 stream
-								// received 356x, mp_scan.log has no DONE for it).
-								// 60px covers network lag while walking; stray
-								// matches are filtered by the per-frame revert
-								// check (|cur - tx| > 100 -> drop).
-								bool fpair = (fabsf(fx - px) < 60.0f && fabsf(fy - py) < 60.0f);
-								bool ipair = (fabsf(fx) < 30000.0f && fabsf(fy) < 30000.0f &&
-									fabsf(fx - px) < 60.0f && fabsf(fy - py) < 60.0f && !fpair);
-								if (fpair || ipair) {
-									s_cands[s_n].addr = p; s_cands[s_n].is_int = ipair;
-									if (!s_lf) fopen_s(&s_lf, "D:/mp_scan.log", "a");
-									if (s_lf) fprintf(s_lf, "[MP-SCAN] cand addr=%08X %s f=(%.1f,%.1f) want=(%.1f,%.1f) oid=%08X\n",
-										p, ipair ? "INT" : "FLT", fx, fy, px, py, oid0);
-									s_n++;
-								}
-							}
-						}
-						a += mi.RegionSize;
-					}
-					if (s_lf) { fprintf(s_lf, "[MP-SCAN] DONE found=%d oid=%08X\n", s_n, oid0); fflush(s_lf); }
-					s_tx = px; s_ty = py;
-					// [v204] keep retrying (throttled) while no match - a bare
-					// "no candidates" is NOT terminal: the mover may stop or a
-					// fresher coordinate may arrive next seconds.
-					s_done = (s_n > 0);
+		std::map<DWORD, RemoteInterp>::iterator kv = g_interp.begin();
+		if (kv != g_interp.end()) {
+			DWORD oid = kv->first;
+			float tx = kv->second.tx, ty = kv->second.ty;
+			static float s_lx = 0, s_ly = 0;
+			float dx = tx - s_lx, dy = ty - s_ly;
+			bool moving = (fabsf(dx) > 0.3f || fabsf(dy) > 0.3f);
+			int face = (dx < 0.0f) ? 1 : 0;
+			DWORD cfield = MP_GetCFieldPtr();
+			if (cfield && _GetCharacterByOID) {
+				DWORD cobj = _GetCharacterByOID((void*)cfield, oid);
+				if (cobj) {
+					MP_SafeWrite4(cobj + 0x898, moving ? 1 : 0);
+					MP_SafeWrite4(cobj + 0x8A0, (DWORD)face);
 				}
 			}
-		} else if (s_n > 0) {
-			s_frame++;
-			// drive all candidates toward the current target each frame
-			std::map<DWORD, RemoteInterp>::iterator kv = g_interp.begin();
-			if (kv != g_interp.end()) {
-				float tx = kv->second.tx, ty = kv->second.ty;
-				// [v203] NO periodic re-scan: re-scanning for the moved target
-				// re-matched every address we already wrote plus false positives
-				// (21 -> 120 -> 494 candidates), exploding writes and crashing
-				// the client. The original candidate list tracks the avatar as
-				// we write it each frame (v197 proved 21 is enough). Re-scan
-				// ONLY when every candidate went dead.
-				int alive = 0;
-				bool moving = false;
-				int face = 0;
-				for (int i = 0; i < s_n; i++) {
-						DWORD cur = 0;
-						DWORD addr = s_cands[i].addr;
-						// [v202] address guard: only the low bound stays. The v201 upper bound
-						// 0x08000000 was WRONG - the game heap base moves between
-						// sessions (v196 had candidates at 0x040Bxxxx, v200/v201
-						// at 0x21BDxxxx = 567MB > 0x08000000) so the guard killed
-						// every legitimate candidate -> write=0 forever. Candidates
-						// come from a real VirtualQuery RW-page scan, so they are
-						// always readable/writable; the revert check + coordinate
-						// sanity below protect the writes.
-						if (addr < 0x00100000u) continue;
-						if (!MP_SafeRead4(addr, &cur)) continue;
-						float fcur; memcpy(&fcur, &cur, 4);
-						DWORD cury = 0; float fcury = 0;
-						if (MP_SafeRead4(addr + 4, &cury)) memcpy(&fcury, &cury, 4);
-						// [v201] revert check vs CURRENT target (not the birth
-						// position s_tx). v200 regressed because once the player
-						// walked >100px from spawn, candidates tracked the new tx
-						// while s_tx stayed at spawn -> |fcur - s_tx| > 100 dropped
-						// ALL candidates -> write=0 forever.
-						if (fabsf(fcur - tx) > 100.0f && fabsf(fcury - ty) > 100.0f) continue;
-						// [v199] faster follow (kept from v198): 0.5 factor, 10px/frame
-						float dlt = (tx - fcur) * 0.5f;
-						if (dlt > 10.0f) dlt = 10.0f; else if (dlt < -10.0f) dlt = -10.0f;
-						float nx = fcur + dlt;
-						float dly = (ty - fcury) * 0.5f;
-						if (dly > 10.0f) dly = 10.0f; else if (dly < -10.0f) dly = -10.0f;
-						float ny = fcury + dly;
-						if (s_cands[i].is_int) {
-							MP_SafeWrite4(addr, (DWORD)(int)nx);
-							MP_SafeWrite4(addr + 4, (DWORD)(int)ny);
-						} else {
-							DWORD wx, wy; memcpy(&wx, &nx, 4); memcpy(&wy, &ny, 4);
-							MP_SafeWrite4(addr, wx);
-							MP_SafeWrite4(addr + 4, wy);
-						}
-						alive++;
-						if (fabsf(dlt) > 0.5f || fabsf(dly) > 0.5f) moving = true;
-						if (dlt < 0.0f) face = 1;   // moving left -> face left
-					}
-					// [v200] walk animation via the KNOWN CField object from
-					// GetCharacterByOID. Safe: the game's own 0x19 handler writes
-					// the very same offsets (+0x898 moving, +0x8A0 stance) on this
-					// object, so the writes cannot corrupt anything. The position
-					// now moves (scan writes above), so moving=1 should drive the
-					// walk cycle; stance keeps the avatar facing travel direction.
-					DWORD cfield = MP_GetCFieldPtr();
-					if (cfield && _GetCharacterByOID) {
-						DWORD cobj = _GetCharacterByOID((void*)cfield, kv->first);
-						if (cobj) {
-							DWORD mv = moving ? 1 : 0;
-							MP_SafeWrite4(cobj + 0x898, mv);
-							MP_SafeWrite4(cobj + 0x8A0, (DWORD)face);
-						}
-					}
-					s_tx = tx; s_ty = ty;
-					if (s_lf && (s_frame % 60) == 0) {
-						fprintf(s_lf, "[MP-SCAN] frame=%d write=%d/%d tgt=(%.1f,%.1f) mv=%d face=%d\n",
-							s_frame, alive, s_n, tx, ty, moving ? 1 : 0, face);
-						fflush(s_lf);
-					}
-				}
-			}
+			s_lx = tx; s_ly = ty;
+			FILE *lf = NULL; fopen_s(&lf, "D:/mp_scan.log", "a");
+			if (lf) { fprintf(lf, "[MP-SCAN v216] oid=%08X tgt=(%.1f,%.1f) moving=%d face=%d\n", oid, tx, ty, moving?1:0, face); fflush(lf); fclose(lf); }
 		}
+	}
 	if (g_scan && g_scan_kind != 3 && g_scan_kind != 4 && !g_interp.empty()) {
 		static std::map<DWORD, std::pair<float, float> > last_probe;
 		FILE *sf = NULL;
