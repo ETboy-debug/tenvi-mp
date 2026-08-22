@@ -170,6 +170,12 @@ static bool MP_SafeRead4(DWORD addr, DWORD *out) {
 	}
 }
 
+// [v197] full-process render-position hunt candidate (see scan=4 block)
+struct MP_ScanCand {
+	DWORD addr;
+	bool is_int;
+};
+
 // [v86] Suppress-respawn state: once offsets are locked we stop letting the
 // despawn/respawn packets touch the client and drive movement by memory write.
 static bool g_suppress_active = false;
@@ -861,7 +867,164 @@ static void MP_ApplyInterpolation() {
 			}
 		}
 	}
-	if (g_scan && g_scan_kind != 3 && !g_interp.empty()) {
+	// [v197] FULL-PROCESS render-position hunt (scan=4). The v195 live-probe
+	// (scan=3) proved the CField-hashmap avatar has NO live coordinate field
+	// (302 probe rounds, 0 LIVE-SOURCE hits) - the renderer reads the position
+	// from an object the CField hashmap does not cover. So scan the ENTIRE
+	// readable RW process memory for a float (or int) pair equal to the remote
+	// avatar's known rendered position (its spawn coords, cached from the 0x11
+	// birth). Lock every match and drive all of them each frame with the server
+	// target - the rendered copy is among them, so the avatar glides.
+	// Candidates that the client reverts (>100px) are dropped (client-owned
+	// fields); fields that keep our value are plain copies we keep writing.
+	if (g_scan_kind == 4 && !g_interp.empty()) {
+		static MP_ScanCand s_cands[512];
+		static int s_n = 0;
+		static bool s_done = false;
+		static float s_tx = 0, s_ty = 0;
+		static int s_frame = 0;
+		static FILE *s_lf = NULL;
+		if (!s_done) {
+			// [v204] retry throttle: full-memory scan is heavy; retry at most
+			// once per 30 frames while no match exists (the mover may stop, or
+			// a fresh 0x11 stream may arrive with a better-aligned target).
+			static int s_retry = 0;
+			if ((s_retry++ % 30) == 0) {
+				// scan for the birth position (first remote oid's target)
+				DWORD oid0 = 0; float px = 0, py = 0;
+				{
+					std::map<DWORD, RemoteInterp>::iterator kv = g_interp.begin();
+					if (kv != g_interp.end()) { oid0 = kv->first; px = kv->second.tx; py = kv->second.ty; }
+				}
+				if (oid0 && (fabsf(px) > 1.0f || fabsf(py) > 1.0f)) {
+					s_n = 0;
+					SYSTEM_INFO si; GetSystemInfo(&si);
+					DWORD base = (DWORD)si.lpMinimumApplicationAddress;
+					DWORD top = (DWORD)si.lpMaximumApplicationAddress;
+					for (DWORD a = base; a < top && s_n < 512; ) {
+						MEMORY_BASIC_INFORMATION mi;
+						if (VirtualQuery((LPCVOID)a, &mi, sizeof(mi)) == 0) break;
+						if (mi.State == MEM_COMMIT && mi.Protect == PAGE_READWRITE &&
+							mi.RegionSize > 0x1000 && mi.RegionSize < 0x4000000) {
+							DWORD rbase = (DWORD)mi.BaseAddress;
+							DWORD rend = rbase + (DWORD)mi.RegionSize - 8;
+							for (DWORD p = rbase; p < rend && s_n < 512; p += 4) {
+								float fx = 0, fy = 0; DWORD rx = 0, ry = 0;
+								if (!MP_SafeRead4(p, &rx) || !MP_SafeRead4(p + 4, &ry)) break;
+								memcpy(&fx, &rx, 4); memcpy(&fy, &ry, 4);
+								// [v204] WIDE tolerance: the later-joining client
+								// scans with a slightly stale target (broadcast
+								// lags the mover's real position by a few
+								// frames), so the old 1.5px gate matched
+								// NOTHING and the later client never drove the
+								// earlier one (diag 20380: oid=0x550 stream
+								// received 356x, mp_scan.log has no DONE for it).
+								// 60px covers network lag while walking; stray
+								// matches are filtered by the per-frame revert
+								// check (|cur - tx| > 100 -> drop).
+								bool fpair = (fabsf(fx - px) < 60.0f && fabsf(fy - py) < 60.0f);
+								bool ipair = (fabsf(fx) < 30000.0f && fabsf(fy) < 30000.0f &&
+									fabsf(fx - px) < 60.0f && fabsf(fy - py) < 60.0f && !fpair);
+								if (fpair || ipair) {
+									s_cands[s_n].addr = p; s_cands[s_n].is_int = ipair;
+									if (!s_lf) fopen_s(&s_lf, "D:/mp_scan.log", "a");
+									if (s_lf) fprintf(s_lf, "[MP-SCAN] cand addr=%08X %s f=(%.1f,%.1f) want=(%.1f,%.1f) oid=%08X\n",
+										p, ipair ? "INT" : "FLT", fx, fy, px, py, oid0);
+									s_n++;
+								}
+							}
+						}
+						a += mi.RegionSize;
+					}
+					if (s_lf) { fprintf(s_lf, "[MP-SCAN] DONE found=%d oid=%08X\n", s_n, oid0); fflush(s_lf); }
+					s_tx = px; s_ty = py;
+					// [v204] keep retrying (throttled) while no match - a bare
+					// "no candidates" is NOT terminal: the mover may stop or a
+					// fresher coordinate may arrive next seconds.
+					s_done = (s_n > 0);
+				}
+			}
+		} else if (s_n > 0) {
+			s_frame++;
+			// drive all candidates toward the current target each frame
+			std::map<DWORD, RemoteInterp>::iterator kv = g_interp.begin();
+			if (kv != g_interp.end()) {
+				float tx = kv->second.tx, ty = kv->second.ty;
+				// [v203] NO periodic re-scan: re-scanning for the moved target
+				// re-matched every address we already wrote plus false positives
+				// (21 -> 120 -> 494 candidates), exploding writes and crashing
+				// the client. The original candidate list tracks the avatar as
+				// we write it each frame (v197 proved 21 is enough). Re-scan
+				// ONLY when every candidate went dead.
+				int alive = 0;
+				bool moving = false;
+				int face = 0;
+				for (int i = 0; i < s_n; i++) {
+						DWORD cur = 0;
+						DWORD addr = s_cands[i].addr;
+						// [v202] address guard: only the low bound stays. The v201 upper bound
+						// 0x08000000 was WRONG - the game heap base moves between
+						// sessions (v196 had candidates at 0x040Bxxxx, v200/v201
+						// at 0x21BDxxxx = 567MB > 0x08000000) so the guard killed
+						// every legitimate candidate -> write=0 forever. Candidates
+						// come from a real VirtualQuery RW-page scan, so they are
+						// always readable/writable; the revert check + coordinate
+						// sanity below protect the writes.
+						if (addr < 0x00100000u) continue;
+						if (!MP_SafeRead4(addr, &cur)) continue;
+						float fcur; memcpy(&fcur, &cur, 4);
+						DWORD cury = 0; float fcury = 0;
+						if (MP_SafeRead4(addr + 4, &cury)) memcpy(&fcury, &cury, 4);
+						// [v201] revert check vs CURRENT target (not the birth
+						// position s_tx). v200 regressed because once the player
+						// walked >100px from spawn, candidates tracked the new tx
+						// while s_tx stayed at spawn -> |fcur - s_tx| > 100 dropped
+						// ALL candidates -> write=0 forever.
+						if (fabsf(fcur - tx) > 100.0f && fabsf(fcury - ty) > 100.0f) continue;
+						// [v199] faster follow (kept from v198): 0.5 factor, 10px/frame
+						float dlt = (tx - fcur) * 0.5f;
+						if (dlt > 10.0f) dlt = 10.0f; else if (dlt < -10.0f) dlt = -10.0f;
+						float nx = fcur + dlt;
+						float dly = (ty - fcury) * 0.5f;
+						if (dly > 10.0f) dly = 10.0f; else if (dly < -10.0f) dly = -10.0f;
+						float ny = fcury + dly;
+						if (s_cands[i].is_int) {
+							MP_SafeWrite4(addr, (DWORD)(int)nx);
+							MP_SafeWrite4(addr + 4, (DWORD)(int)ny);
+						} else {
+							DWORD wx, wy; memcpy(&wx, &nx, 4); memcpy(&wy, &ny, 4);
+							MP_SafeWrite4(addr, wx);
+							MP_SafeWrite4(addr + 4, wy);
+						}
+						alive++;
+						if (fabsf(dlt) > 0.5f || fabsf(dly) > 0.5f) moving = true;
+						if (dlt < 0.0f) face = 1;   // moving left -> face left
+					}
+					// [v200] walk animation via the KNOWN CField object from
+					// GetCharacterByOID. Safe: the game's own 0x19 handler writes
+					// the very same offsets (+0x898 moving, +0x8A0 stance) on this
+					// object, so the writes cannot corrupt anything. The position
+					// now moves (scan writes above), so moving=1 should drive the
+					// walk cycle; stance keeps the avatar facing travel direction.
+					DWORD cfield = MP_GetCFieldPtr();
+					if (cfield && _GetCharacterByOID) {
+						DWORD cobj = _GetCharacterByOID((void*)cfield, kv->first);
+						if (cobj) {
+							DWORD mv = moving ? 1 : 0;
+							MP_SafeWrite4(cobj + 0x898, mv);
+							MP_SafeWrite4(cobj + 0x8A0, (DWORD)face);
+						}
+					}
+					s_tx = tx; s_ty = ty;
+					if (s_lf && (s_frame % 60) == 0) {
+						fprintf(s_lf, "[MP-SCAN] frame=%d write=%d/%d tgt=(%.1f,%.1f) mv=%d face=%d\n",
+							s_frame, alive, s_n, tx, ty, moving ? 1 : 0, face);
+						fflush(s_lf);
+					}
+				}
+			}
+		}
+	if (g_scan && g_scan_kind != 3 && g_scan_kind != 4 && !g_interp.empty()) {
 		static std::map<DWORD, std::pair<float, float> > last_probe;
 		FILE *sf = NULL;
 		for (std::map<DWORD, RemoteInterp>::iterator kv = g_interp.begin(); kv != g_interp.end(); ++kv) {
@@ -1099,6 +1262,40 @@ void MP_Pump() {
 			}
 			oc_chk++;
 		}
+		// [v194] SP 0x19 move diagnostics. Parse our 9-byte wire format
+		// ([0]=op [1..4]=oid [5]=count [6..7]=dx [8]=stance), resolve the
+		// CField object and read its coordinate BEFORE the packet is injected,
+		// then compare with the value logged when the PREVIOUS 0x19 for the
+		// same oid arrived (that previous packet WAS processed by then). If the
+		// native handler applied our dx, the position drifts between packets;
+		// if it is frozen the format/handler path is wrong. No suppression, no
+		// writes - pure observation.
+		if (mp_op == 0x19 && bp.size() >= 9) {
+			static int g_19diag = 0;
+			BYTE cnt = bp[5];
+			short rdx = 0;
+			if (bp.size() >= 8) rdx = (short)*(WORD*)&bp[6];
+			BYTE rst = bp[8];
+			DWORD cfield = MP_GetCFieldPtr();
+			DWORD live = (cfield && _GetCharacterByOID) ? _GetCharacterByOID((void*)cfield, oid) : 0;
+			float px = 0, py = 0;
+			if (live) { MP_SafeRead4(live + 0x11A4, (DWORD*)&px); MP_SafeRead4(live + 0x11A8, (DWORD*)&py); }
+			static std::map<DWORD, float> g_19prev;
+			float prev_x = 0;
+			std::map<DWORD, float>::iterator pit = g_19prev.find(oid);
+			if (pit != g_19prev.end()) prev_x = pit->second;
+			g_19prev[oid] = px;
+			if (g_19diag < 60 || (g_19diag % 15) == 0) {
+				FILE *f = NULL; fopen_s(&f, MP_DiagPath(), "a");
+				if (f) {
+					fprintf(f, "[MP-19DIAG] oid=%08X cnt=%d dx=%d stance=%d ptr=%08X pos=(%.1f,%.1f) prevx=%.1f len=%d bytes=",
+						oid, (int)cnt, (int)rdx, (int)rst, live, px, py, prev_x, (int)bp.size());
+					for (int bi = 0; bi < 12 && bi < (int)bp.size(); bi++) fprintf(f, "%02X ", bp[bi]);
+					fprintf(f, "\n"); fflush(f); fclose(f);
+				}
+			}
+			g_19diag++;
+		}
 		// Diagnostics: remember the first self-tagged spawn we ever see.
 		if (mp_op == 0x11 && mp_ctx && g_localObjectId == 0) g_localObjectId = oid;
 		// [v72a-fix] Cache remote 0x11 spawn coords for interpolation. A remote
@@ -1130,14 +1327,22 @@ void MP_Pump() {
 			float rx = *(float*)&bp[5];
 			float ry = *(float*)&bp[9];
 			g_spawned[oid] = true;   // [v135] first 0x11 seen -> avatar exists now
-			auto it = g_interp.find(oid);
-			if (it == g_interp.end()) {
-				RemoteInterp ri;
-				ri.oid = oid; ri.tx = rx; ri.ty = ry;
-				ri.cx = rx; ri.cy = ry; ri.stale = 0;
-				g_interp[oid] = ri;
+			// [v204] poison guard: never seed g_interp with (0,0). A stray
+			// origin update would zero the scan=4 target and permanently
+			// block the scan gate (|px|>1) on the later-joining client.
+			// Keep the last good position instead.
+			if (rx == 0.0f && ry == 0.0f) {
+				// avatar exists; just no coordinate update this packet
 			} else {
-				it->second.tx = rx; it->second.ty = ry; it->second.stale = 0;
+				auto it = g_interp.find(oid);
+				if (it == g_interp.end()) {
+					RemoteInterp ri;
+					ri.oid = oid; ri.tx = rx; ri.ty = ry;
+					ri.cx = rx; ri.cy = ry; ri.stale = 0;
+					g_interp[oid] = ri;
+				} else {
+					it->second.tx = rx; it->second.ty = ry; it->second.stale = 0;
+				}
 			}
 		// [v77] The deployed server sends initial 0x11 spawns through
 		// CWvsContext (ctx=1) so the client renders them, but CField also
